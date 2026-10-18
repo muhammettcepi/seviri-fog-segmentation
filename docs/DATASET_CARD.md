@@ -9,8 +9,8 @@ stratus detection. Built with `fogseg fetch` (download + crop) and `fogseg build
 |---|---|
 | Format | Zarr v3 store, `seviri_ceu.zarr` (803 MB on disk) |
 | Main variable | `bt` (time, channel, y, x) = (608, 8, 241, 462), float32, Kelvin |
-| Other variables | `sza` (time, y, x) solar zenith angle in degrees; `platform`, `source_file` per scene |
-| Coordinates | `time` (UTC), `channel` + `wavelength` (µm), `y`/`x` (metres, geostationary projection), `lat`/`lon` (y, x) |
+| Other variables | `sza` (time, y, x) solar zenith angle in degrees, at the time the region was scanned; `platform`, `source_file` per scene |
+| Coordinates | `time` (UTC, nominal start of the 15-minute repeat cycle), `channel` + `wavelength` (µm), `y`/`x` (metres, geostationary projection), `lat`/`lon` (y, x) |
 | Chunks | 8 scenes per chunk (~28 MB of `bt` uncompressed) |
 | Source | EUMETSAT Data Store, `EO:EUM:DAT:MSG:HRSEVIRI` (SEVIRI Level 1.5, 0° service) |
 | Satellite | Meteosat-10 (MSG-3) for all 608 scenes |
@@ -23,6 +23,10 @@ import xarray as xr
 ds = xr.open_zarr("seviri_ceu.zarr", consolidated=False)
 ```
 
+The numeric arrays use core Zarr v3 data types. The two text variables (`platform`,
+`source_file`) use zarr-python's fixed-length UTF-32 string type, an extension that non-Python
+Zarr readers may not support. The store has no consolidated metadata (not part of the v3 standard).
+
 ## Spatial coverage
 
 - Region of interest: 2–20°E, 43–55°N (Benelux, France, Germany, Switzerland, Austria, Czechia,
@@ -31,8 +35,9 @@ ds = xr.open_zarr("seviri_ceu.zarr", consolidated=False)
   interpolation artefacts. Every scene has exactly the same pixels (checked during the build).
 - The crop is the smallest rectangle *in the satellite projection* that contains the region, so its
   corners reach a little further: latitude 42.6–56.1°N, longitude 1.6–27.4°E.
-- Pixel size is ~3 km at the sub-satellite point, but ~3.5 km (east–west) × 5–6 km (north–south)
-  over Central Europe because of the slanted view.
+- Pixel size is ~3 km at the sub-satellite point, but over Central Europe the slanted view makes
+  pixels ~3.3 km east–west × ~5.8 km north–south (medians; up to 4.1 × 8.6 km in the far
+  north-east corner).
 - Row 0 is the northern edge, column 0 the western edge (`upper_right_corner="NE"`).
 
 ## Temporal coverage
@@ -71,15 +76,20 @@ The four solar channels (VIS006, VIS008, IR_016, HRV) are left out: they carry n
 - **Invalid values:** 1,238 values (0.0002 % of `bt`), all in IR_039, were ~0 K and are set to
   NaN. They occur under very cold cloud tops (IR_108 ≈ 210 K), where the 3.9 µm signal is below
   the instrument noise. These pixels are deep convective cloud, never fog. Threshold: < 150 K.
-- **Twilight at 05:00 UTC:** 8.7 % of pixels in the 05:00 scenes have a solar zenith angle below
-  95° (minimum 84.6°, early October and late February, eastern part of the region). Reflected
-  sunlight contaminates IR_039 there; use `sza > 95` as a night mask. 97.8 % of all pixels are night.
+- **Scan time vs. `time`:** `time` is the nominal start of the repeat cycle (e.g. 05:00:00).
+  SEVIRI scans from south to north, so Central Europe is observed 10.7–11.5 minutes later. `sza`
+  is computed at `time` + 11 minutes, which keeps its error below ~0.1°; using the nominal time
+  instead would underestimate it by up to ~1.8° in the twilight scenes.
+- **Twilight at 05:00 UTC:** 13.2 % of pixels in the 05:00 scenes have a solar zenith angle of
+  95° or less (minimum 83.1°, early October and late February, eastern part of the region).
+  Reflected sunlight contaminates IR_039 there; use `sza > 95` as a night mask. All 21:00, 00:00
+  and 03:00 pixels are night; 96.7 % of all pixels are night.
 - **BTD convention:** the fog signal used in this project is the **uncorrected** difference
   `IR_108 − IR_039`. satpy's `night_fog` composite applies a CO₂ correction to IR_039 that shifts
   this difference by ~5 K over low cloud; we follow the EUMETSAT Night Microphysics recipe instead.
 - **Class balance (preview):** a rough rule (IR_108 ≥ 265 K and BTD > 2.5 K) flags 38.6 % of
-  night pixels as fog / low stratus candidates; 377 scenes have more than 30 % candidates. The
-  proper labels (step 5) will report the final balance.
+  night pixels as fog / low stratus candidates; in 384 of the 608 scenes, candidates are more than
+  30 % of that scene's night pixels. The proper labels (step 5) will report the final balance.
 
 ## What this dataset is not
 
@@ -93,5 +103,5 @@ The four solar channels (VIS006, VIS008, IR_016, HRV) are left out: they carry n
 
 ```bash
 fogseg fetch --workers 2   # 608 scenes, ~4-8 h, resumable (needs a EUMETSAT API key)
-fogseg build               # ~1-2 min
+fogseg build               # ~1-3 min
 ```

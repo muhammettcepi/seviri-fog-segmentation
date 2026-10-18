@@ -9,7 +9,8 @@ import numpy as np
 import xarray as xr
 from satpy import Scene
 
-GRID_FILE = "grid.nc"
+from fogseg.config import GRID_FILE
+
 # The NetCDF/HDF5 C library is not thread-safe: two workers reading or writing .nc files at the
 # same moment can crash the whole process (segmentation fault). Only one thread may do NetCDF I/O.
 _nc_lock = threading.Lock()

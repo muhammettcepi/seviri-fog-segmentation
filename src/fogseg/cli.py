@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from fogseg.config import load_config, scene_times
+from fogseg.config import load_config, scene_filename, scene_times
 
 log = logging.getLogger("fogseg")
 
@@ -18,10 +18,6 @@ RAW_MB = 271  # size of one full-disk .nat file, measured on a real download
 MAX_TRIES = 3
 BLOCKED_WAITS_MIN = [5, 10, 20, 30, 60, 60]  # pauses while EUMETSAT refuses access: ~3 h in total
 _stop = threading.Event()  # set when access stays refused, so all workers stop
-
-
-def scene_filename(slot: dt.datetime) -> str:
-    return f"seviri_ceu_{slot:%Y%m%dT%H%M}.nc"
 
 
 def fetch_one(slot: dt.datetime, collection, cfg: dict) -> str:
