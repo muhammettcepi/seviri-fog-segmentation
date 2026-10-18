@@ -8,7 +8,7 @@ import xarray as xr
 from helpers import CHANNELS, NX, NY, TIMES, make_scene
 from pyorbital.astronomy import sun_zenith_angle
 
-from fogseg.build import REGION_SCAN_DELAY, build_zarr
+from fogseg.build import build_zarr, region_scan_delay
 from fogseg.config import scene_filename
 from fogseg.preprocess import save_scene
 
@@ -47,6 +47,15 @@ def test_build_adds_metadata_and_lonlat(interim_dir, tmp_path):
     assert "EO:EUM:DAT:MSG:HRSEVIRI" in ds.attrs["source"]
 
 
+def test_scan_delay_follows_the_south_to_north_scan():
+    # A full-disk scan takes 3712 lines x 0.2 s = 12.4 min, starting at the southern edge
+    assert region_scan_delay(np.array([-5_567_248.0])).total_seconds() == pytest.approx(0, abs=1)
+    assert region_scan_delay(np.array([5_570_248.0])).total_seconds() / 60 == pytest.approx(12.4, abs=0.05)
+    # Central Europe is scanned 10.7-11.5 min after the nominal slot time
+    central_europe_y = make_scene(TIMES[0], 270.0)["y"].values
+    assert 10.7 <= region_scan_delay(central_europe_y).total_seconds() / 60 <= 11.5
+
+
 def test_sun_angle_is_computed_at_the_regional_scan_time(interim_dir, tmp_path):
     out = tmp_path / "data.zarr"
     build_zarr(interim_dir, out, CHANNELS)
@@ -54,7 +63,8 @@ def test_sun_angle_is_computed_at_the_regional_scan_time(interim_dir, tmp_path):
 
     scene = ds.sel(time=np.datetime64(TIMES[1], "ns"))
     lon, lat = float(scene["lon"][1, 2]), float(scene["lat"][1, 2])
-    expected = sun_zenith_angle(TIMES[1] + REGION_SCAN_DELAY, lon, lat)
+    scan_time = TIMES[1] + region_scan_delay(ds["y"].values)
+    expected = sun_zenith_angle(scan_time, lon, lat)
     assert float(scene["sza"][1, 2]) == pytest.approx(expected, abs=0.01)
 
 
@@ -124,3 +134,10 @@ def test_build_rejects_duplicate_scene_times(interim_dir, tmp_path):
     save_scene(duplicate, interim_dir / scene_filename(LATE_SLOT))
     with pytest.raises(ValueError, match="unique and increasing"):
         build_zarr(interim_dir, tmp_path / "data.zarr", CHANNELS)
+
+
+def test_build_rejects_duplicate_scene_times_across_batches(interim_dir, tmp_path):
+    duplicate = make_scene(TIMES[1], 280.0)
+    save_scene(duplicate, interim_dir / scene_filename(LATE_SLOT))
+    with pytest.raises(ValueError, match="does not come after"):
+        build_zarr(interim_dir, tmp_path / "data.zarr", CHANNELS, batch=1)

@@ -26,9 +26,11 @@ CHUNK_TIME = 8  # scenes per Zarr chunk: ~28 MB of float32 brightness temperatur
 # No real Earth scene is this cold. Over very cold cloud tops (~210 K) the 3.9 µm signal is below
 # the instrument noise, calibration then yields ~0 K; such values are set to NaN.
 MIN_VALID_BT = 150.0
-# satpy gives the nominal start of the 15-minute repeat cycle. SEVIRI scans from south to north
-# (3 lines per 0.6 s spin), so Central Europe is observed 10.7-11.5 minutes after that time.
-REGION_SCAN_DELAY = dt.timedelta(minutes=11)
+# satpy gives the nominal start of the 15-minute repeat cycle, but SEVIRI scans the disk from south
+# to north, 3 lines per 0.6 s spin. Full-disk geometry from satpy's msg_seviri_fes_3km area:
+SEVIRI_SOUTH_EDGE_Y = -5_567_248.283  # metres
+SEVIRI_LINE_SPACING = 3_000.403  # metres
+SECONDS_PER_LINE = 0.6 / 3
 
 
 def grid_lonlats(grid: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
@@ -80,18 +82,28 @@ def check_time_order(times: pd.DatetimeIndex, previous_time: pd.Timestamp | None
         raise ValueError(f"Scene at {times[0]} does not come after {previous_time}")
 
 
-def add_sun_zenith(scenes: xr.Dataset, lons: np.ndarray, lats: np.ndarray) -> xr.Dataset:
+def region_scan_delay(y: np.ndarray) -> dt.timedelta:
+    """Time from the nominal slot start until SEVIRI scans the middle of the region."""
+    lines_from_south = (np.mean(y) - SEVIRI_SOUTH_EDGE_Y) / SEVIRI_LINE_SPACING
+    return dt.timedelta(seconds=float(lines_from_south * SECONDS_PER_LINE))
+
+
+def add_sun_zenith(
+    scenes: xr.Dataset, lons: np.ndarray, lats: np.ndarray, scan_delay: dt.timedelta
+) -> xr.Dataset:
     """Solar zenith angle per pixel and scene (degrees), at the time the region was scanned."""
     angles = []
     for time in scenes["time"].values:
-        scan_time = pd.Timestamp(time).to_pydatetime() + REGION_SCAN_DELAY
+        scan_time = pd.Timestamp(time).to_pydatetime() + scan_delay
         angles.append(sun_zenith_angle(scan_time, lons, lats))
     sza = np.stack(angles).astype("float32")
 
+    delay_minutes = scan_delay.total_seconds() / 60
     attrs = {
         "units": "degree",
         "long_name": "solar zenith angle",
-        "comment": "computed at time + 11 min, when SEVIRI scans Central Europe; > 90 = sun below horizon",
+        "comment": f"computed at time + {delay_minutes:.1f} min, when SEVIRI scans this region; "
+        "> 90 = sun below the horizon",
     }
     scenes["sza"] = (("time", "y", "x"), sza, attrs)
     return scenes
@@ -160,6 +172,7 @@ def write_batches(
         "time": {"units": "minutes since 2000-01-01", "dtype": "int64"},
     }
 
+    scan_delay = region_scan_delay(grid["y"].values)
     n_invalid = 0
     previous_time = None
     for start in range(0, len(files), batch):
@@ -172,7 +185,7 @@ def write_batches(
 
         scenes, batch_invalid = mask_invalid(scenes)
         n_invalid += batch_invalid
-        scenes = add_sun_zenith(scenes, lons, lats)
+        scenes = add_sun_zenith(scenes, lons, lats, scan_delay)
 
         is_first_batch = start == 0
         if is_first_batch:

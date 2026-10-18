@@ -16,12 +16,14 @@ dependencies = [
     "xarray",
     "netCDF4",
     "numpy",
+    "pandas",
     "pyyaml",
     "zarr>=3",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+# ruff is pinned: its default rule set changes between versions, and CI must lint like local runs
+dev = ["pytest", "ruff==0.17.*"]
 
 [project.scripts]
 fogseg = "fogseg.cli:main"

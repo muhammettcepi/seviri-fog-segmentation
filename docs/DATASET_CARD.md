@@ -78,9 +78,11 @@ The four solar channels (VIS006, VIS008, IR_016, HRV) are left out: they carry n
   the instrument noise. These pixels are deep convective cloud, never fog. Threshold: < 150 K.
 - **Scan time vs. `time`:** `time` is the nominal start of the repeat cycle (e.g. 05:00:00).
   SEVIRI scans from south to north, so Central Europe is observed 10.7–11.5 minutes later. `sza`
-  is computed at `time` + 11 minutes, which keeps its error below ~0.1°; using the nominal time
-  instead would underestimate it by up to ~1.8° in the twilight scenes.
-- **Twilight at 05:00 UTC:** 13.2 % of pixels in the 05:00 scenes have a solar zenith angle of
+  is computed at `time` plus the scan delay of the middle of the region (11.1 minutes, derived from
+  the grid), which keeps its error below ~0.1°. Using the nominal time instead would
+  **overestimate** it by up to ~2° in the 05:00 scenes (the sun is rising), letting twilight
+  pixels pass the night mask.
+- **Twilight at 05:00 UTC:** 13.3 % of pixels in the 05:00 scenes have a solar zenith angle of
   95° or less (minimum 83.1°, early October and late February, eastern part of the region).
   Reflected sunlight contaminates IR_039 there; use `sza > 95` as a night mask. All 21:00, 00:00
   and 03:00 pixels are night; 96.7 % of all pixels are night.
