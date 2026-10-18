@@ -78,16 +78,19 @@ def test_params_from_config_reads_every_threshold():
     assert params.night_min_sza == 95.0
     assert params.min_blob_pixels == 5
 
+
 def test_daytime_and_twilight_pixels_are_not_trusted():
     sza = np.array([[80.0, 95.0, 95.1]])
     bt = np.full((1, 3), 270.0)
     assert trusted_mask(bt, bt, bt, sza, 95.0).tolist() == [[False, False, True]]
+
 
 def test_missing_channel_value_is_not_trusted():
     ir039 = np.array([[np.nan, 270.0]])
     bt = np.full((1, 2), 270.0)
     sza = np.full((1, 2), 120.0)
     assert trusted_mask(ir039, bt, bt, sza, 95.0).tolist() == [[False, True]]
+
 
 def test_histogram_pixels_keep_only_warm_non_cirrus_night_pixels():
     # columns: valid fog-like, cold top, thin cirrus, daytime
@@ -126,6 +129,7 @@ def test_histogram_pixels_keep_only_warm_non_cirrus_night_pixels():
 ```python
 def test_satellite_zenith_is_zero_below_the_satellite():
     assert satellite_zenith_angle(np.array([0.0]), np.array([0.0]))[0] == pytest.approx(0.0, abs=1e-6)
+
 
 def test_satellite_zenith_at_50_north_on_the_meridian():
     # geostationary at 0°E, Earth radius 6378.169 km, orbit radius 42164.0 km
@@ -171,38 +175,47 @@ def test_satellite_zenith_at_50_north_on_the_meridian():
 def test_warm_high_btd_pixel_is_fog():
     assert scene(btd=4.0)[2, 2] == FOG
 
+
 def test_cold_top_is_not_fog():
     assert scene(btd=4.0, ir108=230.0)[2, 2] == NO_FOG
+
 
 def test_thin_cirrus_is_not_fog():
     assert scene(btd=4.0, split=3.0)[2, 2] == NO_FOG
 
+
 def test_borderline_btd_is_ignored():
     assert scene(btd=2.5 + 0.3, btd_threshold=2.5)[2, 2] == IGNORE
+
 
 def test_rough_top_is_not_fog():
     labels = scene(btd=4.0, checkerboard_amplitude=3.0)
     assert labels[2, 2] == NO_FOG
+
 
 def test_local_std_ignores_missing_neighbours():
     field = np.full((3, 3), 270.0)
     field[0, 0] = np.nan
     assert local_std(field)[1, 1] == pytest.approx(0.0)
 
+
 def test_three_pixel_island_is_ignored_but_ten_pixel_deck_stays_fog():
     mask = np.zeros((8, 12), bool)
-    mask[1, 1:4] = True          # 3 pixels
-    mask[5:7, 2:7] = True        # 10 pixels
+    mask[1, 1:4] = True  # 3 pixels
+    mask[5:7, 2:7] = True  # 10 pixels
     assert small_blobs(mask, 5)[1, 2] and not small_blobs(mask, 5)[5, 3]
+
 
 def test_diagonal_pixels_form_one_blob():
     mask = np.eye(6, dtype=bool)  # 6 pixels touching only at corners
     assert not small_blobs(mask, 5).any()
 
+
 def test_deck_touching_the_image_edge_is_kept():
     mask = np.zeros((8, 12), bool)
-    mask[0:2, 7:12] = True       # 10 pixels along the top edge
+    mask[0:2, 7:12] = True  # 10 pixels along the top edge
     assert not small_blobs(mask, 5).any()
+
 
 def test_scene_without_night_pixels_is_all_ignored():
     assert (scene(btd=4.0, sza=80.0) == IGNORE).all()
@@ -245,23 +258,28 @@ def test_two_humps_give_the_valley():
     choice = dynamic_threshold(btd, fixed=2.5, params=PARAMS)
     assert choice.source == "dynamic" and 2.8 < choice.value < 4.0
 
+
 def test_one_hump_falls_back_to_fixed():
     btd = np.random.default_rng(1).normal(2.0, 0.5, 10000)
     assert dynamic_threshold(btd, 2.5, PARAMS) == ThresholdChoice(2.5, "fallback")
 
+
 def test_too_few_pixels_fall_back():
     assert dynamic_threshold(np.array([1.0, 5.0]), 2.5, PARAMS).source == "fallback"
+
 
 def test_tiny_second_hump_falls_back():
     rng = np.random.default_rng(2)
     btd = np.concatenate([rng.normal(1.8, 0.4, 9900), rng.normal(5.0, 0.3, 100)])
     assert dynamic_threshold(btd, 2.5, PARAMS).source == "fallback"
 
+
 def test_valley_outside_the_plausible_range_is_clamped():
     rng = np.random.default_rng(3)
     btd = np.concatenate([rng.normal(1.8, 0.4, 6000), rng.normal(5.0, 0.6, 6000)])
     narrow = dataclasses.replace(PARAMS, clamp=(1.5, 3.0))
     assert dynamic_threshold(btd, 2.5, narrow) == ThresholdChoice(3.0, "dynamic")
+
 
 def test_flat_valley_bottom_picks_its_middle():
     rng = np.random.default_rng(4)
@@ -311,17 +329,24 @@ def test_store_has_spec_variables_and_aligns_with_the_dataset(tmp_path):
     assert merged.sizes["time"] == 3
     assert labels.attrs["btd_fixed"] == PROVISIONAL.btd_fixed
 
-def test_dynamic_mode_records_threshold_source(tmp_path): ...
+
+def test_dynamic_mode_records_threshold_source(tmp_path):
+    ...
     # assert every source is "dynamic" or "fallback"
 
-def test_scene_without_night_gets_nan_fog_fraction(tmp_path): ...
+
+def test_scene_without_night_gets_nan_fog_fraction(tmp_path):
+    ...
     # one scene with sza 80° everywhere: label all 255, fog_fraction NaN, no RuntimeWarning (pytest.warns not raised)
+
 
 def test_missing_dataset_names_the_expected_path(tmp_path):
     with pytest.raises(FileNotFoundError, match="nowhere.zarr"):
         label_dataset(tmp_path / "nowhere.zarr", tmp_path / "labels.zarr", "fixed", PROVISIONAL)
 
-def test_refuses_to_overwrite_and_keeps_old_store_until_success(tmp_path): ...
+
+def test_refuses_to_overwrite_and_keeps_old_store_until_success(tmp_path):
+    ...
     # second call without overwrite → FileExistsError; with overwrite=True and a dataset
     # that fails mid-way (missing sza in the 2nd batch, batch=1) → error, old store unchanged, no .part left
 ```
@@ -359,12 +384,15 @@ def test_rgb_maps_recipe_ranges_to_zero_and_one():
     rgb = night_microphysics_rgb(np.array([[293.0]]) - 10, np.array([[293.0]]), np.array([[295.0]]))
     assert rgb[0, 0].tolist() == pytest.approx([1.0, 1.0, 1.0])
 
+
 def test_missing_time_lists_nearest_available_times():
     times = pd.DatetimeIndex(["2023-11-20 21:00", "2023-11-21 00:00", "2023-11-21 03:00"])
     with pytest.raises(ValueError, match="2023-11-21 00:00"):
         find_scene(times, pd.Timestamp("2023-11-22 00:00"))
 
-def test_inspect_writes_a_png(tmp_path): ...
+
+def test_inspect_writes_a_png(tmp_path):
+    ...
     # make_label_dataset + label_dataset, then inspect_figure → file exists, size > 0
 ```
 
@@ -394,13 +422,18 @@ def test_inspect_writes_a_png(tmp_path): ...
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-def test_selection_uses_only_the_training_season(): ...
+def test_selection_uses_only_the_training_season():
+    ...
     # stats for 40 scenes over both seasons → every selected time in 2023-24
 
-def test_selection_is_deterministic_and_has_no_duplicates(): ...
+
+def test_selection_is_deterministic_and_has_no_duplicates():
+    ...
     # two calls → identical frames; time column unique; len == 15
 
-def test_selection_contains_each_group(): ...
+
+def test_selection_contains_each_group():
+    ...
     # groups "foggy", "clear", "high_cloud", "twilight", "fallback", "spread" present
 ```
 
