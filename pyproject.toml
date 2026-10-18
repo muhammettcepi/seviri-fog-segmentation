@@ -19,6 +19,8 @@ dependencies = [
     "numpy",
     "pandas",
     "pyyaml",
+    "scipy",
+    "matplotlib",
     "zarr>=3",
 ]
 
