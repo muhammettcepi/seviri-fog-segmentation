@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from fogseg.config import load_config, scene_times
+from fogseg.config import load_config, scene_filename, scene_times
 
 log = logging.getLogger("fogseg")
 
@@ -18,10 +18,6 @@ RAW_MB = 271  # size of one full-disk .nat file, measured on a real download
 MAX_TRIES = 3
 BLOCKED_WAITS_MIN = [5, 10, 20, 30, 60, 60]  # pauses while EUMETSAT refuses access: ~3 h in total
 _stop = threading.Event()  # set when access stays refused, so all workers stop
-
-
-def scene_filename(slot: dt.datetime) -> str:
-    return f"seviri_ceu_{slot:%Y%m%dT%H%M}.nc"
 
 
 def fetch_one(slot: dt.datetime, collection, cfg: dict) -> str:
@@ -58,18 +54,22 @@ def server_message(err: Exception) -> tuple[int | None, str]:
 
 def fetch_with_retry(slot: dt.datetime, collection, cfg: dict) -> str:
     """Retry short glitches a few times; wait out "access refused" (403) periods for up to ~3 h."""
-    attempt = blocked = 0
+    attempt = 0
+    blocked = 0
     while not _stop.is_set():
         try:
             return fetch_one(slot, collection, cfg)
-        except Exception as err:  # network hiccups, server errors, corrupt downloads, refused access
+        except Exception as err:  # noqa: BLE001 - any failure of one scene must not stop the whole run
             status, message = server_message(err)
             if status == 403:
                 # EUMETSAT sometimes refuses all downloads for a while ("GeneralLicense required"),
                 # then allows them again. Retrying quickly is pointless, so pause and try again later.
                 if blocked == len(BLOCKED_WAITS_MIN):
-                    log.error("EUMETSAT still refuses downloads after ~3 h (%s). Stopping; run "
-                              "`fogseg fetch` again later, it continues where it stopped.", message)
+                    log.error(
+                        "EUMETSAT still refuses downloads after ~3 h (%s). Stopping; run "
+                        "`fogseg fetch` again later, it continues where it stopped.",
+                        message,
+                    )
                     _stop.set()
                     return "blocked"
                 wait = BLOCKED_WAITS_MIN[blocked]
@@ -83,6 +83,16 @@ def fetch_with_retry(slot: dt.datetime, collection, cfg: dict) -> str:
                 return "failed"
             time.sleep(30 * attempt)
     return "skipped"
+
+
+def cmd_build(args: argparse.Namespace) -> None:
+    from fogseg.build import build_zarr
+
+    cfg = load_config(args.config)
+    out_path = Path(cfg["data"]["processed_path"])
+    started = time.time()
+    n = build_zarr(Path(cfg["data"]["interim_dir"]), out_path, cfg["channels"], overwrite=args.overwrite)
+    log.info("Wrote %d scenes to %s in %.0f s", n, out_path, time.time() - started)
 
 
 def cmd_check(args: argparse.Namespace) -> None:
@@ -113,10 +123,9 @@ def cmd_check(args: argparse.Namespace) -> None:
         try:
             with prod.open(entry=ent, chunk=(0, 1024)) as stream:
                 print(f"[OK]     {name}: received {len(stream.read())} bytes")
-        except Exception as err:
-            info = getattr(err, "extra_info", None) or {}
-            texts = [e.get("exceptionText") for e in info.get("exceptions", [])]
-            print(f"[FAILED] {name}: status {info.get('status')} {texts or err}")
+        except Exception as err:  # noqa: BLE001 - report every failure kind, then test the next one
+            status, message = server_message(err)
+            print(f"[FAILED] {name}: status {status} {message}")
 
 
 def cmd_fetch(args: argparse.Namespace) -> None:
@@ -128,14 +137,17 @@ def cmd_fetch(args: argparse.Namespace) -> None:
         slots = [s for s in slots if s >= dt.datetime.fromisoformat(args.start)]
     if args.end:
         slots = [s for s in slots if s <= dt.datetime.fromisoformat(args.end)]
-    todo = [s for s in slots if not (out_dir / scene_filename(s)).exists()]  # resumable
+    todo = [s for s in slots if not (out_dir / scene_filename(s)).exists()]
     n_done = len(slots) - len(todo)
     if args.limit:
         todo = todo[: args.limit]
 
     log.info("%d slots in config range, %d already done, %d to fetch now", len(slots), n_done, len(todo))
-    log.info("Raw download volume: ~%.1f GB (deleted after cropping, never more than %d raw files on disk)",
-             len(todo) * RAW_MB / 1000, args.workers)
+    log.info(
+        "Raw download volume: ~%.1f GB (deleted after cropping, never more than %d raw files on disk)",
+        len(todo) * RAW_MB / 1000,
+        args.workers,
+    )
     if args.dry_run or not todo:
         return
 
@@ -143,7 +155,8 @@ def cmd_fetch(args: argparse.Namespace) -> None:
 
     # A crash can leave half-written outputs and undeleted raw files behind; they are never reused
     raw_dir = Path(cfg["data"]["raw_dir"])
-    for leftover in [*out_dir.glob("*.part"), *raw_dir.glob("*.nat"), *raw_dir.glob("*.part")]:
+    leftovers = list(out_dir.glob("*.part")) + list(raw_dir.glob("*.nat")) + list(raw_dir.glob("*.part"))
+    for leftover in leftovers:
         log.info("Removing leftover %s", leftover.name)
         leftover.unlink()
 
@@ -152,14 +165,15 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     started = time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(fetch_with_retry, s, collection, cfg): s for s in todo}
-        for i, fut in enumerate(as_completed(futures), start=1):
-            slot, status = futures[fut], fut.result()
+        for done, future in enumerate(as_completed(futures), start=1):
+            slot = futures[future]
+            status = future.result()
             counts[status] += 1
             if status == "skipped":  # run was stopped; don't print hundreds of identical lines
                 continue
-            per_scene = (time.time() - started) / i
-            log.info("[%d/%d] %s %s | ~%.1f min left", i, len(todo), slot, status,
-                     per_scene * (len(todo) - i) / 60)
+            seconds_per_scene = (time.time() - started) / done
+            minutes_left = seconds_per_scene * (len(todo) - done) / 60
+            log.info("[%d/%d] %s %s | ~%.1f min left", done, len(todo), slot, status, minutes_left)
     log.info("Done: %s", counts)
 
 
@@ -180,6 +194,11 @@ def main() -> None:
     check.add_argument("--config", default="configs/default.yaml")
     check.set_defaults(func=cmd_check)
 
+    build = sub.add_parser("build", help="stack all cropped scenes into one ML-ready Zarr store")
+    build.add_argument("--config", default="configs/default.yaml")
+    build.add_argument("--overwrite", action="store_true", help="rebuild if the store already exists")
+    build.set_defaults(func=cmd_build)
+
     args = parser.parse_args()
     cfg = load_config(args.config)
     log_dir = Path(cfg["data"]["log_dir"])
@@ -187,7 +206,7 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[logging.StreamHandler(), logging.FileHandler(log_dir / "fetch.log")],
+        handlers=[logging.StreamHandler(), logging.FileHandler(log_dir / f"{args.command}.log")],
     )
     args.func(args)
 

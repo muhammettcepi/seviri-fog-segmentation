@@ -1,4 +1,4 @@
-"""Load the YAML config and derive the list of scene times from it."""
+"""Configuration and file naming shared by all commands."""
 
 from __future__ import annotations
 
@@ -6,6 +6,13 @@ import datetime as dt
 from pathlib import Path
 
 import yaml
+
+SCENE_GLOB = "seviri_ceu_*.nc"
+GRID_FILE = "grid.nc"
+
+
+def scene_filename(slot: dt.datetime) -> str:
+    return f"seviri_ceu_{slot:%Y%m%dT%H%M}.nc"
 
 
 def load_config(path: str | Path) -> dict:

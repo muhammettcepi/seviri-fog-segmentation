@@ -10,6 +10,8 @@ data:
   # Google Drive (MyDrive/fogseg/interim) when done, so Colab can read it.
   interim_dir: "/mnt/d/fogseg-data/interim"
   log_dir: "/mnt/d/fogseg-data/logs"
+  # The ML-ready dataset: all scenes stacked into one Zarr store (time, channel, y, x)
+  processed_path: "/mnt/d/fogseg-data/processed/seviri_ceu.zarr"
 
 region:
   name: "central_europe"

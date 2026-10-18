@@ -17,7 +17,9 @@ dependencies = [
     "xarray",
     "netCDF4",
     "numpy",
+    "pandas",
     "pyyaml",
+    "zarr>=3",
 ]
 
 [project.optional-dependencies]
@@ -32,3 +34,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 110
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
