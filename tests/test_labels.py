@@ -3,6 +3,7 @@ import warnings
 
 import numpy as np
 import pytest
+from helpers import PROVISIONAL
 
 from fogseg.config import load_config
 from fogseg.labels import (
@@ -15,16 +16,6 @@ from fogseg.labels import (
     local_std,
     small_blobs,
     trusted_mask,
-)
-
-PROVISIONAL = LabelParams(
-    night_min_sza=95.0,
-    btd_fixed=2.5,
-    warm_min_bt108=260.0,
-    cirrus_max_split=2.0,
-    smooth_max_std=1.5,
-    uncertainty_band=0.5,
-    min_blob_pixels=5,
 )
 
 

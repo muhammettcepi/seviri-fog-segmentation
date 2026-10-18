@@ -3,21 +3,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from helpers import PROVISIONAL_DYNAMIC
 
 from fogseg.config import load_config
 from fogseg.dynamic_threshold import DynamicParams, ThresholdChoice, dynamic_threshold
 
-PARAMS = DynamicParams(
-    bin_width=0.25,
-    bin_range=(-2.0, 8.0),
-    smoothing_bins=3,
-    clear_window=(0.5, 3.0),
-    cloud_window=(3.0, 8.0),
-    min_pixels=2000,
-    min_hump_share=0.05,
-    max_valley_ratio=0.5,
-    clamp=(1.5, 5.0),
-)
+PARAMS = PROVISIONAL_DYNAMIC
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
 
