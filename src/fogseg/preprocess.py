@@ -27,7 +27,7 @@ def crop_scene(nat_path: Path, channels: list[str], bbox: list[float]) -> xr.Dat
 
     ref = ceu[channels[0]]
     area = ref.attrs["area"]
-    bt = np.stack([ceu[ch].values.astype("float32") for ch in channels])  # (channel, y, x)
+    bt = np.stack([ceu[ch].values.astype("float32") for ch in channels])
 
     return xr.Dataset(
         {"bt": (("channel", "y", "x"), bt, {"units": "K", "long_name": "brightness temperature"})},
@@ -62,12 +62,16 @@ def check_grid(ds: xr.Dataset, out_dir: Path) -> None:
     with _nc_lock:  # also stops two workers from both writing the first grid file
         if not grid_path.exists():
             out_dir.mkdir(parents=True, exist_ok=True)
-            xr.Dataset(coords={"y": ds["y"], "x": ds["x"]}, attrs={
-                k: ds.attrs[k] for k in ("area_id", "area_extent", "crs_wkt", "region_bbox")
-            }).to_netcdf(grid_path)
+            xr.Dataset(
+                coords={"y": ds["y"], "x": ds["x"]},
+                attrs={k: ds.attrs[k] for k in ("area_id", "area_extent", "crs_wkt", "region_bbox")},
+            ).to_netcdf(grid_path)
             return
         with xr.open_dataset(grid_path) as grid:
-            same = (grid.sizes["y"] == ds.sizes["y"] and grid.sizes["x"] == ds.sizes["x"]
-                    and np.allclose(grid.attrs["area_extent"], ds.attrs["area_extent"]))
+            same = (
+                grid.sizes["y"] == ds.sizes["y"]
+                and grid.sizes["x"] == ds.sizes["x"]
+                and np.allclose(grid.attrs["area_extent"], ds.attrs["area_extent"])
+            )
     if not same:
         raise ValueError(f"Grid of {ds.attrs['source_file']} differs from {grid_path}")

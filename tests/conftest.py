@@ -30,9 +30,15 @@ def make_scene(time: dt.datetime, value: float, x=None) -> xr.Dataset:
     return xr.Dataset(
         {"bt": (("channel", "y", "x"), bt, {"units": "K"})},
         coords={"channel": CHANNELS, "y": ys, "x": xs},
-        attrs={"time": time.isoformat(), "platform": "Meteosat-10",
-               "source_file": f"fake_{time:%Y%m%dT%H%M}.nat", "area_id": "msg_seviri_fes_3km",
-               "area_extent": AREA_EXTENT, "crs_wkt": GEOS.to_wkt(), "region_bbox": [2, 43, 20, 55]},
+        attrs={
+            "time": time.isoformat(),
+            "platform": "Meteosat-10",
+            "source_file": f"fake_{time:%Y%m%dT%H%M}.nat",
+            "area_id": "msg_seviri_fes_3km",
+            "area_extent": AREA_EXTENT,
+            "crs_wkt": GEOS.to_wkt(),
+            "region_bbox": [2, 43, 20, 55],
+        },
     )
 
 

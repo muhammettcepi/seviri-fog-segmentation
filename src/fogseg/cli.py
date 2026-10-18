@@ -58,7 +58,8 @@ def server_message(err: Exception) -> tuple[int | None, str]:
 
 def fetch_with_retry(slot: dt.datetime, collection, cfg: dict) -> str:
     """Retry short glitches a few times; wait out "access refused" (403) periods for up to ~3 h."""
-    attempt = blocked = 0
+    attempt = 0
+    blocked = 0
     while not _stop.is_set():
         try:
             return fetch_one(slot, collection, cfg)
@@ -68,8 +69,11 @@ def fetch_with_retry(slot: dt.datetime, collection, cfg: dict) -> str:
                 # EUMETSAT sometimes refuses all downloads for a while ("GeneralLicense required"),
                 # then allows them again. Retrying quickly is pointless, so pause and try again later.
                 if blocked == len(BLOCKED_WAITS_MIN):
-                    log.error("EUMETSAT still refuses downloads after ~3 h (%s). Stopping; run "
-                              "`fogseg fetch` again later, it continues where it stopped.", message)
+                    log.error(
+                        "EUMETSAT still refuses downloads after ~3 h (%s). Stopping; run "
+                        "`fogseg fetch` again later, it continues where it stopped.",
+                        message,
+                    )
                     _stop.set()
                     return "blocked"
                 wait = BLOCKED_WAITS_MIN[blocked]
@@ -124,9 +128,8 @@ def cmd_check(args: argparse.Namespace) -> None:
             with prod.open(entry=ent, chunk=(0, 1024)) as stream:
                 print(f"[OK]     {name}: received {len(stream.read())} bytes")
         except Exception as err:  # noqa: BLE001 - report every failure kind, then test the next one
-            info = getattr(err, "extra_info", None) or {}
-            texts = [e.get("exceptionText") for e in info.get("exceptions", [])]
-            print(f"[FAILED] {name}: status {info.get('status')} {texts or err}")
+            status, message = server_message(err)
+            print(f"[FAILED] {name}: status {status} {message}")
 
 
 def cmd_fetch(args: argparse.Namespace) -> None:
@@ -138,14 +141,17 @@ def cmd_fetch(args: argparse.Namespace) -> None:
         slots = [s for s in slots if s >= dt.datetime.fromisoformat(args.start)]
     if args.end:
         slots = [s for s in slots if s <= dt.datetime.fromisoformat(args.end)]
-    todo = [s for s in slots if not (out_dir / scene_filename(s)).exists()]  # resumable
+    todo = [s for s in slots if not (out_dir / scene_filename(s)).exists()]
     n_done = len(slots) - len(todo)
     if args.limit:
         todo = todo[: args.limit]
 
     log.info("%d slots in config range, %d already done, %d to fetch now", len(slots), n_done, len(todo))
-    log.info("Raw download volume: ~%.1f GB (deleted after cropping, never more than %d raw files on disk)",
-             len(todo) * RAW_MB / 1000, args.workers)
+    log.info(
+        "Raw download volume: ~%.1f GB (deleted after cropping, never more than %d raw files on disk)",
+        len(todo) * RAW_MB / 1000,
+        args.workers,
+    )
     if args.dry_run or not todo:
         return
 
@@ -153,7 +159,8 @@ def cmd_fetch(args: argparse.Namespace) -> None:
 
     # A crash can leave half-written outputs and undeleted raw files behind; they are never reused
     raw_dir = Path(cfg["data"]["raw_dir"])
-    for leftover in [*out_dir.glob("*.part"), *raw_dir.glob("*.nat"), *raw_dir.glob("*.part")]:
+    leftovers = list(out_dir.glob("*.part")) + list(raw_dir.glob("*.nat")) + list(raw_dir.glob("*.part"))
+    for leftover in leftovers:
         log.info("Removing leftover %s", leftover.name)
         leftover.unlink()
 
@@ -162,14 +169,15 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     started = time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(fetch_with_retry, s, collection, cfg): s for s in todo}
-        for i, fut in enumerate(as_completed(futures), start=1):
-            slot, status = futures[fut], fut.result()
+        for done, future in enumerate(as_completed(futures), start=1):
+            slot = futures[future]
+            status = future.result()
             counts[status] += 1
             if status == "skipped":  # run was stopped; don't print hundreds of identical lines
                 continue
-            per_scene = (time.time() - started) / i
-            log.info("[%d/%d] %s %s | ~%.1f min left", i, len(todo), slot, status,
-                     per_scene * (len(todo) - i) / 60)
+            seconds_per_scene = (time.time() - started) / done
+            minutes_left = seconds_per_scene * (len(todo) - done) / 60
+            log.info("[%d/%d] %s %s | ~%.1f min left", done, len(todo), slot, status, minutes_left)
     log.info("Done: %s", counts)
 
 
