@@ -143,6 +143,31 @@ def cmd_inspect(args: argparse.Namespace) -> None:
     log.info("Wrote %s", png)
 
 
+def cmd_select_scenes(args: argparse.Namespace) -> None:
+    import xarray as xr
+
+    from fogseg.check_scenes import group_counts, scene_statistics, select_check_scenes, write_check_scenes
+    from fogseg.label_store import label_store_path
+
+    cfg = load_config(args.config)
+    labels_cfg = cfg["labels"]
+    mode = args.labels or labels_cfg["mode"]
+
+    dataset_path = Path(cfg["data"]["processed_path"])
+    store_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
+    with (
+        xr.open_zarr(dataset_path, consolidated=False) as data,
+        xr.open_zarr(store_path, consolidated=False) as labels,
+    ):
+        stats = scene_statistics(data, labels)
+
+    selected = select_check_scenes(stats)
+    out_path = Path(args.config).parent / "check_scenes.yaml"
+    write_check_scenes(selected, mode, out_path)
+    log.info("Wrote %d check scenes to %s", len(selected), out_path)
+    log.info("Scenes per group: %s", group_counts(selected))
+
+
 def cmd_check(args: argparse.Namespace) -> None:
     """Test EUMETSAT access in seconds: token, search, and the first 1 KB of one download."""
     from fogseg.download import connect, find_product
@@ -262,6 +287,15 @@ def main() -> None:
         "--labels", choices=["fixed", "dynamic"], help="default: labels.mode of the config"
     )
     inspect_cmd.set_defaults(func=cmd_inspect)
+
+    select_scenes = sub.add_parser(
+        "select-scenes", help="choose the training-season scenes to check, into check_scenes.yaml"
+    )
+    select_scenes.add_argument("--config", default="configs/default.yaml")
+    select_scenes.add_argument(
+        "--labels", choices=["fixed", "dynamic"], help="default: labels.mode of the config"
+    )
+    select_scenes.set_defaults(func=cmd_select_scenes)
 
     args = parser.parse_args()
     cfg = load_config(args.config)
