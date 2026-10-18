@@ -117,6 +117,32 @@ def cmd_label(args: argparse.Namespace) -> None:
     log.info("Mean fog fraction over scenes with night pixels: %.4f", mean_fog_fraction)
 
 
+def cmd_inspect(args: argparse.Namespace) -> None:
+    import pandas as pd
+    import xarray as xr
+
+    from fogseg.dynamic_threshold import DynamicParams
+    from fogseg.inspect import inspect_figure
+    from fogseg.label_store import label_store_path
+    from fogseg.labels import LabelParams
+
+    cfg = load_config(args.config)
+    labels_cfg = cfg["labels"]
+    mode = args.labels or labels_cfg["mode"]
+    params = LabelParams.from_config(labels_cfg)
+    dynamic = DynamicParams.from_config(labels_cfg["dynamic"])
+
+    dataset_path = Path(cfg["data"]["processed_path"])
+    store_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
+    with (
+        xr.open_zarr(dataset_path, consolidated=False) as data,
+        xr.open_zarr(store_path, consolidated=False) as labels,
+    ):
+        wanted = pd.Timestamp(args.time)
+        png = inspect_figure(data, labels, wanted, params, dynamic, Path(labels_cfg["figures_dir"]))
+    log.info("Wrote %s", png)
+
+
 def cmd_check(args: argparse.Namespace) -> None:
     """Test EUMETSAT access in seconds: token, search, and the first 1 KB of one download."""
     from fogseg.download import connect, find_product
@@ -226,6 +252,16 @@ def main() -> None:
     label.add_argument("--mode", choices=["fixed", "dynamic"], help="default: labels.mode of the config")
     label.add_argument("--overwrite", action="store_true", help="replace the label store if it exists")
     label.set_defaults(func=cmd_label)
+
+    inspect_cmd = sub.add_parser(
+        "inspect", help="write a check figure of one scene (RGB, labels, histogram, sza)"
+    )
+    inspect_cmd.add_argument("--config", default="configs/default.yaml")
+    inspect_cmd.add_argument("--time", required=True, help="scene time in UTC, e.g. 2023-11-21T00:00")
+    inspect_cmd.add_argument(
+        "--labels", choices=["fixed", "dynamic"], help="default: labels.mode of the config"
+    )
+    inspect_cmd.set_defaults(func=cmd_inspect)
 
     args = parser.parse_args()
     cfg = load_config(args.config)
