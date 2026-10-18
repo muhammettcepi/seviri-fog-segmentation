@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "fogseg"
 version = "0.1.0"
 description = "Night-time fog / low stratus segmentation from Meteosat SEVIRI"
+readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
