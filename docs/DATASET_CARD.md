@@ -20,6 +20,7 @@ Open it with:
 
 ```python
 import xarray as xr
+
 ds = xr.open_zarr("seviri_ceu.zarr", consolidated=False)
 ```
 
