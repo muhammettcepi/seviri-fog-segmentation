@@ -62,7 +62,7 @@ def fetch_with_retry(slot: dt.datetime, collection, cfg: dict) -> str:
     while not _stop.is_set():
         try:
             return fetch_one(slot, collection, cfg)
-        except Exception as err:  # network hiccups, server errors, corrupt downloads, refused access
+        except Exception as err:  # noqa: BLE001 - any failure of one scene must not stop the whole run
             status, message = server_message(err)
             if status == 403:
                 # EUMETSAT sometimes refuses all downloads for a while ("GeneralLicense required"),
@@ -83,6 +83,16 @@ def fetch_with_retry(slot: dt.datetime, collection, cfg: dict) -> str:
                 return "failed"
             time.sleep(30 * attempt)
     return "skipped"
+
+
+def cmd_build(args: argparse.Namespace) -> None:
+    from fogseg.build import build_zarr
+
+    cfg = load_config(args.config)
+    out_path = Path(cfg["data"]["processed_path"])
+    started = time.time()
+    n = build_zarr(Path(cfg["data"]["interim_dir"]), out_path, cfg["channels"], overwrite=args.overwrite)
+    log.info("Wrote %d scenes to %s in %.0f s", n, out_path, time.time() - started)
 
 
 def cmd_check(args: argparse.Namespace) -> None:
@@ -113,7 +123,7 @@ def cmd_check(args: argparse.Namespace) -> None:
         try:
             with prod.open(entry=ent, chunk=(0, 1024)) as stream:
                 print(f"[OK]     {name}: received {len(stream.read())} bytes")
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - report every failure kind, then test the next one
             info = getattr(err, "extra_info", None) or {}
             texts = [e.get("exceptionText") for e in info.get("exceptions", [])]
             print(f"[FAILED] {name}: status {info.get('status')} {texts or err}")
@@ -180,6 +190,11 @@ def main() -> None:
     check.add_argument("--config", default="configs/default.yaml")
     check.set_defaults(func=cmd_check)
 
+    build = sub.add_parser("build", help="stack all cropped scenes into one ML-ready Zarr store")
+    build.add_argument("--config", default="configs/default.yaml")
+    build.add_argument("--overwrite", action="store_true", help="rebuild if the store already exists")
+    build.set_defaults(func=cmd_build)
+
     args = parser.parse_args()
     cfg = load_config(args.config)
     log_dir = Path(cfg["data"]["log_dir"])
@@ -187,7 +202,7 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[logging.StreamHandler(), logging.FileHandler(log_dir / "fetch.log")],
+        handlers=[logging.StreamHandler(), logging.FileHandler(log_dir / f"{args.command}.log")],
     )
     args.func(args)
 

@@ -21,11 +21,14 @@ During the day, reflected sunlight at 3.9 µm hides this signal, so the project 
 | Access a first scene with `eumdac` + `satpy` (Colab how-to) | [`notebooks/01_access_seviri_data.ipynb`](notebooks/01_access_seviri_data.ipynb) |
 | Resumable bulk download → crop → small NetCDF per scene | `fogseg fetch` ([`src/fogseg/cli.py`](src/fogseg/cli.py)) |
 | Quick access test (token, search, 1 KB download) | `fogseg check` |
+| Stack all scenes into one ML-ready Zarr store | `fogseg build` ([`src/fogseg/build.py`](src/fogseg/build.py)) |
 | All settings (region, channels, seasons, night slots, paths) | [`configs/default.yaml`](configs/default.yaml) |
+| Tests on tiny synthetic scenes (no data or credentials needed) | `pytest` ([`tests/`](tests/)) |
 
-Dataset so far: 608 night scenes (two fog seasons, Oct–Feb 2023/24 and 2024/25, 4 slots per
-night, every second night), 8 IR channels on SEVIRI's native grid, cropped to 2–20°E, 43–55°N
-(241 × 462 pixels).
+Dataset: 608 night scenes (two fog seasons, Oct–Feb 2023/24 and 2024/25, 4 slots per night,
+every second night), 8 IR channels on SEVIRI's native grid, cropped to 2–20°E, 43–55°N
+(241 × 462 pixels), with per-pixel solar zenith angle and lat/lon. See the
+[dataset card](docs/DATASET_CARD.md).
 
 ## Quickstart (Linux / WSL)
 
@@ -39,6 +42,9 @@ read -s EUMETSAT_KEY && read -s EUMETSAT_SECRET && export EUMETSAT_KEY EUMETSAT_
 fogseg check                          # can we log in, search and download?
 fogseg fetch --dry-run                # how many scenes would be fetched
 fogseg fetch --workers 2              # download + crop all scenes (resumable)
+fogseg build                          # stack them into one Zarr store
+
+pip install -e ".[dev]" && pytest     # run the tests
 ```
 
 Paths in `configs/default.yaml` point to `/mnt/d/...` (a Windows D: drive seen from WSL); change

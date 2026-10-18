@@ -17,6 +17,7 @@ dependencies = [
     "netCDF4",
     "numpy",
     "pyyaml",
+    "zarr>=3",
 ]
 
 [project.optional-dependencies]
@@ -30,3 +31,6 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 110
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
