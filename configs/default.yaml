@@ -1,0 +1,29 @@
+# Central configuration for the fog segmentation pipeline.
+# Every script reads this file, so region, dates and paths are defined in exactly one place.
+
+data:
+  collection: "EO:EUM:DAT:MSG:HRSEVIRI"   # SEVIRI Level 1.5, 0° service, full disk every 15 min
+  # Raw full-disk files are big (~271 MB each) and only needed until they are cropped.
+  # Keep them on a disk with space (D:), NOT in the WSL home folder (that lives on C:).
+  raw_dir: "/mnt/d/fogseg-data/raw"
+  # Small cropped scenes (~1.5 MB each, ~1 GB in total). Copy this folder to
+  # Google Drive (MyDrive/fogseg/interim) when done, so Colab can read it.
+  interim_dir: "/mnt/d/fogseg-data/interim"
+  log_dir: "/mnt/d/fogseg-data/logs"
+
+region:
+  name: "central_europe"
+  bbox: [2, 43, 20, 55]   # lon_min, lat_min, lon_max, lat_max (Po Valley, Swiss Plateau, Germany)
+
+channels: [IR_039, WV_062, WV_073, IR_087, IR_097, IR_108, IR_120, IR_134]
+
+time:
+  # Two fog seasons: one for training, one for testing (split by time, never randomly).
+  seasons:
+    - {name: "2023-24", start: "2023-10-01", end: "2024-02-29"}
+    - {name: "2024-25", start: "2024-10-01", end: "2025-02-28"}
+  # Night slots in UTC. Slots before noon belong to the morning after the night's start date.
+  slots: ["21:00", "00:00", "03:00", "05:00"]
+  # 2 = every second night: 608 scenes instead of 1212 (brief's target is 600-800).
+  # Consecutive nights are similar anyway, so skipping every other one loses little.
+  every_nth_night: 2

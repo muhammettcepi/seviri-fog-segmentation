@@ -1,0 +1,14 @@
+# Satellite data never goes into git
+data/
+*.nat
+*.zip
+*.nc
+*.zarr/
+
+# Experiment tracking, environments, caches
+mlruns/
+.venv/
+__pycache__/
+*.egg-info/
+.ipynb_checkpoints/
+.env

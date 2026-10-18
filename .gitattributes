@@ -1,0 +1,3 @@
+# Keep LF line endings in the working copy too: the code runs in WSL/Linux and CI
+* text=auto eol=lf
+*.png binary
