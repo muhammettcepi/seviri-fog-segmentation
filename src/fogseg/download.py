@@ -30,9 +30,9 @@ def find_product(collection, slot: dt.datetime):
     A full-disk scan takes ~12 minutes, so searching [slot+1min, slot+11min] only overlaps
     the scan that started at `slot`, not its neighbours.
     """
-    products = list(
-        collection.search(dtstart=slot + dt.timedelta(minutes=1), dtend=slot + dt.timedelta(minutes=11))
-    )
+    search_start = slot + dt.timedelta(minutes=1)
+    search_end = slot + dt.timedelta(minutes=11)
+    products = list(collection.search(dtstart=search_start, dtend=search_end))
     if not products:
         return None
 
