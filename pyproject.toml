@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "fogseg"
 version = "0.1.0"
 description = "Night-time fog / low stratus segmentation from Meteosat SEVIRI"
+readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
@@ -20,7 +21,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+# ruff is pinned: its default rule set changes between versions, and CI must lint like local runs
+dev = ["pytest", "ruff==0.17.*"]
 
 [project.scripts]
 fogseg = "fogseg.cli:main"

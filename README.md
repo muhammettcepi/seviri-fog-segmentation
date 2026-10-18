@@ -1,5 +1,7 @@
 # Night-time fog detection from Meteosat SEVIRI
 
+[![CI](https://github.com/muhammettcepi/seviri-fog-segmentation/actions/workflows/ci.yml/badge.svg)](https://github.com/muhammettcepi/seviri-fog-segmentation/actions/workflows/ci.yml)
+
 Segmenting fog and low stratus at night from Meteosat SEVIRI infrared imagery over Central Europe:
 a physics-based baseline (the 10.8 − 3.9 µm brightness temperature difference), weak labels derived
 from it, a small U-Net trained on them, and an evaluation of both against independent airport
@@ -43,6 +45,22 @@ fogseg fetch --workers 2              # download + crop all scenes (resumable)
 
 Paths in `configs/default.yaml` point to `/mnt/d/...` (a Windows D: drive seen from WSL); change
 them for your machine. Satellite data is never committed to this repository.
+
+## Branches, CI and releases
+
+`main` is the production branch: only released code lands there. Day-to-day work goes into
+`develop` through pull requests from feature branches (`feature/...`, `ci/...`).
+
+Every push to `main` or `develop` and every pull request runs `ruff`, `pytest` on Python 3.11–3.13,
+and a package build ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). To release, bump
+`version` in `pyproject.toml` on `develop`, merge `develop` into `main`, and tag the result on `main`:
+
+```bash
+git switch main && git pull && git tag v0.2.0 && git push origin v0.2.0
+```
+
+[`release.yml`](.github/workflows/release.yml) then checks the tag is on `main` and matches the
+version, reruns CI, publishes the package to PyPI and creates a GitHub Release with the built files.
 
 ## Data
 
