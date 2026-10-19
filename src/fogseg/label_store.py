@@ -67,7 +67,7 @@ def choose_threshold(
     params: LabelParams,
     dynamic: DynamicParams | None,
 ) -> ThresholdChoice:
-    """BTD threshold of one scene: `btd_fixed` in fixed mode, the histogram valley in dynamic mode."""
+    """BTD threshold of one scene: `btd_fixed` in fixed mode, the clear-ground peak plus an offset in dynamic mode."""
     if mode == "fixed":
         return ThresholdChoice(params.btd_fixed, "fixed")
     btd = histogram_pixels(ir039, ir108, ir120, sza, params)

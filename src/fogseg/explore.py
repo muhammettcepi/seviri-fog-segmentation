@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from fogseg.check_scenes import TRAINING_SEASON, season_of
-from fogseg.dynamic_threshold import smooth_counts
+from fogseg.dynamic_threshold import peak_in_window, smooth_counts
 
 # Spherical Earth with the equatorial radius SEVIRI's geostationary projection uses.
 EARTH_RADIUS_KM = 6378.169
@@ -102,21 +102,11 @@ def hump_peak(
     if samples.size < min_pixels:
         return float("nan")
 
-    # The histogram reaches a bit beyond the window, so the smoothing at the window edge still
-    # sees the pixels next to it; otherwise a hump rising at the edge would look like a peak.
-    margin_bins = SMOOTHING_BINS // 2
-    margin = margin_bins * bin_width
+    # Reaching a smoothing margin beyond the window, so a hump rising at the window edge does not
+    # look like a peak.
+    margin = (SMOOTHING_BINS // 2) * bin_width
     padded_window = (window[0] - margin, window[1] + margin)
-    n_bins = round((padded_window[1] - padded_window[0]) / bin_width)
-    counts, edges = np.histogram(samples, bins=n_bins, range=padded_window)
-    smoothed = smooth_counts(counts, SMOOTHING_BINS)
-
-    inside_window = smoothed[margin_bins : n_bins - margin_bins]
-    top = int(np.argmax(inside_window))
-    if top in (0, len(inside_window) - 1):
-        return float("nan")
-    top_bin = top + margin_bins
-    return float((edges[top_bin] + edges[top_bin + 1]) / 2)
+    return peak_in_window(samples, window, bin_width, padded_window, SMOOTHING_BINS)
 
 
 def valley_between(

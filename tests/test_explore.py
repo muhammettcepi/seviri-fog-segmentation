@@ -1,9 +1,13 @@
 """Tests for the helpers of the BTD exploration notebook."""
 
+import dataclasses
+
 import numpy as np
 import pandas as pd
 import pytest
+from helpers import PROVISIONAL_DYNAMIC
 
+from fogseg.dynamic_threshold import clear_ground_peak
 from fogseg.explore import (
     hump_peak,
     peaks_by_group,
@@ -97,6 +101,13 @@ def test_hump_peak_is_nan_when_the_top_lies_on_the_window_edge():
 
 def test_hump_peak_is_nan_for_too_few_pixels():
     assert np.isnan(hump_peak(np.array([2.0, 2.1, 2.2]), CLEAR_WINDOW, min_pixels=10))
+
+
+def test_hump_peak_agrees_with_the_production_peak_finder():
+    params = dataclasses.replace(PROVISIONAL_DYNAMIC, clear_window=CLEAR_WINDOW)
+    for seed in range(5):
+        btd = two_hump_btd(seed)
+        assert hump_peak(btd, CLEAR_WINDOW) == clear_ground_peak(btd, params)
 
 
 def test_valley_between_two_clear_humps_is_low_and_in_the_middle():

@@ -33,12 +33,10 @@ PROVISIONAL_DYNAMIC = DynamicParams(
     bin_width=0.25,
     bin_range=(-2.0, 8.0),
     smoothing_bins=3,
-    clear_window=(0.5, 3.0),
-    cloud_window=(3.0, 8.0),
+    clear_window=(1.5, 4.75),
+    offset=1.5,
     min_pixels=2000,
-    min_hump_share=0.05,
-    max_valley_ratio=0.5,
-    clamp=(1.5, 5.0),
+    clamp=(3.5, 6.0),
 )
 
 LABEL_NY, LABEL_NX = 8, 10
@@ -69,19 +67,24 @@ def make_scene(time: dt.datetime, value: float, x=None) -> xr.Dataset:
     )
 
 
-def make_label_dataset(path: Path, n_scenes: int = 3, scene_sza: dict[int, float] | None = None) -> Path:
+def make_label_dataset(
+    path: Path,
+    n_scenes: int = 3,
+    scene_sza: dict[int, float] | None = None,
+    background_btd: float = 1.8,
+) -> Path:
     """A tiny dataset in the layout `fogseg build` writes, for the label tests.
 
-    Each scene has a warm clear background (BTD 1.8 K) and a 5 x 5 fog patch (BTD 5.0 K) in the
-    corner, all with a flat IR_108 field. `scene_sza` maps a scene index to its solar zenith
-    angle; every other scene is in deep night.
+    Each scene has a warm clear background (BTD `background_btd` K) and a 5 x 5 fog patch
+    (BTD 5.0 K) in the corner, all with a flat IR_108 field. `scene_sza` maps a scene index to
+    its solar zenith angle; every other scene is in deep night.
     """
     times = np.datetime64("2023-11-20T21:00", "ns") + np.arange(n_scenes) * np.timedelta64(3, "h")
 
     bt = np.empty((n_scenes, len(CHANNELS), LABEL_NY, LABEL_NX), dtype="float32")
     bt[:, CHANNELS.index("IR_108")] = 270.0
     bt[:, CHANNELS.index("IR_120")] = 269.5
-    bt[:, CHANNELS.index("IR_039")] = 270.0 - 1.8
+    bt[:, CHANNELS.index("IR_039")] = 270.0 - background_btd
     bt[:, CHANNELS.index("IR_039"), :5, :5] = 270.0 - 5.0
 
     sza = np.full((n_scenes, LABEL_NY, LABEL_NX), DEEP_NIGHT_SZA, dtype="float32")

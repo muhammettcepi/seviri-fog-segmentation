@@ -26,7 +26,7 @@ from fogseg.config import load_config
 from fogseg.label_store import label_dataset, label_store_path, summarize_store
 from fogseg.labels import FOG, IGNORE
 
-# Small enough for the 80-pixel test scenes, so the dynamic threshold really finds the valley
+# Small enough for the 80-pixel test scenes, so the dynamic threshold really finds the clear-ground peak
 SMALL_SCENE_DYNAMIC = dataclasses.replace(PROVISIONAL_DYNAMIC, min_pixels=10)
 PATCH_PIXELS = 5 * 5
 SCENE_PIXELS = LABEL_NY * LABEL_NX
@@ -103,16 +103,19 @@ def test_dynamic_mode_records_threshold_source(tmp_path):
     assert sources <= {"dynamic", "fallback"}
 
 
-def test_dynamic_mode_uses_the_valley_threshold_when_the_histogram_has_two_humps(tmp_path):
-    data = make_label_dataset(tmp_path / "data.zarr")
+def test_dynamic_mode_puts_the_threshold_an_offset_above_the_clear_ground_peak(tmp_path):
+    clear_ground_btd = 3.0
+    data = make_label_dataset(tmp_path / "data.zarr", background_btd=clear_ground_btd)
     out = tmp_path / "labels_dynamic.zarr"
     label_dataset(data, out, "dynamic", PROVISIONAL, dynamic=SMALL_SCENE_DYNAMIC)
     labels = open_store(out)
 
     assert list(labels["threshold_source"].values) == ["dynamic"] * 3
     thresholds = labels["btd_threshold"].values
-    assert np.all((thresholds > 1.8) & (thresholds < 5.0))
+    one_bin = SMALL_SCENE_DYNAMIC.bin_width
+    np.testing.assert_allclose(thresholds, clear_ground_btd + SMALL_SCENE_DYNAMIC.offset, atol=one_bin)
     assert not np.allclose(thresholds, PROVISIONAL.btd_fixed)
+    np.testing.assert_allclose(labels["fog_fraction"].values, PATCH_PIXELS / SCENE_PIXELS)
 
 
 def test_fallback_scene_uses_the_fixed_threshold(tmp_path):
@@ -183,8 +186,12 @@ def test_dynamic_store_attrs_include_the_dynamic_params(tmp_path):
     assert attrs["dynamic_min_pixels"] == PROVISIONAL_DYNAMIC.min_pixels
     assert attrs["dynamic_bin_range"] == list(PROVISIONAL_DYNAMIC.bin_range)
     assert attrs["dynamic_clamp"] == list(PROVISIONAL_DYNAMIC.clamp)
+    assert attrs["dynamic_clear_window"] == list(PROVISIONAL_DYNAMIC.clear_window)
+    assert attrs["dynamic_offset"] == PROVISIONAL_DYNAMIC.offset
     for field in dataclasses.fields(PROVISIONAL_DYNAMIC):
         assert f"dynamic_{field.name}" in attrs
+    for removed in ["cloud_window", "min_hump_share", "max_valley_ratio"]:
+        assert f"dynamic_{removed}" not in attrs
 
 
 def test_missing_dataset_names_the_expected_path(tmp_path):
