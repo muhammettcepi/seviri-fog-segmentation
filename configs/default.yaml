@@ -31,15 +31,15 @@ time:
   every_nth_night: 2
 
 # Fog / low-stratus labels (0 not fog, 1 fog, 255 ignore).
-# Threshold values are provisional until docs/notes/btd_exploration.md.
+# Thresholds measured on the 2023-24 training season; evidence and reasons in docs/notes/btd_exploration.md.
 labels:
   mode: fixed   # fixed | dynamic
   output_dir: "/mnt/d/fogseg-data/processed"
   figures_dir: "/mnt/d/fogseg-data/figures/inspect"
   night_min_sza: 95.0
-  btd_fixed: 2.5
-  warm_min_bt108: 260.0
-  cirrus_max_split: 2.0
+  btd_fixed: 5.0
+  warm_min_bt108: 255.0
+  cirrus_max_split: 1.5
   smooth_max_std: 1.5
   uncertainty_band: 0.5
   min_blob_pixels: 5
