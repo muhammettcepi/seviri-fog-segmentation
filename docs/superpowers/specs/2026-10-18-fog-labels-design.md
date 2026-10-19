@@ -31,6 +31,7 @@ this is a documented limitation, not a bug.
 | Where labels live | **Separate store per mode** (`labels_fixed.zarr`, `labels_dynamic.zarr`), same `time/y/x` as the dataset | Both versions side by side; relabelling never touches the 803 MB dataset |
 | Thresholds | **Not fixed yet**: derived from a data exploration (Step 0) | A first look at real histograms showed clear ground near **+2 K**, not 0 K (CO₂ overlap of the 3.9 µm band), so guessed values would be wrong |
 | Scope | Quality over speed; no deadline pressure for this step | The project is presented as "under development" |
+| Dynamic method (after Step 0) | **Clear-ground peak + 1.5 K** per scene instead of the valley between two humps | On real data low cloud is a shoulder, not a second hump: the valley was found in 0 of 304 scenes (Section 5) |
 
 ## 3. Architecture
 
@@ -98,11 +99,11 @@ the 3.9 µm channel) or if IR_039, IR_108 or IR_120 is missing (e.g. the 1,238 i
 
 **Step 2, fog tests.** A night, valid pixel is a candidate only if all of these hold:
 
-| Test | Formula | Provisional value | Catches |
+| Test | Formula | Value (measured in Step 0) | Catches |
 |---|---|---|---|
-| Water droplets | `IR_108 − IR_039 > T_btd` | from Step 0 (fixed) / per scene (dynamic) | the fog signal |
-| Low cloud | `IR_108 ≥ T_warm` | 260 K | high, cold clouds |
-| Not thin cirrus | `IR_108 − IR_120 < T_cirrus` | 2.0 K | semi-transparent ice cloud |
+| Water droplets | `IR_108 − IR_039 > T_btd` | 5.0 K (fixed) / per scene (dynamic, Section 5) | the fog signal |
+| Low cloud | `IR_108 ≥ T_warm` | 255 K (260 K would drop 14 % of low cloud in Nov–Dec) | high, cold clouds |
+| Not thin cirrus | `IR_108 − IR_120 < T_cirrus` | 1.5 K (2.0 K would keep 7 % of thin cirrus) | semi-transparent ice cloud |
 | Smooth top | std. dev. of IR_108 in 3×3 window `< T_smooth` | 1.5 K | broken, convective cloud |
 
 **Step 3, cleanup.**
@@ -122,23 +123,32 @@ Per scene:
 
 1. **Histogram pixels**: night, valid, warm (`IR_108 ≥ T_warm`) and not thin cirrus, so the histogram
    contains clear ground and low cloud only.
-2. **Histogram** of BTD in fixed bins (provisional: 0.25 K from −2 to +8 K), lightly smoothed.
-3. **Two humps**: find the clear-ground hump and the low-cloud hump. Their expected BTD windows come from
-   Step 0 (the first look suggests clear ground near +2 K).
-4. **Threshold** = the minimum of the histogram between the two humps.
+2. **Histogram** of BTD in fixed bins (0.25 K from −2 to +8 K), lightly smoothed (3 bins).
+3. **Clear-ground peak**: the highest bin of the smoothed histogram inside the clear-ground window
+   (1.5 to 4.75 K).
+4. **Threshold** = clear-ground peak + offset (1.5 K).
+
+**Amended after Step 0 (2026-10-19, agreed with the project owner).** The first design looked for the
+valley between a clear-ground hump and a low-cloud hump. On the 304 training-season scenes, low cloud
+almost never forms a second hump: it is a shoulder on the clear-ground hump. The valley method found a
+valley in **0 of 304** scenes. The clear-ground peak, however, is found in 303 of 304 scenes, and where a
+valley does exist it lies 1.5 K above that peak (middle half 1.5–1.75 K). The peak moves between scenes
+(1.9–4.6 K), so measuring from it follows the scene the way the valley was meant to. Evidence:
+`notebooks/02_explore_btd.ipynb`, `docs/notes/btd_exploration.md`.
 
 **Safeguards**; if any fails, the scene uses the fixed threshold (`threshold_source = fallback`):
 
-| Condition | Provisional value |
+| Condition | Value |
 |---|---|
 | Enough histogram pixels | ≥ 2,000 |
-| Each hump holds enough pixels | ≥ 5 % of the histogram pixels |
-| Real valley | valley height ≤ 50 % of the smaller hump |
-| Plausible result | clamped to a range from Step 0 |
+| A real peak | the highest bin is not on the edge of the clear-ground window |
+| Plausible result | clamped to 3.5–6.0 K |
 
 **Not in scope now**: separate thresholds per satellite viewing-angle band (Cermak & Bendix). Step 0
-measures whether the clear-ground BTD drifts with viewing angle inside our region; bands are added only
-if it clearly does.
+found a clear-ground drift of about +1 K from 54° to 65° viewing angle, but viewing angle and latitude
+are almost the same thing in our region (correlation 0.96). The check scenes (Section 6.2) decide whether
+a viewing-angle correction is needed; until then a too-low margin in the north mostly produces `255`
+(uncertainty band), not false fog.
 
 ## 6. Exploration and checking
 
@@ -187,7 +197,7 @@ POD 71–74 %, FAR 15 % (low cloud), 34 % (ground fog). Not part of this PR.
 | Fog tests | warm + high BTD → 1; cold → 0; thin cirrus → 0; rough top → 0 |
 | Uncertainty band | BTD just above threshold → 255 |
 | Blob cleanup | 3-pixel island → 255; 10-pixel deck stays 1 |
-| Dynamic threshold | two humps → valley; one hump → fallback; extreme value → clamped |
+| Dynamic threshold | clear-ground hump → peak + offset; peak on the window edge or too few pixels → fallback; extreme value → clamped |
 | Label store | shape, `uint8`, metadata with all thresholds, overwrite refusal, no `.part` left after an error, `xr.merge` with the dataset aligns |
 
 ## 9. Error handling
@@ -224,7 +234,10 @@ Small reviewed commits; one PR into `develop`.
 - **Clear-ground BTD offset** (~+2 K in a first look): its cause (CO₂ overlap of the 3.9 µm band, viewing
   angle) and its variability decide whether a fixed threshold can work at all. Step 0 answers this.
 - **Scenes fully covered by low cloud** (no clear-ground hump, e.g. 10 Nov 2024) fall back to the fixed
-  threshold by design.
+  threshold by design. Risk of the peak + offset method: a deck of low cloud with a BTD inside the
+  clear-ground window (seen on 21 Nov 2023 at 4–5.5 K) could be taken for the ground peak, pushing the
+  threshold above the fog. The window's upper edge (4.75 K) and the clamp limit this; the check scenes
+  must show whether it happens.
 - **Snow-covered ground** can mimic low cloud in some tests; to be watched in the check scenes.
 - **Absolute warm-top threshold** may be too strict in cold air masses; Step 0 checks low-cloud tops by month.
 

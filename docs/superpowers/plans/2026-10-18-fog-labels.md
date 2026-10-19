@@ -239,6 +239,12 @@ def test_scene_without_night_pixels_is_all_ignored():
 
 ### Task 4: Dynamic BTD threshold
 
+> **Amended 2026-10-19 (after Task 2, Step 0).** The valley method below found a valley in 0 of 304
+> training-season scenes. With the project owner's agreement it is replaced by **clear-ground peak +
+> 1.5 K** (spec Section 5). A follow-up Task 4b reworks `dynamic_threshold.py`: `DynamicParams` loses
+> `cloud_window`, `min_hump_share` and `max_valley_ratio` and gains `offset`; values `clear_window`
+> [1.5, 4.75], `clamp` [3.5, 6.0]. The task text below is kept as the record of the first design.
+
 **Files:**
 - Create: `src/fogseg/dynamic_threshold.py`, `tests/test_dynamic_threshold.py`
 
