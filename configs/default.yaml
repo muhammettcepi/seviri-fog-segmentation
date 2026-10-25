@@ -33,7 +33,7 @@ time:
 # Fog / low-stratus labels (0 not fog, 1 fog, 255 ignore).
 # Thresholds measured on the 2023-24 training season; evidence and reasons in docs/notes/btd_exploration.md.
 labels:
-  mode: fixed   # fixed | dynamic
+  mode: dynamic   # fixed | dynamic; dynamic chosen on the check scenes, see docs/notes/label_check.md
   output_dir: "/mnt/d/fogseg-data/processed"
   figures_dir: "/mnt/d/fogseg-data/figures/inspect"
   night_min_sza: 95.0
