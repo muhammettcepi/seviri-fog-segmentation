@@ -87,11 +87,15 @@ Attributes: mode, every threshold used, fogseg version, source dataset path and 
 flowchart TD
     px["one pixel"] --> trust{"night and valid?<br/>sza > 95°, no NaN"}
     trust -- no --> ignore1["255 ignore"]
-    trust -- yes --> fog{"all four tests pass?<br/>BTD, warm top, no cirrus, smooth"}
-    fog -- no --> zero["0 not fog"]
-    fog -- yes --> clean{"BTD near threshold<br/>or tiny blob?"}
-    clean -- yes --> ignore2["255 ignore"]
-    clean -- no --> one["1 fog / low stratus"]
+    trust -- yes --> other{"warm top, no cirrus, smooth?"}
+    other -- no --> zero["0 not fog"]
+    other -- yes --> band{"BTD within the band of the threshold,<br/>above or below?"}
+    band -- yes --> ignore2["255 ignore"]
+    band -- no --> high{"BTD above the threshold?"}
+    high -- no --> zero
+    high -- yes --> tiny{"tiny blob?"}
+    tiny -- yes --> ignore3["255 ignore"]
+    tiny -- no --> one["1 fog / low stratus"]
 ```
 
 **Step 1, trust.** `255` if the solar zenith angle is ≤ 95° (twilight or day: reflected sunlight in
