@@ -13,12 +13,14 @@ import xarray as xr
 import yaml
 from helpers import CHANNELS, PROVISIONAL, make_label_dataset
 
-from fogseg.check_scenes import scene_statistics, season_of, select_check_scenes
+from fogseg.check_scenes import night_of, scene_statistics, season_of, select_check_scenes
 from fogseg.cli import cmd_select_scenes
 from fogseg.config import load_config
 from fogseg.label_store import label_dataset, label_store_path
 
 SCENES_PER_SEASON = 20
+SLOT_OFFSETS_HOURS = [0, 3, 6, 8]  # 21:00, 00:00, 03:00 and 05:00 UTC of one night
+CLI_SCENES = 120  # 15 nights of 8 scenes: enough nights for 15 check scenes
 TRAINING_FALLBACK_ROWS = [4, 9, 15]
 GROUP_SIZES = {"foggy": 3, "clear": 3, "high_cloud": 3, "twilight": 2, "fallback": 2, "spread": 2}
 
@@ -44,6 +46,43 @@ def make_stats(scenes_per_season: int = SCENES_PER_SEASON) -> pd.DataFrame:
             "threshold_source": sources,
         }
     )
+
+
+def make_night_stats(n_nights: int = 20) -> pd.DataFrame:
+    """Training-season statistics with the four slots of every night; some nights hold all the extremes."""
+    evenings = pd.date_range("2023-11-01 21:00", periods=n_nights, freq="D")
+    slots = [evening + pd.Timedelta(hours=hours) for evening in evenings for hours in SLOT_OFFSETS_HOURS]
+    n_scenes = len(slots)
+
+    rng = np.random.default_rng(1)
+    fog = rng.permutation(n_scenes) / n_scenes
+    high_cloud = rng.permutation(n_scenes) / n_scenes
+    twilight = rng.permutation(n_scenes) / n_scenes
+    night_number = np.repeat(np.arange(n_nights), len(SLOT_OFFSETS_HOURS))
+    fog[night_number < 3] += 10
+    high_cloud[(night_number >= 3) & (night_number < 6)] += 10
+    twilight[(night_number >= 6) & (night_number < 8)] += 10
+    return pd.DataFrame(
+        {
+            "time": slots,
+            "season": [season_of(time) for time in slots],
+            "fog_fraction": fog,
+            "high_cloud_fraction": high_cloud,
+            "twilight_fraction": twilight,
+            "threshold_source": "dynamic",
+        }
+    )
+
+
+def test_night_of_groups_the_slots_of_one_night():
+    slots = pd.DatetimeIndex(
+        ["2024-02-08 21:00", "2024-02-09 00:00", "2024-02-09 03:00", "2024-02-09 05:00", "2024-02-09 21:00"]
+    )
+
+    nights = night_of(slots)
+
+    expected = [pd.Timestamp("2024-02-08")] * 4 + [pd.Timestamp("2024-02-09")]
+    assert list(nights) == expected
 
 
 def test_season_runs_from_october_to_february():
@@ -116,6 +155,20 @@ def test_ties_go_to_the_earlier_scene():
     clear = list(selected.loc[selected["group"] == "clear", "time"])
     assert foggy == list(stats["time"][:3])
     assert clear == list(stats["time"][3:6])
+
+
+def test_selection_takes_at_most_one_scene_per_night():
+    stats = make_night_stats()
+
+    selected = select_check_scenes(stats)
+
+    nights = night_of(selected["time"])
+    assert len(selected) == 15
+    assert nights.is_unique
+    foggy_nights = night_of(selected.loc[selected["group"] == "foggy", "time"])
+    assert set(foggy_nights) == set(night_of(stats["time"][:12]))
+    spread_hours = selected.loc[selected["group"] == "spread", "time"].dt.hour
+    assert list(spread_hours) == [21] * len(spread_hours)
 
 
 def test_selection_with_few_training_scenes_returns_them_all():
@@ -207,7 +260,7 @@ def write_config(tmp_path: Path, dataset: Path, mode: str) -> Path:
 
 
 def test_cli_writes_the_check_scenes_next_to_the_config(tmp_path, caplog):
-    dataset_path = make_label_dataset(tmp_path / "data.zarr", n_scenes=20)
+    dataset_path = make_label_dataset(tmp_path / "data.zarr", n_scenes=CLI_SCENES)
     label_dataset(dataset_path, label_store_path(tmp_path / "labels", "fixed"), "fixed", PROVISIONAL)
     config = write_config(tmp_path, dataset_path, mode="fixed")
 
@@ -219,7 +272,7 @@ def test_cli_writes_the_check_scenes_next_to_the_config(tmp_path, caplog):
     assert list(written) == ["labels", "scenes"]
     assert written["labels"] == "fixed"
     assert len(written["scenes"]) == 15
-    dataset_times = pd.date_range("2023-11-20 21:00", periods=20, freq="3h")
+    dataset_times = pd.date_range("2023-11-20 21:00", periods=CLI_SCENES, freq="3h")
     for scene in written["scenes"]:
         assert list(scene) == ["time", "group"]
         assert pd.Timestamp(scene["time"]) in dataset_times

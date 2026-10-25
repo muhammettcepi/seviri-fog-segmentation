@@ -2,7 +2,8 @@
 
 About 15 training-season scenes that cover the cases the labels can get wrong: much fog, no fog,
 high cloud, twilight, fallback thresholds, and the rest spread over the season. The choice depends
-only on the data, so it is the same every time.
+only on the data, so it is the same every time. Neighbouring slots of one night look alike, so no
+night supplies more than one scene.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from fogseg.build import CHUNK_TIME
 TRAINING_SEASON = "2023-24"
 HIGH_CLOUD_MAX_BT108 = 240.0  # K
 BATCH_SCENES = 4 * CHUNK_TIME
+NIGHT_SPLIT = pd.Timedelta(hours=12)  # moves the small hours back to the evening they belong to
 
 N_FOGGY = 3
 N_CLEAR = 3
@@ -35,6 +37,11 @@ def season_of(time: pd.Timestamp) -> str:
     """Fog season of a scene: October 2023 to February 2024 is "2023-24"."""
     start_year = time.year if time.month >= 10 else time.year - 1
     return f"{start_year}-{(start_year + 1) % 100:02d}"
+
+
+def night_of(times: pd.DatetimeIndex | pd.Series) -> pd.DatetimeIndex:
+    """The night of each scene, as the date of its evening: 21:00 on D and 00, 03, 05 UTC on D+1 give D."""
+    return (pd.DatetimeIndex(times) - NIGHT_SPLIT).normalize()
 
 
 def share(part: np.ndarray, whole: np.ndarray) -> np.ndarray:
@@ -94,10 +101,22 @@ def scene_statistics(dataset: xr.Dataset, labels: xr.Dataset) -> pd.DataFrame:
     return stats.sort_values("time").reset_index(drop=True)
 
 
+def first_of_each_night(ordered: pd.DataFrame) -> pd.DataFrame:
+    """The first row of every night in `ordered`, in the same order."""
+    is_repeat = night_of(ordered["time"]).duplicated()
+    return ordered[~is_repeat]
+
+
+def without_nights_of(candidates: pd.DataFrame, picked: pd.DataFrame) -> pd.DataFrame:
+    """The candidates from nights that `picked` has no scene in."""
+    is_picked_night = night_of(candidates["time"]).isin(night_of(picked["time"]))
+    return candidates[~is_picked_night]
+
+
 def top_scenes(candidates: pd.DataFrame, column: str, n: int, highest: bool) -> pd.DataFrame:
-    """The `n` candidates with the highest (or lowest) `column`; ties go to the earlier time."""
+    """The best scene of each of the `n` best nights, by `column` (highest or lowest); ties go to the earlier time."""
     ordered = candidates.sort_values([column, "time"], ascending=[not highest, True])
-    return ordered.head(n)
+    return first_of_each_night(ordered).head(n)
 
 
 def pick_group(candidates: pd.DataFrame, group: str) -> pd.DataFrame:
@@ -112,16 +131,16 @@ def pick_group(candidates: pd.DataFrame, group: str) -> pd.DataFrame:
         return top_scenes(candidates, "twilight_fraction", N_TWILIGHT, highest=True)
     if group == "fallback":
         fallback = candidates[candidates["threshold_source"] == "fallback"]
-        return fallback.sort_values("time").head(N_FALLBACK)
+        return first_of_each_night(fallback.sort_values("time")).head(N_FALLBACK)
     raise ValueError(f"unknown group {group!r}")
 
 
 def spread_scenes(candidates: pd.DataFrame, n: int) -> pd.DataFrame:
-    """`n` candidates at evenly spaced positions in time order (all of them if there are fewer)."""
-    n = min(n, len(candidates))
+    """The earliest scene of `n` nights spaced evenly in time (of all nights if there are fewer)."""
+    ordered = first_of_each_night(candidates.sort_values("time"))
+    n = min(n, len(ordered))
     if n <= 0:
-        return candidates.head(0)
-    ordered = candidates.sort_values("time")
+        return ordered.head(0)
     positions = np.unique(np.round(np.linspace(0, len(ordered) - 1, n)).astype(int))
     return ordered.iloc[positions]
 
@@ -133,7 +152,7 @@ def select_check_scenes(stats: pd.DataFrame) -> pd.DataFrame:
     for group in GROUPS:
         picked = pick_group(remaining, group)
         selected.append(picked.assign(group=group))
-        remaining = remaining.drop(index=picked.index)
+        remaining = without_nights_of(remaining, picked)
 
     n_picked = sum(len(picked) for picked in selected)
     spread = spread_scenes(remaining, N_CHECK_SCENES - n_picked)
