@@ -75,7 +75,7 @@ this spec are **provisional starting points**; Step 0 replaces them with measure
 | `label` | time, y, x | `uint8` | `0`, `1` or `255` |
 | `btd_threshold` | time | `float32` | BTD threshold actually used for the scene (K) |
 | `threshold_source` | time | string | `fixed`, `dynamic` or `fallback` |
-| `fog_fraction` | time | `float32` | share of night, valid pixels labelled `1` |
+| `fog_fraction` | time | `float32` | share of the decided pixels (labelled 0 or 1, not 255) that are `1` |
 | `ignore_fraction` | time | `float32` | share of all pixels labelled `255` |
 
 Coordinates `time`, `y`, `x` are identical to the dataset, so `xr.merge([dataset, labels])` aligns them.

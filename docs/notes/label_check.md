@@ -53,7 +53,7 @@ A pixel is ignored when it is too close to the sun (twilight), when a channel is
 0.5 K of the threshold on the fog side, or when it is in a fog patch smaller than 5 pixels. The hatching along the edges
 of fog decks is the 0.5 K band.
 
-"Fog fraction" below is the share of *labelled* (not ignored) pixels that are fog. Fog and low stratus cannot be told
+"Fog fraction" below is the share of the *decided* pixels (label 0 or 1, not ignored) that are fog. Fog and low stratus cannot be told
 apart from the satellite, so "fog" here means a low water-cloud deck that may or may not touch the ground.
 
 ## Results
@@ -76,7 +76,8 @@ apart from the satellite, so "fog" here means a low water-cloud deck that may or
 | 2024-02-26 21:00 | spread | 0.026 | 0.023 | 5.12 | dynamic |
 | 2024-02-29 03:00 | foggy | 0.228 | 0.250 | 4.62 | dynamic |
 
-Over all 608 scenes the mean fog fraction is 0.0851 (fixed) and 0.0920 (dynamic). The dynamic run used the dynamic
+The mean of the per-scene fog fractions over all 608 scenes (scenes without any decided pixel left out) is 0.0851
+(fixed) and 0.0920 (dynamic). The dynamic run used the dynamic
 threshold in 581 scenes and fell back in 27 (all seasons); in the training season, 293 dynamic and 11 fallback.
 
 ### What the groups show
@@ -102,7 +103,7 @@ whether it is a thin low deck or something higher. This is the "deck inside the 
 trusted when the sun is near. Only a few small patches west of the line are labelled. The same happens on the other
 scenes with a visible line (8 Oct, 20 Oct, 24 Oct, 17 Feb, 7 Nov).
 
-**Fallback (10 Dec, 27 Dec).** The ground hump is not found inside the window (it lies at or above its upper edge,
+**Fallback (10 Dec, 27 Dec).** The ground hump is not found inside the window (it lies at or near its upper edge,
 4.75 K), so the fixed 5.0 K is used. On 27 December the core of the green deck in the south is labelled, the edges are
 patchy. 10 December is discussed under the tuning steps.
 
@@ -161,31 +162,85 @@ the same label in fixed and dynamic mode, so the choice of mode does not make th
 
 ## Hero nights
 
-Two nights with an independent source that says there was fog or a low deck.
+Two nights, each with a related independent source. For 28 January the fit between source and labels is loose (see
+below); for 7 November it is good.
 
 ### Training season: 28 January 2024, 05:00 UTC
 
-The German weather service (DWD), "Thema des Tages" of 28 January 2024 by Nico Bauer, describes a high-pressure spell
-at the end of January with dense fog and low stratus that lingers for days, above all in wind-sheltered river valleys
-(Danube, parts of the Rhine) and around Lake Constance:
+The German weather service (DWD), "Thema des Tages" of 28 January 2024 by Nico Bauer, describes the high-pressure
+spell at the end of January in general terms: under persistent high pressure the weather can stay grey for days, and
+fog is most persistent in wind-sheltered river valleys (Danube, parts of the Rhine) and around Lake Constance:
 <https://www.wetterdienst.de/Deutschlandwetter/Thema_des_Tages/5686/der-januar-laeuft-zum-finale-zur-hochform-auf>.
-The article puts the high-pressure centre over southern Germany on 27 January, moving east.
+It puts the high-pressure centre over southern Germany on 27 January, moving east. It does not say where fog lay on
+the morning of 28 January.
 
 Labels: fixed 0.108, dynamic 0.149 (threshold 4.62 K, dynamic). The 03:00 scene gives 0.101 and 0.137.
 
 ![28 January 2024, dynamic labels](figures/hero_20240128T0500_dynamic.png)
 
-Where is the fog the labels found? The dataset has latitude and longitude for every pixel, so this can be counted.
-In rough boxes, the share of labelled pixels that are fog at 05:00: Poland 62 %, the Po Valley 53 %, Czechia, Slovakia
-and Hungary 12 %, and **Germany 0.7 % (southern Germany, the Danube box: 0 %; the Lake Constance area: 0 %)**. The
-largest connected fog area, about 6600 pixels, covers Poland and its neighbours (14 to 24 degrees East, 48.5 to
-55 degrees North); the next largest lies in the Po Valley.
+Where is the fog the labels found? The dataset has longitude and latitude for every pixel, so the labels can be
+counted inside boxes. The boxes are rough rectangles, not country borders. The five main boxes do not overlap; the
+last two lie inside the Germany box on purpose.
 
-So the picture agrees with the DWD article only loosely. It fits a high-pressure spell with low cloud in the east, in
-the region the high moved to. It does **not** show the German valley fog the article names, and it should not be
-presented as doing so. Valley fog is often narrower than a pixel (3 km at the sub-satellite point, larger here), and
-in this scene southern Germany is mostly clear land. The scene is useful as a large, plausible deck that both modes find;
-the independent source is context, not confirmation of this particular deck.
+| Box | Longitude (E) | Latitude (N) | Fog, 28 Jan 05:00 | Fog, 7 Nov 05:00 |
+|---|---|---|---|---|
+| Germany | 6 to 15 | 47.5 to 55 | 0.7 % | 84.9 % |
+| Poland | 15 to 24 | 49 to 54.5 | 61.8 % | 40.2 % |
+| Slovakia and Hungary | 15 to 22 | 46 to 49 | 7.3 % | 13.0 % |
+| Po Valley | 8 to 13 | 44.7 to 45.8 | 52.7 % | 27.7 % |
+| France | 2 to 6 | 44 to 50 | 0.0 % | 66.2 % |
+| Danube, southern Germany (inside Germany) | 8 to 13.5 | 47.8 to 49 | 0.0 % | 98.5 % |
+| Lake Constance (inside Germany, 168 pixels) | 8.8 to 10 | 47.5 to 47.8 | 0.0 % | 100.0 % |
+
+Each figure is the share of the decided pixels (label 0 or 1, not 255) in the box that are labelled fog. In the east
+on 7 November many pixels are twilight and ignored (34 % in the Poland box, 43 % in the Slovakia and Hungary box), so
+those two shares rest on fewer pixels. The numbers come from this code, which anyone with the dataset can re-run:
+
+```python
+import numpy as np
+import xarray as xr
+
+processed = "/mnt/d/fogseg-data/processed"
+dataset = xr.open_zarr(f"{processed}/seviri_ceu.zarr", consolidated=False)
+labels = xr.open_zarr(f"{processed}/labels_dynamic.zarr", consolidated=False)
+
+# (lon_min, lon_max, lat_min, lat_max) in degrees; the last two boxes lie inside "Germany"
+boxes = {
+    "Germany": (6, 15, 47.5, 55),
+    "Poland": (15, 24, 49, 54.5),
+    "Slovakia and Hungary": (15, 22, 46, 49),
+    "Po Valley": (8, 13, 44.7, 45.8),
+    "France": (2, 6, 44, 50),
+    "Danube, southern Germany": (8, 13.5, 47.8, 49),
+    "Lake Constance": (8.8, 10, 47.5, 47.8),
+}
+
+
+def fog_share(scene_time: str, box: tuple[float, float, float, float]) -> float:
+    """Share of the decided pixels (label 0 or 1) inside the box that are labelled 1."""
+    lon_min, lon_max, lat_min, lat_max = box
+    label = labels["label"].sel(time=np.datetime64(scene_time)).values
+    lon = dataset["lon"].values
+    lat = dataset["lat"].values
+    in_box = (lon >= lon_min) & (lon < lon_max) & (lat >= lat_min) & (lat < lat_max)
+    decided = in_box & (label != 255)
+    return float((label[decided] == 1).mean())
+
+
+for name, box in boxes.items():
+    print(name, round(fog_share("2024-01-28T05:00", box), 3))
+```
+
+The largest connected fog area on 28 January (about 6600 pixels) covers Poland and its neighbours, from about 14 to
+24 degrees East and 48.5 to about 55.4 degrees North; the next largest lies in the Po Valley.
+
+So the picture agrees with the DWD article only loosely. Large fog or low-stratus decks are found in the east and in the
+Po Valley, which fits the article's statement that the high-pressure centre moved east; that reading is my inference,
+the article does not mention low cloud there. The labels do **not** show the German valley fog that the article names
+(0 % in the Danube and Lake Constance boxes), and the scene should not be presented as showing it. One possible
+reason is that valley fog can be narrower than a pixel (3 km at the sub-satellite point, larger here); another is that
+there was none that morning. The satellite image alone cannot tell. The scene is useful as a large, plausible deck that
+both modes find; the DWD article is context, not confirmation of this particular deck.
 
 ### Test season, showcase only: 7 November 2024, 05:00 UTC
 
@@ -198,15 +253,15 @@ dense low-stratus deck lay over almost all of Germany that morning
 background on the "Dunkelflaute" of 2 to 7 November 2024 from Clean Energy Wire
 (<https://www.cleanenergywire.org/news/climate-change-unlikely-increase-dunkelflaute-events-central-europe-weather-service>).
 
-Labels: fixed 0.438, dynamic 0.500, threshold 4.62 K. In the labels about 85 % of labelled pixels in Germany are fog
-(98 % in the southern Danube box), which agrees with the caption.
+Labels: fixed 0.438, dynamic 0.500, threshold 4.62 K. In the labels 84.9 % of the decided pixels in the Germany box are
+fog (98.5 % in the Danube box, see the table above), which agrees with the caption.
 
 ![7 November 2024, dynamic labels](figures/showcase_20241107T0500_dynamic.png)
 
 This is the risk from the label design where a cloud deck covers most of the scene: the deck forms its own large hump,
 at 5.5 to 6.5 K and taller than the ground hump, which is at about 3 K. The ground peak was still found at the right
-place, the threshold, 3.1 K plus 1.5 K, falls in the valley, and the deck is labelled, so here the method was not
-fooled. That is one scene; it does not show the method is safe in general.
+place, and the threshold, 3.1 K plus 1.5 K, lands near the valley (the valley minimum is at about 4.0 K, so 4.62 K
+sits on the rising flank of the deck hump). The deck is labelled, so here the method was not fooled. That is one scene; it does not show the method is safe in general.
 
 ## Known limitations
 
@@ -234,9 +289,11 @@ Use **dynamic** as the default label mode (now set in `configs/default.yaml`).
   (12 January, 28 January).
 - Where it falls back (2 of the 15 check scenes, 11 of 304 training scenes), it uses the same 5.0 K as fixed mode, so
   the fallback cannot make it worse than the fixed mode.
-- In the test showcase (7 November 2024) it found the ground peak under a large deck.
 - The costs are known: on 12 January the threshold sits inside a hump, mild nights fall back to 5.0 K, and a low deck
   inside the clear window is still a risk.
+
+All of this evidence is from the training season. The test-season showcase scene was looked at only afterwards and is
+not part of the case for dynamic labels.
 
 Keep `clear_window` at 1.5 to 4.75 K and all other values as they are. The next check that matters is against METAR
 observations, not another round of looking at pictures.
