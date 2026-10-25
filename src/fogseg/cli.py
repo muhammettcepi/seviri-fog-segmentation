@@ -114,7 +114,7 @@ def cmd_label(args: argparse.Namespace) -> None:
 
     source_counts, mean_fog_fraction = summarize_store(out_path)
     log.info("Threshold sources: %s", source_counts)
-    log.info("Mean fog fraction over scenes with night pixels: %.4f", mean_fog_fraction)
+    log.info("Mean fog fraction over scenes with decided pixels: %.4f", mean_fog_fraction)
 
 
 def cmd_inspect(args: argparse.Namespace) -> None:
@@ -123,14 +123,12 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 
     from fogseg.dynamic_threshold import DynamicParams
     from fogseg.inspect import inspect_figure
-    from fogseg.label_store import label_store_path
-    from fogseg.labels import LabelParams
+    from fogseg.label_store import label_store_path, stored_params
 
     cfg = load_config(args.config)
     labels_cfg = cfg["labels"]
     mode = args.labels or labels_cfg["mode"]
-    params = LabelParams.from_config(labels_cfg)
-    dynamic = DynamicParams.from_config(labels_cfg["dynamic"])
+    config_dynamic = DynamicParams.from_config(labels_cfg["dynamic"])
 
     dataset_path = Path(cfg["data"]["processed_path"])
     store_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
@@ -138,7 +136,11 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         xr.open_zarr(dataset_path, consolidated=False) as data,
         xr.open_zarr(store_path, consolidated=False) as labels,
     ):
+        # The figure must show the pixels the labels were made from, even after a config edit.
+        params, dynamic = stored_params(labels.attrs, config_dynamic)
         wanted = pd.Timestamp(args.time)
+        if wanted.tzinfo is not None:
+            wanted = wanted.tz_convert("UTC").tz_localize(None)
         png = inspect_figure(data, labels, wanted, params, dynamic, Path(labels_cfg["figures_dir"]))
     log.info("Wrote %s", png)
 

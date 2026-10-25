@@ -3,7 +3,7 @@ import warnings
 
 import numpy as np
 import pytest
-from helpers import PROVISIONAL
+from helpers import TEST_PARAMS
 
 from fogseg.config import load_config
 from fogseg.labels import (
@@ -54,7 +54,7 @@ def test_histogram_pixels_keep_only_warm_non_cirrus_night_pixels():
     ir039 = ir108 - 3.0
     ir120 = np.array([[269.5, 229.5, 266.0, 269.5]])
     sza = np.array([[120.0, 120.0, 120.0, 80.0]])
-    btd = histogram_pixels(ir039, ir108, ir120, sza, PROVISIONAL)
+    btd = histogram_pixels(ir039, ir108, ir120, sza, TEST_PARAMS)
     assert btd.tolist() == [3.0]
 
 
@@ -73,7 +73,7 @@ def scene(
     ir039_field = ir108_field - btd
     ir120_field = ir108_field - split
     sza_field = np.full((5, 5), sza)
-    return label_scene(ir039_field, ir108_field, ir120_field, sza_field, btd_threshold, PROVISIONAL)
+    return label_scene(ir039_field, ir108_field, ir120_field, sza_field, btd_threshold, TEST_PARAMS)
 
 
 def test_warm_high_btd_pixel_is_fog():
@@ -92,8 +92,28 @@ def test_low_btd_pixel_is_not_fog():
     assert scene(btd=1.0)[2, 2] == NO_FOG
 
 
-def test_borderline_btd_is_ignored():
+def test_borderline_btd_above_the_threshold_is_ignored():
     assert scene(btd=2.5 + 0.3, btd_threshold=2.5)[2, 2] == IGNORE
+
+
+def test_borderline_btd_below_the_threshold_is_ignored():
+    assert scene(btd=2.5 - 0.3, btd_threshold=2.5)[2, 2] == IGNORE
+
+
+def test_btd_clearly_below_the_threshold_is_not_fog():
+    assert scene(btd=2.5 - 0.7, btd_threshold=2.5)[2, 2] == NO_FOG
+
+
+def test_borderline_btd_below_the_threshold_of_a_cold_top_is_not_fog():
+    assert scene(btd=2.5 - 0.3, ir108=230.0, btd_threshold=2.5)[2, 2] == NO_FOG
+
+
+def test_borderline_btd_below_the_threshold_of_thin_cirrus_is_not_fog():
+    assert scene(btd=2.5 - 0.3, split=3.0, btd_threshold=2.5)[2, 2] == NO_FOG
+
+
+def test_borderline_btd_below_the_threshold_of_a_rough_top_is_not_fog():
+    assert scene(btd=2.5 - 0.3, checkerboard_amplitude=3.0, btd_threshold=2.5)[2, 2] == NO_FOG
 
 
 def test_rough_top_is_not_fog():
@@ -153,5 +173,5 @@ def test_small_fog_island_in_a_scene_is_ignored():
     ir039[5:7, 2:7] = ir108[5:7, 2:7] - 4.0  # 10 fog pixels
     ir120 = ir108 - 0.5
     sza = np.full((8, 8), 120.0)
-    labels = label_scene(ir039, ir108, ir120, sza, 2.5, PROVISIONAL)
+    labels = label_scene(ir039, ir108, ir120, sza, 2.5, TEST_PARAMS)
     assert labels[1, 2] == IGNORE and labels[5, 3] == FOG and labels[3, 3] == NO_FOG

@@ -3,12 +3,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from helpers import PROVISIONAL_DYNAMIC
+from helpers import TEST_DYNAMIC
 
 from fogseg.config import load_config
 from fogseg.dynamic_threshold import DynamicParams, ThresholdChoice, clear_ground_peak, dynamic_threshold
 
-PARAMS = PROVISIONAL_DYNAMIC
+PARAMS = TEST_DYNAMIC
 FIXED = 5.0
 ONE_BIN = PARAMS.bin_width
 
@@ -125,3 +125,34 @@ def test_params_have_exactly_the_clear_ground_peak_fields():
         "min_pixels",
         "clamp",
     ]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"clear_window": (8.5, 9.5)}, "clear_window"),
+        ({"clear_window": (-1.5, -1.0)}, "clear_window"),
+        ({"clear_window": (3.0, 3.5)}, "clear_window"),
+        ({"smoothing_bins": 4}, "smoothing_bins"),
+        ({"smoothing_bins": 0}, "smoothing_bins"),
+        ({"bin_width": 0.3}, "bin_width"),
+        ({"bin_width": 0.0}, "bin_width"),
+        ({"clamp": (6.0, 3.5)}, "clamp"),
+    ],
+)
+def test_invalid_dynamic_params_are_rejected_with_the_field_name(change, message):
+    with pytest.raises(ValueError, match=message):
+        dataclasses.replace(PARAMS, **change)
+
+
+def test_clear_window_with_three_bins_is_accepted():
+    params = dataclasses.replace(PARAMS, clear_window=(3.0, 3.75))
+    assert params.clear_window == (3.0, 3.75)
+
+
+def test_equal_clamp_limits_are_accepted():
+    assert dataclasses.replace(PARAMS, clamp=(5.0, 5.0)).clamp == (5.0, 5.0)
+
+
+def test_bin_width_that_divides_the_range_up_to_rounding_is_accepted():
+    assert dataclasses.replace(PARAMS, bin_width=0.1, bin_range=(-2.0, 8.0)).bin_width == 0.1

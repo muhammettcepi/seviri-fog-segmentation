@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 import yaml
-from helpers import CHANNELS, PROVISIONAL, make_label_dataset
+from helpers import CHANNELS, TEST_PARAMS, make_label_dataset
 
 from fogseg.check_scenes import night_of, scene_statistics, season_of, select_check_scenes
 from fogseg.cli import cmd_select_scenes
@@ -207,7 +207,7 @@ def test_scene_statistics_reads_store_and_computes_fractions(tmp_path):
     dataset_path = make_label_dataset(tmp_path / "data.zarr", n_scenes=4)
     store_path = label_store_path(tmp_path / "labels", "fixed")
     # A night limit other than 95 shows that the limit the labels were made with is used
-    params = dataclasses.replace(PROVISIONAL, night_min_sza=100.0)
+    params = dataclasses.replace(TEST_PARAMS, night_min_sza=100.0)
     label_dataset(dataset_path, store_path, "fixed", params)
 
     with (
@@ -239,7 +239,7 @@ def test_scene_statistics_reads_store_and_computes_fractions(tmp_path):
 def test_scene_statistics_rejects_a_label_store_of_other_scenes(tmp_path):
     dataset_path = make_label_dataset(tmp_path / "data.zarr", n_scenes=4)
     store_path = label_store_path(tmp_path / "labels", "fixed")
-    label_dataset(make_label_dataset(tmp_path / "other.zarr", n_scenes=3), store_path, "fixed", PROVISIONAL)
+    label_dataset(make_label_dataset(tmp_path / "other.zarr", n_scenes=3), store_path, "fixed", TEST_PARAMS)
 
     with (
         xr.open_zarr(dataset_path, consolidated=False) as data,
@@ -261,7 +261,7 @@ def write_config(tmp_path: Path, dataset: Path, mode: str) -> Path:
 
 def test_cli_writes_the_check_scenes_next_to_the_config(tmp_path, caplog):
     dataset_path = make_label_dataset(tmp_path / "data.zarr", n_scenes=CLI_SCENES)
-    label_dataset(dataset_path, label_store_path(tmp_path / "labels", "fixed"), "fixed", PROVISIONAL)
+    label_dataset(dataset_path, label_store_path(tmp_path / "labels", "fixed"), "fixed", TEST_PARAMS)
     config = write_config(tmp_path, dataset_path, mode="fixed")
 
     with caplog.at_level(logging.INFO, logger="fogseg"):

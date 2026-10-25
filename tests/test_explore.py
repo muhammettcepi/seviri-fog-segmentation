@@ -5,7 +5,7 @@ import dataclasses
 import numpy as np
 import pandas as pd
 import pytest
-from helpers import PROVISIONAL_DYNAMIC
+from helpers import TEST_DYNAMIC
 
 from fogseg.dynamic_threshold import clear_ground_peak
 from fogseg.explore import (
@@ -104,7 +104,7 @@ def test_hump_peak_is_nan_for_too_few_pixels():
 
 
 def test_hump_peak_agrees_with_the_production_peak_finder():
-    params = dataclasses.replace(PROVISIONAL_DYNAMIC, clear_window=CLEAR_WINDOW)
+    params = dataclasses.replace(TEST_DYNAMIC, clear_window=CLEAR_WINDOW)
     for seed in range(5):
         btd = two_hump_btd(seed)
         assert hump_peak(btd, CLEAR_WINDOW) == clear_ground_peak(btd, params)

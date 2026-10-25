@@ -86,17 +86,10 @@ def local_std(field: np.ndarray, size: int = 3) -> np.ndarray:
     return np.where(has_valid, std, np.nan)
 
 
-def fog_candidates(
-    ir039: np.ndarray,
-    ir108: np.ndarray,
-    ir120: np.ndarray,
-    btd_threshold: float,
-    params: LabelParams,
-) -> np.ndarray:
-    """Pixels passing all four fog tests: high BTD, warm top, no thin cirrus, smooth IR_108 texture."""
-    has_high_btd = (ir108 - ir039) > btd_threshold
+def passes_other_tests(ir108: np.ndarray, ir120: np.ndarray, params: LabelParams) -> np.ndarray:
+    """Pixels passing the fog tests besides the BTD: warm top, no thin cirrus, smooth IR_108 texture."""
     is_smooth = local_std(ir108) < params.smooth_max_std
-    return has_high_btd & warm_and_not_cirrus(ir108, ir120, params) & is_smooth
+    return warm_and_not_cirrus(ir108, ir120, params) & is_smooth
 
 
 def small_blobs(mask: np.ndarray, min_pixels: int) -> np.ndarray:
@@ -117,17 +110,22 @@ def label_scene(
     btd_threshold: float,
     params: LabelParams,
 ) -> np.ndarray:
-    """Label one scene: 0 not fog, 1 fog, 255 where the pixel is untrusted or the call is too uncertain."""
+    """Label one scene: 0 not fog, 1 fog, 255 where the pixel is untrusted or the call is too uncertain.
+
+    A pixel that passes the other fog tests is uncertain when its BTD lies within `uncertainty_band`
+    of the threshold on either side; small fog blobs are then found among the remaining fog pixels.
+    """
     trusted = trusted_mask(ir039, ir108, ir120, sza, params.night_min_sza)
-    candidates = fog_candidates(ir039, ir108, ir120, btd_threshold, params) & trusted
+    fog_like = trusted & passes_other_tests(ir108, ir120, params)
+
+    btd = ir108 - ir039
+    is_uncertain = fog_like & (np.abs(btd - btd_threshold) < params.uncertainty_band)
+    is_fog = fog_like & (btd > btd_threshold) & ~is_uncertain
 
     labels = np.full(ir108.shape, IGNORE, dtype=np.uint8)
     labels[trusted] = NO_FOG
-    labels[candidates] = FOG
-
-    btd = ir108 - ir039
-    near_threshold = np.abs(btd - btd_threshold) < params.uncertainty_band
-    labels[candidates & near_threshold] = IGNORE
+    labels[is_fog] = FOG
+    labels[is_uncertain] = IGNORE
 
     isolated = small_blobs(labels == FOG, params.min_blob_pixels)
     labels[isolated] = IGNORE

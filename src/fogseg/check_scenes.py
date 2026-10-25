@@ -34,7 +34,11 @@ SCENE_TIME_FORMAT = "%Y-%m-%dT%H:%M"  # what `fogseg inspect --time` accepts
 
 
 def season_of(time: pd.Timestamp) -> str:
-    """Fog season of a scene: October 2023 to February 2024 is "2023-24"."""
+    """Fog season of a scene: October 2023 to February 2024 is "2023-24".
+
+    March maps back to the previous season on purpose: the dataset holds 2025-03-01 00, 03 and 05 UTC,
+    the morning slots of the night of 28 February.
+    """
     start_year = time.year if time.month >= 10 else time.year - 1
     return f"{start_year}-{(start_year + 1) % 100:02d}"
 

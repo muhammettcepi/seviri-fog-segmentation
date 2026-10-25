@@ -19,8 +19,8 @@ NY, NX = 4, 6
 CHANNELS = ["IR_039", "IR_108", "IR_120"]
 TIMES = [dt.datetime(2023, 11, 21, 0), dt.datetime(2023, 11, 20, 21), dt.datetime(2023, 11, 21, 3)]
 
-# The provisional threshold values of the spec (the same as configs/default.yaml)
-PROVISIONAL = LabelParams(
+# Explicit threshold values for the tests; they do not follow configs/default.yaml
+TEST_PARAMS = LabelParams(
     night_min_sza=95.0,
     btd_fixed=2.5,
     warm_min_bt108=260.0,
@@ -29,7 +29,7 @@ PROVISIONAL = LabelParams(
     uncertainty_band=0.5,
     min_blob_pixels=5,
 )
-PROVISIONAL_DYNAMIC = DynamicParams(
+TEST_DYNAMIC = DynamicParams(
     bin_width=0.25,
     bin_range=(-2.0, 8.0),
     smoothing_bins=3,

@@ -14,8 +14,8 @@ from helpers import (
     LABEL_DATASET_CREATED,
     LABEL_NX,
     LABEL_NY,
-    PROVISIONAL,
-    PROVISIONAL_DYNAMIC,
+    TEST_DYNAMIC,
+    TEST_PARAMS,
     make_label_dataset,
 )
 
@@ -27,7 +27,7 @@ from fogseg.label_store import label_dataset, label_store_path, summarize_store
 from fogseg.labels import FOG, IGNORE
 
 # Small enough for the 80-pixel test scenes, so the dynamic threshold really finds the clear-ground peak
-SMALL_SCENE_DYNAMIC = dataclasses.replace(PROVISIONAL_DYNAMIC, min_pixels=10)
+SMALL_SCENE_DYNAMIC = dataclasses.replace(TEST_DYNAMIC, min_pixels=10)
 PATCH_PIXELS = 5 * 5
 SCENE_PIXELS = LABEL_NY * LABEL_NX
 
@@ -44,20 +44,20 @@ def test_label_store_path_is_named_after_the_mode(tmp_path):
 def test_store_has_spec_variables_and_aligns_with_the_dataset(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_fixed.zarr"
-    assert label_dataset(data, out, "fixed", PROVISIONAL) == 3
+    assert label_dataset(data, out, "fixed", TEST_PARAMS) == 3
     labels = open_store(out)
     assert labels["label"].dtype == np.uint8
     assert set(np.unique(labels["label"])) <= {0, 1, 255}
     assert list(labels["threshold_source"].values) == ["fixed"] * 3
     merged = xr.merge([open_store(data), labels])
     assert merged.sizes["time"] == 3
-    assert labels.attrs["btd_fixed"] == PROVISIONAL.btd_fixed
+    assert labels.attrs["btd_fixed"] == TEST_PARAMS.btd_fixed
 
 
 def test_store_variables_have_the_documented_layout(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_fixed.zarr"
-    label_dataset(data, out, "fixed", PROVISIONAL)
+    label_dataset(data, out, "fixed", TEST_PARAMS)
     labels = open_store(out)
 
     assert labels["label"].dims == ("time", "y", "x")
@@ -74,18 +74,18 @@ def test_store_variables_have_the_documented_layout(tmp_path):
 def test_fractions_count_fog_among_decided_pixels_and_ignore_among_all(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_fixed.zarr"
-    label_dataset(data, out, "fixed", PROVISIONAL)
+    label_dataset(data, out, "fixed", TEST_PARAMS)
     labels = open_store(out)
 
     assert (labels["label"] == FOG).sum(dim=["y", "x"]).values.tolist() == [PATCH_PIXELS] * 3
     np.testing.assert_allclose(labels["fog_fraction"].values, PATCH_PIXELS / SCENE_PIXELS)
     np.testing.assert_allclose(labels["ignore_fraction"].values, 0.0)
-    np.testing.assert_allclose(labels["btd_threshold"].values, PROVISIONAL.btd_fixed)
+    np.testing.assert_allclose(labels["btd_threshold"].values, TEST_PARAMS.btd_fixed)
 
 
 def test_ignore_fraction_is_taken_over_all_pixels(tmp_path):
     # the fog patch is 25 of 80 pixels; a 2.0 K band around BTD 5.0 K makes all of it uncertain
-    wide_band = dataclasses.replace(PROVISIONAL, btd_fixed=4.0, uncertainty_band=2.0)
+    wide_band = dataclasses.replace(TEST_PARAMS, btd_fixed=4.0, uncertainty_band=2.0)
     data = make_label_dataset(tmp_path / "data.zarr", n_scenes=1)
     out = tmp_path / "labels_fixed.zarr"
     label_dataset(data, out, "fixed", wide_band)
@@ -98,7 +98,7 @@ def test_ignore_fraction_is_taken_over_all_pixels(tmp_path):
 def test_dynamic_mode_records_threshold_source(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_dynamic.zarr"
-    label_dataset(data, out, "dynamic", PROVISIONAL, dynamic=PROVISIONAL_DYNAMIC)
+    label_dataset(data, out, "dynamic", TEST_PARAMS, dynamic=TEST_DYNAMIC)
     sources = set(open_store(out)["threshold_source"].values)
     assert sources <= {"dynamic", "fallback"}
 
@@ -107,25 +107,25 @@ def test_dynamic_mode_puts_the_threshold_an_offset_above_the_clear_ground_peak(t
     clear_ground_btd = 3.0
     data = make_label_dataset(tmp_path / "data.zarr", background_btd=clear_ground_btd)
     out = tmp_path / "labels_dynamic.zarr"
-    label_dataset(data, out, "dynamic", PROVISIONAL, dynamic=SMALL_SCENE_DYNAMIC)
+    label_dataset(data, out, "dynamic", TEST_PARAMS, dynamic=SMALL_SCENE_DYNAMIC)
     labels = open_store(out)
 
     assert list(labels["threshold_source"].values) == ["dynamic"] * 3
     thresholds = labels["btd_threshold"].values
     one_bin = SMALL_SCENE_DYNAMIC.bin_width
     np.testing.assert_allclose(thresholds, clear_ground_btd + SMALL_SCENE_DYNAMIC.offset, atol=one_bin)
-    assert not np.allclose(thresholds, PROVISIONAL.btd_fixed)
+    assert not np.allclose(thresholds, TEST_PARAMS.btd_fixed)
     np.testing.assert_allclose(labels["fog_fraction"].values, PATCH_PIXELS / SCENE_PIXELS)
 
 
 def test_fallback_scene_uses_the_fixed_threshold(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr", n_scenes=1)
     out = tmp_path / "labels_dynamic.zarr"
-    label_dataset(data, out, "dynamic", PROVISIONAL, dynamic=PROVISIONAL_DYNAMIC)
+    label_dataset(data, out, "dynamic", TEST_PARAMS, dynamic=TEST_DYNAMIC)
     labels = open_store(out)
 
     assert list(labels["threshold_source"].values) == ["fallback"]
-    np.testing.assert_allclose(labels["btd_threshold"].values, PROVISIONAL.btd_fixed)
+    np.testing.assert_allclose(labels["btd_threshold"].values, TEST_PARAMS.btd_fixed)
 
 
 def test_scene_without_night_gets_nan_fog_fraction(tmp_path):
@@ -133,7 +133,7 @@ def test_scene_without_night_gets_nan_fog_fraction(tmp_path):
     out = tmp_path / "labels_fixed.zarr"
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        label_dataset(data, out, "fixed", PROVISIONAL)
+        label_dataset(data, out, "fixed", TEST_PARAMS)
     labels = open_store(out)
 
     assert np.all(labels["label"].isel(time=1).values == IGNORE)
@@ -146,8 +146,8 @@ def test_batches_give_the_same_store_as_one_pass(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr", n_scenes=5, scene_sza={3: 80.0})
     one_pass = tmp_path / "one_pass.zarr"
     batched = tmp_path / "batched.zarr"
-    label_dataset(data, one_pass, "fixed", PROVISIONAL, batch=32)
-    label_dataset(data, batched, "fixed", PROVISIONAL, batch=2)
+    label_dataset(data, one_pass, "fixed", TEST_PARAMS, batch=32)
+    label_dataset(data, batched, "fixed", TEST_PARAMS, batch=2)
 
     xr.testing.assert_identical(open_store(one_pass).drop_attrs(), open_store(batched).drop_attrs())
 
@@ -155,19 +155,19 @@ def test_batches_give_the_same_store_as_one_pass(tmp_path):
 def test_dynamic_batches_keep_every_source_label(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr", n_scenes=3)
     out = tmp_path / "labels_dynamic.zarr"
-    label_dataset(data, out, "dynamic", PROVISIONAL, dynamic=PROVISIONAL_DYNAMIC, batch=1)
+    label_dataset(data, out, "dynamic", TEST_PARAMS, dynamic=TEST_DYNAMIC, batch=1)
     assert list(open_store(out)["threshold_source"].values) == ["fallback"] * 3
 
 
 def test_fixed_store_attrs_describe_the_run(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_fixed.zarr"
-    label_dataset(data, out, "fixed", PROVISIONAL)
+    label_dataset(data, out, "fixed", TEST_PARAMS)
     attrs = open_store(out).attrs
 
     assert attrs["mode"] == "fixed"
-    for field in dataclasses.fields(PROVISIONAL):
-        assert attrs[field.name] == getattr(PROVISIONAL, field.name)
+    for field in dataclasses.fields(TEST_PARAMS):
+        assert attrs[field.name] == getattr(TEST_PARAMS, field.name)
     assert not [key for key in attrs if key.startswith("dynamic_")]
     assert attrs["fogseg_version"] == fogseg.__version__
     assert attrs["source_dataset"] == str(data)
@@ -178,17 +178,17 @@ def test_fixed_store_attrs_describe_the_run(tmp_path):
 def test_dynamic_store_attrs_include_the_dynamic_params(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_dynamic.zarr"
-    label_dataset(data, out, "dynamic", PROVISIONAL, dynamic=PROVISIONAL_DYNAMIC)
+    label_dataset(data, out, "dynamic", TEST_PARAMS, dynamic=TEST_DYNAMIC)
     attrs = open_store(out).attrs
 
     assert attrs["mode"] == "dynamic"
-    assert attrs["dynamic_bin_width"] == PROVISIONAL_DYNAMIC.bin_width
-    assert attrs["dynamic_min_pixels"] == PROVISIONAL_DYNAMIC.min_pixels
-    assert attrs["dynamic_bin_range"] == list(PROVISIONAL_DYNAMIC.bin_range)
-    assert attrs["dynamic_clamp"] == list(PROVISIONAL_DYNAMIC.clamp)
-    assert attrs["dynamic_clear_window"] == list(PROVISIONAL_DYNAMIC.clear_window)
-    assert attrs["dynamic_offset"] == PROVISIONAL_DYNAMIC.offset
-    for field in dataclasses.fields(PROVISIONAL_DYNAMIC):
+    assert attrs["dynamic_bin_width"] == TEST_DYNAMIC.bin_width
+    assert attrs["dynamic_min_pixels"] == TEST_DYNAMIC.min_pixels
+    assert attrs["dynamic_bin_range"] == list(TEST_DYNAMIC.bin_range)
+    assert attrs["dynamic_clamp"] == list(TEST_DYNAMIC.clamp)
+    assert attrs["dynamic_clear_window"] == list(TEST_DYNAMIC.clear_window)
+    assert attrs["dynamic_offset"] == TEST_DYNAMIC.offset
+    for field in dataclasses.fields(TEST_DYNAMIC):
         assert f"dynamic_{field.name}" in attrs
     for removed in ["cloud_window", "min_hump_share", "max_valley_ratio"]:
         assert f"dynamic_{removed}" not in attrs
@@ -196,7 +196,7 @@ def test_dynamic_store_attrs_include_the_dynamic_params(tmp_path):
 
 def test_missing_dataset_names_the_expected_path(tmp_path):
     with pytest.raises(FileNotFoundError, match="nowhere.zarr"):
-        label_dataset(tmp_path / "nowhere.zarr", tmp_path / "labels.zarr", "fixed", PROVISIONAL)
+        label_dataset(tmp_path / "nowhere.zarr", tmp_path / "labels.zarr", "fixed", TEST_PARAMS)
 
 
 def test_missing_sza_is_reported(tmp_path):
@@ -205,7 +205,7 @@ def test_missing_sza_is_reported(tmp_path):
         tmp_path / "no_sza.zarr", zarr_format=3, consolidated=False
     )
     with pytest.raises(ValueError, match="sza"):
-        label_dataset(tmp_path / "no_sza.zarr", tmp_path / "labels.zarr", "fixed", PROVISIONAL)
+        label_dataset(tmp_path / "no_sza.zarr", tmp_path / "labels.zarr", "fixed", TEST_PARAMS)
     assert not (tmp_path / "labels.zarr").exists()
 
 
@@ -214,7 +214,7 @@ def test_missing_channel_is_reported(tmp_path):
     without_ir120 = xr.open_zarr(data, consolidated=False).sel(channel=["IR_039", "IR_108"])
     without_ir120.to_zarr(tmp_path / "two_channels.zarr", zarr_format=3, consolidated=False)
     with pytest.raises(ValueError, match="IR_120"):
-        label_dataset(tmp_path / "two_channels.zarr", tmp_path / "labels.zarr", "fixed", PROVISIONAL)
+        label_dataset(tmp_path / "two_channels.zarr", tmp_path / "labels.zarr", "fixed", TEST_PARAMS)
 
 
 def test_missing_bt_is_reported(tmp_path):
@@ -223,34 +223,34 @@ def test_missing_bt_is_reported(tmp_path):
         tmp_path / "no_bt.zarr", zarr_format=3, consolidated=False
     )
     with pytest.raises(ValueError, match="bt"):
-        label_dataset(tmp_path / "no_bt.zarr", tmp_path / "labels.zarr", "fixed", PROVISIONAL)
+        label_dataset(tmp_path / "no_bt.zarr", tmp_path / "labels.zarr", "fixed", TEST_PARAMS)
 
 
 def test_unknown_mode_is_rejected(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     with pytest.raises(ValueError, match="mode.*sometimes"):
-        label_dataset(data, tmp_path / "labels.zarr", "sometimes", PROVISIONAL)
+        label_dataset(data, tmp_path / "labels.zarr", "sometimes", TEST_PARAMS)
 
 
 def test_dynamic_mode_requires_dynamic_params(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     with pytest.raises(ValueError, match="dynamic"):
-        label_dataset(data, tmp_path / "labels_dynamic.zarr", "dynamic", PROVISIONAL)
+        label_dataset(data, tmp_path / "labels_dynamic.zarr", "dynamic", TEST_PARAMS)
 
 
 def test_refuses_to_overwrite_without_the_flag(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_fixed.zarr"
-    label_dataset(data, out, "fixed", PROVISIONAL)
+    label_dataset(data, out, "fixed", TEST_PARAMS)
     with pytest.raises(FileExistsError, match="labels_fixed.zarr"):
-        label_dataset(data, out, "fixed", PROVISIONAL)
+        label_dataset(data, out, "fixed", TEST_PARAMS)
 
 
 def test_overwrite_replaces_the_store(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_fixed.zarr"
-    label_dataset(data, out, "fixed", PROVISIONAL)
-    stricter = dataclasses.replace(PROVISIONAL, btd_fixed=4.0, uncertainty_band=0.1)
+    label_dataset(data, out, "fixed", TEST_PARAMS)
+    stricter = dataclasses.replace(TEST_PARAMS, btd_fixed=4.0, uncertainty_band=0.1)
     label_dataset(data, out, "fixed", stricter, overwrite=True)
 
     assert open_store(out).attrs["btd_fixed"] == 4.0
@@ -260,7 +260,7 @@ def test_overwrite_replaces_the_store(tmp_path):
 def test_failure_while_overwriting_keeps_the_old_store(tmp_path, monkeypatch):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_fixed.zarr"
-    label_dataset(data, out, "fixed", PROVISIONAL)
+    label_dataset(data, out, "fixed", TEST_PARAMS)
     before = open_store(out).load()
 
     real_label_scene = label_store.label_scene
@@ -274,7 +274,7 @@ def test_failure_while_overwriting_keeps_the_old_store(tmp_path, monkeypatch):
 
     monkeypatch.setattr(label_store, "label_scene", fail_on_second_scene)
     with pytest.raises(RuntimeError, match="simulated failure"):
-        label_dataset(data, out, "fixed", PROVISIONAL, overwrite=True, batch=1)
+        label_dataset(data, out, "fixed", TEST_PARAMS, overwrite=True, batch=1)
 
     xr.testing.assert_identical(open_store(out).load(), before)
     assert not out.with_name("labels_fixed.zarr.part").exists()
@@ -289,7 +289,7 @@ def test_failure_on_a_first_write_leaves_nothing_behind(tmp_path, monkeypatch):
 
     monkeypatch.setattr(label_store, "label_scene", always_fail)
     with pytest.raises(RuntimeError):
-        label_dataset(data, out, "fixed", PROVISIONAL)
+        label_dataset(data, out, "fixed", TEST_PARAMS)
     assert not out.exists()
     assert not out.with_name("labels_fixed.zarr.part").exists()
 
@@ -297,7 +297,7 @@ def test_failure_on_a_first_write_leaves_nothing_behind(tmp_path, monkeypatch):
 def test_summary_counts_sources_and_averages_fog_fraction_ignoring_nan(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr", scene_sza={1: 80.0})
     out = tmp_path / "labels_fixed.zarr"
-    label_dataset(data, out, "fixed", PROVISIONAL)
+    label_dataset(data, out, "fixed", TEST_PARAMS)
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -309,7 +309,7 @@ def test_summary_counts_sources_and_averages_fog_fraction_ignoring_nan(tmp_path)
 def test_summary_of_a_store_without_any_night_is_nan(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr", n_scenes=1, scene_sza={0: 80.0})
     out = tmp_path / "labels_fixed.zarr"
-    label_dataset(data, out, "fixed", PROVISIONAL)
+    label_dataset(data, out, "fixed", TEST_PARAMS)
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")

@@ -1,6 +1,7 @@
 """Tests for the check figures and `fogseg inspect`."""
 
 import argparse
+import dataclasses
 import logging
 import warnings
 from pathlib import Path
@@ -10,12 +11,13 @@ import pandas as pd
 import pytest
 import xarray as xr
 import yaml
-from helpers import PROVISIONAL, PROVISIONAL_DYNAMIC, make_label_dataset
+from helpers import TEST_DYNAMIC, TEST_PARAMS, make_label_dataset
 
 from fogseg.cli import cmd_inspect
 from fogseg.config import load_config
 from fogseg.inspect import find_scene, histogram_title, inspect_figure, night_microphysics_rgb
-from fogseg.label_store import label_dataset, label_store_path
+from fogseg.label_store import label_dataset, label_store_path, stored_params
+from fogseg.labels import LabelParams
 
 WANTED = pd.Timestamp("2023-11-21 00:00")  # the second scene of the synthetic dataset
 
@@ -23,8 +25,8 @@ WANTED = pd.Timestamp("2023-11-21 00:00")  # the second scene of the synthetic d
 def make_stores(tmp_path: Path, mode: str = "fixed") -> tuple[Path, Path]:
     dataset_path = make_label_dataset(tmp_path / "data.zarr")
     store_path = label_store_path(tmp_path / "labels", mode)
-    dynamic = PROVISIONAL_DYNAMIC if mode == "dynamic" else None
-    label_dataset(dataset_path, store_path, mode, PROVISIONAL, dynamic)
+    dynamic = TEST_DYNAMIC if mode == "dynamic" else None
+    label_dataset(dataset_path, store_path, mode, TEST_PARAMS, dynamic)
     return dataset_path, store_path
 
 
@@ -93,7 +95,7 @@ def test_inspect_writes_a_png(tmp_path):
     dataset_path, store_path = make_stores(tmp_path)
     out_dir = tmp_path / "figures"
     with open_zarr(dataset_path) as data, open_zarr(store_path) as labels:
-        png = inspect_figure(data, labels, WANTED, PROVISIONAL, PROVISIONAL_DYNAMIC, out_dir)
+        png = inspect_figure(data, labels, WANTED, TEST_PARAMS, TEST_DYNAMIC, out_dir)
     assert png == out_dir / "inspect_fixed_20231121T0000.png"
     assert png.stat().st_size > 0
     assert png.read_bytes().startswith(b"\x89PNG")
@@ -102,7 +104,7 @@ def test_inspect_writes_a_png(tmp_path):
 def test_inspect_names_the_file_after_the_label_mode(tmp_path):
     dataset_path, store_path = make_stores(tmp_path, mode="dynamic")
     with open_zarr(dataset_path) as data, open_zarr(store_path) as labels:
-        png = inspect_figure(data, labels, WANTED, PROVISIONAL, PROVISIONAL_DYNAMIC, tmp_path / "figures")
+        png = inspect_figure(data, labels, WANTED, TEST_PARAMS, TEST_DYNAMIC, tmp_path / "figures")
     assert png.name == "inspect_dynamic_20231121T0000.png"
 
 
@@ -114,17 +116,17 @@ def test_inspect_handles_a_scene_with_day_and_night_pixels_without_warnings(tmp_
         data["sza"] = sza
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            png = inspect_figure(data, labels, WANTED, PROVISIONAL, PROVISIONAL_DYNAMIC, tmp_path / "figures")
+            png = inspect_figure(data, labels, WANTED, TEST_PARAMS, TEST_DYNAMIC, tmp_path / "figures")
     assert png.exists()
 
 
 def test_inspect_handles_a_scene_without_any_night_pixel(tmp_path):
     dataset_path = make_label_dataset(tmp_path / "data.zarr", scene_sza={1: 40.0})
     store_path = label_store_path(tmp_path / "labels", "fixed")
-    label_dataset(dataset_path, store_path, "fixed", PROVISIONAL)
+    label_dataset(dataset_path, store_path, "fixed", TEST_PARAMS)
     with open_zarr(dataset_path) as data, open_zarr(store_path) as labels, warnings.catch_warnings():
         warnings.simplefilter("error")
-        png = inspect_figure(data, labels, WANTED, PROVISIONAL, PROVISIONAL_DYNAMIC, tmp_path / "figures")
+        png = inspect_figure(data, labels, WANTED, TEST_PARAMS, TEST_DYNAMIC, tmp_path / "figures")
     assert png.exists()
 
 
@@ -136,7 +138,7 @@ def test_inspect_rejects_a_time_that_is_not_in_the_dataset(tmp_path):
         open_zarr(store_path) as labels,
         pytest.raises(ValueError, match="2023-11-21 00:00"),
     ):
-        inspect_figure(data, labels, missing, PROVISIONAL, PROVISIONAL_DYNAMIC, tmp_path)
+        inspect_figure(data, labels, missing, TEST_PARAMS, TEST_DYNAMIC, tmp_path)
 
 
 def write_config(tmp_path: Path, dataset: Path, mode: str) -> Path:
@@ -169,3 +171,64 @@ def test_cli_labels_option_overrides_the_config(tmp_path):
     cmd_inspect(argparse.Namespace(config=config, time="2023-11-21T00:00", labels="fixed"))
 
     assert (tmp_path / "figures" / "inspect_fixed_20231121T0000.png").exists()
+
+
+def test_cli_time_with_a_utc_zone_finds_the_scene(tmp_path):
+    dataset_path, _ = make_stores(tmp_path, mode="fixed")
+    config = write_config(tmp_path, dataset_path, mode="fixed")
+
+    cmd_inspect(argparse.Namespace(config=config, time="2023-11-21T00:00Z", labels=None))
+
+    assert (tmp_path / "figures" / "inspect_fixed_20231121T0000.png").exists()
+
+
+def test_cli_time_with_another_zone_is_converted_to_utc(tmp_path):
+    dataset_path, _ = make_stores(tmp_path, mode="fixed")
+    config = write_config(tmp_path, dataset_path, mode="fixed")
+
+    cmd_inspect(argparse.Namespace(config=config, time="2023-11-21T01:00+01:00", labels=None))
+
+    assert (tmp_path / "figures" / "inspect_fixed_20231121T0000.png").exists()
+
+
+def test_stored_params_of_a_dynamic_store_come_from_the_store_not_the_config(tmp_path):
+    stricter = dataclasses.replace(TEST_PARAMS, warm_min_bt108=271.0)
+    store_path = label_store_path(tmp_path / "labels", "dynamic")
+    label_dataset(make_label_dataset(tmp_path / "data.zarr"), store_path, "dynamic", stricter, TEST_DYNAMIC)
+    config_dynamic = dataclasses.replace(TEST_DYNAMIC, offset=0.5)
+
+    with open_zarr(store_path) as labels:
+        params, dynamic = stored_params(labels.attrs, config_dynamic)
+
+    assert params == stricter
+    assert dynamic == TEST_DYNAMIC
+
+
+def test_stored_params_of_a_fixed_store_use_the_config_dynamic_params(tmp_path):
+    stricter = dataclasses.replace(TEST_PARAMS, warm_min_bt108=271.0)
+    store_path = label_store_path(tmp_path / "labels", "fixed")
+    label_dataset(make_label_dataset(tmp_path / "data.zarr"), store_path, "fixed", stricter)
+
+    with open_zarr(store_path) as labels:
+        params, dynamic = stored_params(labels.attrs, TEST_DYNAMIC)
+
+    assert params == stricter
+    assert dynamic == TEST_DYNAMIC
+
+
+def test_cli_figure_is_built_from_the_store_params_after_a_config_edit(tmp_path, monkeypatch):
+    stricter = dataclasses.replace(TEST_PARAMS, warm_min_bt108=271.0)
+    dataset_path = make_label_dataset(tmp_path / "data.zarr")
+    label_dataset(dataset_path, label_store_path(tmp_path / "labels", "fixed"), "fixed", stricter)
+    config = write_config(tmp_path, dataset_path, mode="fixed")
+    used = []
+
+    def record_params(data, labels, wanted, params: LabelParams, dynamic, out_dir):
+        used.append(params)
+        return out_dir / "recorded.png"
+
+    monkeypatch.setattr("fogseg.inspect.inspect_figure", record_params)
+    cmd_inspect(argparse.Namespace(config=config, time="2023-11-21T00:00", labels=None))
+
+    assert used[0].warm_min_bt108 == 271.0
+    assert load_config(config)["labels"]["warm_min_bt108"] != 271.0

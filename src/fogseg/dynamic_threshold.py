@@ -11,6 +11,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+MIN_WINDOW_BINS = 3  # the peak must not sit in the first or last bin of the window, so 3 bins is the least
+BIN_COUNT_TOLERANCE = 1e-6  # float error of (range / width), e.g. 10 / 0.1 = 100.00000000000001
+
 
 @dataclass(frozen=True)
 class DynamicParams:
@@ -23,6 +26,31 @@ class DynamicParams:
     offset: float
     min_pixels: int
     clamp: tuple[float, float]
+
+    def __post_init__(self) -> None:
+        """Reject settings that would make the peak search meaningless."""
+        n_bins = self.check_bins()
+        centres = self.bin_range[0] + self.bin_width * (np.arange(n_bins) + 0.5)
+        n_window_bins = int(bins_in_window(centres, self.clear_window).sum())
+        if n_window_bins < MIN_WINDOW_BINS:
+            raise ValueError(
+                f"clear_window {self.clear_window} must hold at least {MIN_WINDOW_BINS} bins of "
+                f"bin_range {self.bin_range}, it holds {n_window_bins}"
+            )
+        if self.smoothing_bins < 1 or self.smoothing_bins % 2 == 0:
+            raise ValueError(f"smoothing_bins must be odd and at least 1, got {self.smoothing_bins}")
+        if self.clamp[0] > self.clamp[1]:
+            raise ValueError(f"clamp must be (low, high) with low <= high, got {self.clamp}")
+
+    def check_bins(self) -> int:
+        """Number of histogram bins; bin_width must be positive and fit a whole number of times into bin_range."""
+        low, high = self.bin_range
+        n_bins = (high - low) / self.bin_width if self.bin_width > 0 else float("nan")
+        if not np.isfinite(n_bins) or n_bins < 1 or abs(n_bins - round(n_bins)) > BIN_COUNT_TOLERANCE:
+            raise ValueError(
+                f"bin_width {self.bin_width} must be positive and divide bin_range {self.bin_range}"
+            )
+        return round(n_bins)
 
     @classmethod
     def from_config(cls, dynamic_cfg: dict) -> DynamicParams:

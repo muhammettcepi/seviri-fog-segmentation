@@ -184,6 +184,23 @@ def write_metadata(store: Path, attrs: dict) -> None:
     zarr.open_group(store, mode="r+").attrs.update(attrs)
 
 
+def stored_params(attrs: dict, config_dynamic: DynamicParams) -> tuple[LabelParams, DynamicParams]:
+    """The parameters a label store was made with, read from its attributes.
+
+    A fixed store has no dynamic parameters; `config_dynamic` is returned for it, and serves only
+    to choose the histogram bins of a check figure.
+    """
+    params = LabelParams.from_config(attrs)
+    if attrs["mode"] != "dynamic":
+        return params, config_dynamic
+
+    prefix = "dynamic_"
+    dynamic_cfg = {
+        name.removeprefix(prefix): value for name, value in attrs.items() if name.startswith(prefix)
+    }
+    return params, DynamicParams.from_config(dynamic_cfg)
+
+
 def label_dataset(
     dataset_path: Path,
     out_path: Path,
