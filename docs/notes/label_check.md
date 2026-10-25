@@ -21,7 +21,8 @@ those come later (METAR, see the limitations).
 
 `fogseg select-scenes --labels dynamic` picks 15 scenes from the training season, one per night, with a fixed rule
 (see `src/fogseg/check_scenes.py`), so the choice is the same every time. It uses the **dynamic** label store, so
-scenes that fell back to the fixed threshold can be found too.
+scenes that fell back to the fixed threshold can be found too. Rerunning the selection on the labels made with the
+symmetric band gives exactly the same 15 scenes, so the list the project owner reviewed stays as it is.
 
 | Group | Scenes | Rule |
 |---|---|---|
@@ -49,49 +50,58 @@ Each figure has four panels. North is up.
   line.
 - **Bottom right, solar zenith angle.** The red line is the 95 degree limit; pixels on the sunny side are ignored.
 
-A pixel is ignored when it is too close to the sun (twilight), when a channel is missing, when its BTD lies within
-0.5 K of the threshold on the fog side, or when it is in a fog patch smaller than 5 pixels. The hatching along the edges
-of fog decks is the 0.5 K band.
+A pixel is ignored when it is too close to the sun (twilight), when a channel is missing, when it passes the other fog
+tests (warm top, no thin cirrus, smooth top) and its BTD lies within 0.5 K of the threshold on **either side**, or when
+it is in a fog patch smaller than 5 pixels (small patches are counted on the fog pixels left after the band). The
+hatching along the edges of fog decks, and over areas where BTD hovers near the threshold, is the 0.5 K band.
 
 "Fog fraction" below is the share of the *decided* pixels (label 0 or 1, not ignored) that are fog. Fog and low stratus cannot be told
 apart from the satellite, so "fog" here means a low water-cloud deck that may or may not touch the ground.
+
+**The band was one-sided at first** (only pixels up to 0.5 K *above* the threshold were ignored), and the numbers in
+this note come from the symmetric version agreed with the project owner on 25 October 2026. The change only turns
+some `0` pixels into `255`: no fog pixel changed (checked pixel by pixel on both stores, 2.56 million pixels turned from
+0 to 255 in the dynamic store, none changed in any other way). Because fog fractions are shares of the decided
+pixels, they rise a little (for example the dynamic mean over all scenes, 0.0920 to 0.0972) although the fog is the same,
+and the mean ignore fraction rises from 0.069 to 0.107.
 
 ## Results
 
 | Time (UTC) | Group | Fog, fixed | Fog, dynamic | Dynamic threshold (K) | Source |
 |---|---|---|---|---|---|
-| 2023-10-02 05:00 | twilight | 0.029 | 0.028 | 5.12 | dynamic |
-| 2023-10-04 05:00 | twilight | 0.048 | 0.029 | 5.38 | dynamic |
-| 2023-10-05 21:00 | spread | 0.025 | 0.029 | 4.88 | dynamic |
+| 2023-10-02 05:00 | twilight | 0.030 | 0.028 | 5.12 | dynamic |
+| 2023-10-04 05:00 | twilight | 0.051 | 0.030 | 5.38 | dynamic |
+| 2023-10-05 21:00 | spread | 0.025 | 0.030 | 4.88 | dynamic |
 | 2023-10-08 05:00 | clear | 0.000 | 0.000 | 4.62 | dynamic |
 | 2023-10-20 05:00 | clear | 0.000 | 0.000 | 4.62 | dynamic |
-| 2023-10-24 05:00 | high_cloud | 0.010 | 0.014 | 4.62 | dynamic |
-| 2023-12-10 21:00 | fallback | 0.066 | 0.066 | 5.00 | fallback |
+| 2023-10-24 05:00 | high_cloud | 0.010 | 0.015 | 4.62 | dynamic |
+| 2023-12-10 21:00 | fallback | 0.072 | 0.072 | 5.00 | fallback |
 | 2023-12-13 03:00 | high_cloud | 0.013 | 0.004 | 5.62 | dynamic |
-| 2023-12-27 03:00 | fallback | 0.061 | 0.061 | 5.00 | fallback |
-| 2024-01-12 05:00 | foggy | 0.173 | 0.283 | 4.38 | dynamic |
+| 2023-12-27 03:00 | fallback | 0.065 | 0.065 | 5.00 | fallback |
+| 2024-01-12 05:00 | foggy | 0.191 | 0.319 | 4.38 | dynamic |
 | 2024-02-09 05:00 | high_cloud | 0.010 | 0.007 | 5.38 | dynamic |
 | 2024-02-11 03:00 | clear | 0.000 | 0.000 | 5.12 | dynamic |
-| 2024-02-17 05:00 | foggy | 0.151 | 0.249 | 4.38 | dynamic |
-| 2024-02-26 21:00 | spread | 0.026 | 0.023 | 5.12 | dynamic |
-| 2024-02-29 03:00 | foggy | 0.228 | 0.250 | 4.62 | dynamic |
+| 2024-02-17 05:00 | foggy | 0.162 | 0.264 | 4.38 | dynamic |
+| 2024-02-26 21:00 | spread | 0.027 | 0.023 | 5.12 | dynamic |
+| 2024-02-29 03:00 | foggy | 0.234 | 0.258 | 4.62 | dynamic |
 
-The mean of the per-scene fog fractions over all 608 scenes (scenes without any decided pixel left out) is 0.0851
-(fixed) and 0.0920 (dynamic). The dynamic run used the dynamic
+The mean of the per-scene fog fractions over all 608 scenes (scenes without any decided pixel left out) is 0.0902
+(fixed) and 0.0972 (dynamic). The dynamic run used the dynamic
 threshold in 581 scenes and fell back in 27 (all seasons); in the training season, 293 dynamic and 11 fallback.
 
 ### What the groups show
 
 **Foggy (29 Feb 03:00, 12 Jan 05:00, 17 Feb 05:00).** 29 February is the textbook case. The histogram has two humps,
 clear ground at about 3 K and a deck at about 6.3 K, and the dynamic threshold, 4.62 K, sits in the flat valley between
-them. The yellow-green deck is cyan, the pink land is not, and the only hatching is along the deck's edge. The result
+them. The yellow-green deck is cyan, the pink land is not, and the hatching lies along the deck's edge, mostly in the
+south where the deck thins out towards the ground (the 0.5 K band around 4.62 K covers the valley). The result
 on 17 February is similar (humps at about 2.8 and 5.4 K, threshold 4.38 K), with the large pale deck in the north-west
 labelled almost completely. 12 January is harder: the histogram has no clean valley (see the next section).
 
 ![29 February 2024, dynamic labels](figures/check_20240229T0300_dynamic.png)
 
 **Clear (8 Oct, 20 Oct, 11 Feb).** No false fog. On 8 October the pink land west of the 95 degree line has a narrow
-histogram at 3 K and nothing near the threshold. On 20 October and 11 February thick high cloud covers most of the
+histogram at 3 K and almost nothing near the threshold. On 20 October and 11 February thick high cloud covers most of the
 scene, no fog is labelled, and the histogram holds few pixels.
 
 **High cloud (24 Oct, 13 Dec, 9 Feb).** The labels leave the dark red cloud alone and mark only the pale low-cloud
@@ -101,11 +111,12 @@ whether it is a thin low deck or something higher. This is the "deck inside the 
 
 **Twilight (2 Oct, 4 Oct).** Everything east of the red 95 degree line is hatched, which is correct: BTD is not
 trusted when the sun is near. Only a few small patches west of the line are labelled. The same happens on the other
-scenes with a visible line (8 Oct, 20 Oct, 24 Oct, 17 Feb, 7 Nov).
+scenes with a visible line (8 Oct, 20 Oct, 24 Oct, 17 Feb).
 
-**Fallback (10 Dec, 27 Dec).** The ground hump is not found inside the window (it lies at or near its upper edge,
-4.75 K), so the fixed 5.0 K is used. On 27 December the core of the green deck in the south is labelled, the edges are
-patchy. 10 December is discussed under the tuning steps.
+**Fallback (10 Dec, 27 Dec).** The highest bin of the histogram lies at the upper edge of the window (4.75 K), so no
+clear-ground peak is accepted and the fixed 5.0 K is used. On 27 December the core of the green deck in the south is
+labelled, the edges are patchy and hatched. 10 December is discussed under the tuning steps; what the hump at the window
+edge usually is, is discussed under "The cost on fallback nights".
 
 **Spread (5 Oct, 26 Feb).** Mostly scattered pale patches; the labels follow the green-tinted ones. On 26 February the
 large peach-coloured area in the north-west is mostly not labelled, only the greener part is.
@@ -114,34 +125,37 @@ large peach-coloured area in the north-west is mostly not labelled, only the gre
 
 The two modes differ where the scene's own clear-ground level is far from the 5.0 K fixed value, which happens on cold
 nights. The most striking case is 12 January: the clear-ground peak is at about 2.9 K, so the dynamic threshold is
-4.38 K and the fog fraction rises from 0.173 to 0.283. In the fixed figure the big northern deck is full of holes (many
-pixels there lie just under the 5.0 K line or in its hatched band between 5.0 and 5.5 K); in the
-dynamic figure the deck is nearly closed. The same thing, smaller, on 17 February (0.151 to 0.249) and on the hero
-night of 28 January (0.108 to 0.149). Where the dynamic threshold is close to 5.0 K (4.9 to 5.6 K) the two modes differ by
-0.02 or less.
+4.38 K and the fog fraction rises from 0.191 to 0.319. In the fixed figure the big northern deck is full of holes (many
+pixels there lie within 0.5 K of the 5.0 K line, in the hatched band between 4.5 and 5.5 K); in the
+dynamic figure the deck is nearly closed. The same thing, smaller, on 17 February (0.162 to 0.264) and on the hero
+night of 28 January (0.115 to 0.158). Where the dynamic threshold is close to 5.0 K (4.9 to 5.6 K) the two modes differ by
+0.03 or less (largest difference 0.021, on 4 October).
 
 Two cautions. First, on 12 January the dynamic threshold does not sit in a valley; it cuts through the upper hump
 (peak at about 4.2 K), so part of that hump becomes fog and part is hatched. The dynamic label there is *more
 complete*, which looks right against the RGB, but it is also more dependent on one number. Second, the dynamic figure
-hatches more pixels in the east and over the Adriatic, because BTD there lies in the 0.5 K band above the threshold (4.38 to 4.88 K).
+hatches more pixels in the east and over the Adriatic, because BTD there lies within 0.5 K of the threshold (3.88 to 4.88 K).
 
 ![12 January 2024, fixed labels](figures/check_20240112T0500_fixed.png)
 ![12 January 2024, dynamic labels](figures/check_20240112T0500_dynamic.png)
 
 ## Tuning steps and decisions
 
-**What was checked.** In 11 of the 304 training scenes the clear-ground peak was not found inside the window
-`clear_window = [1.5, 4.75]` K, so they used the fixed 5.0 K. The window was widened to `[1.5, 5.0]` K in a side
-experiment (outside the main label stores, so nothing was overwritten) to see what changes:
+**What was checked.** In 11 of the 304 training scenes no clear-ground peak was accepted inside the window
+`clear_window = [1.5, 4.75]` K (the highest bin lay on its upper edge), so they used the fixed 5.0 K. The window was
+widened to `[1.5, 5.0]` K in a side experiment (outside the main label stores, so nothing was overwritten) to see what
+changes. The experiment was run again with the symmetric band; the numbers are:
 
-- fallbacks in the training season fall from 11 to 5;
-- the 6 scenes that stop falling back get a threshold of 6.0 K, the upper clamp, because peak plus 1.5 K would be higher;
-- only 8 of the 304 training thresholds change at all;
-- the mean training fog fraction moves from 0.0537 to 0.0524.
+- fallbacks in the training season fall from 11 to 5: 7 scenes become dynamic and 1 dynamic scene (2 February 2024,
+  21:00, threshold 4.62 K) newly falls back, because its peak now lies on the new upper edge;
+- the 7 scenes that stop falling back all get a threshold of 6.0 K, the upper clamp, because peak plus 1.5 K would be higher;
+- only 8 of the 304 training thresholds change at all (those 7 and that 1);
+- the mean training fog fraction moves from 0.0563 to 0.0548.
 
 **The scene that shows the trade-off: 10 December 21:00.** A mild night. The histogram has one hump whose peak is at
-about 4.6 K, right at the window edge, and the fixed 5.0 K cuts through the hump. With the wider window the threshold
-becomes 6.0 K. The doubtful fog in the north-west (pale lilac-grey, hardly the yellow-green of fog) disappears, which
+about 4.6 K, right at the window edge, and the fixed 5.0 K cuts through the hump. The picture cannot tell whether that
+hump is clear ground or low cloud. With the wider window the threshold becomes 6.0 K (fog fraction 0.072 in the default
+labels, 0.027 with the wider window). The doubtful fog in the north-west (pale lilac-grey, hardly the yellow-green of fog) disappears, which
 is good, but part of the clear yellow-green deck in the east disappears too. In the default labels the eastern fog lies
 over the Pannonian basin (about 19 to 22 degrees East, 45 to 50 degrees North).
 
@@ -153,12 +167,29 @@ over the Pannonian basin (about 19 to 22 degrees East, 45 to 50 degrees North).
 1. **`labels.mode` is now `dynamic`.** Reasons below.
 2. **`clear_window` stays at 1.5 to 4.75 K.** The wider window changes few thresholds, and on the one scene that was
    inspected it removed good fog as well as doubtful fog. Without more evidence there is no reason to prefer it.
-3. **All other values stay as they were.**
+3. **All other values stay as they were.** The upper clamp of 6.0 K is never reached with the current window: the
+   highest accepted peak is 4.375 K, so the highest dynamic threshold in all 608 scenes is 5.875 K (the lower clamp of
+   3.5 K is reached in 4 training scenes).
+4. **The fixed 5.0 K stays as the fallback** (also decided on 25 October 2026), with the known limit described below.
 
-**The cost on fallback nights.** Keeping the window means mild nights still get 5.0 K, which lies only about 0.3 to
-0.4 K above the ground peak there. So on fallback nights some clear ground and thin cloud may be labelled as fog (this
-is what the north-west of 10 December looks like). It affects 11 of 304 training scenes (3.6 %), and these scenes get
-the same label in fixed and dynamic mode, so the choice of mode does not make them worse.
+**The cost on fallback nights.** Keeping the window means that scenes whose histogram peak lies at the upper edge of the
+window still get the fixed 5.0 K. The project owner decided on 25 October 2026 to keep this and to record the limit
+(decision 4 above). On two fallback scenes outside the check list, 3 February 2024 05:00 and 8 January 2024 05:00, the
+dominant hump at the window edge looks like a **low-cloud deck**, not clear ground:
+
+- On 3 February the histogram has two humps: a ground hump at about 3.3 K (pink in the RGB) and a larger one at about
+  4.9 K (a big pale yellow-green deck across the centre of the scene). The fixed 5.0 K, with its hatched band from 4.5 to
+  5.5 K, lies across the deck hump, so the deck is cut into cyan and hatched parts. The pink ground is not labelled fog.
+- On 8 January there is one broad hump from about 2 to 6.5 K and no separate ground peak. Much of the scene is
+  yellow-green low cloud; the labels are patchy there, with cyan on the greenest parts and a lot of hatching.
+
+So on fallback nights the fixed 5.0 K tends to **cut through the deck** (missed fog, or hatched pixels) rather than to
+label clear ground as fog. This is a visual reading of two scenes: without a cloud mask or station observations it cannot
+be proved, and it may differ on other nights. It affects 11 of 304 training scenes (3.6 %), and these scenes get the
+same label in fixed and dynamic mode, so the choice of mode does not make them worse. Fixing it, for example with a
+different fallback value, is left for the METAR tuning step.
+
+![3 February 2024, fallback night with a deck hump at 4.9 K](figures/check_20240203T0500_dynamic.png)
 
 ## Hero nights
 
@@ -172,29 +203,31 @@ spell at the end of January in general terms: under persistent high pressure the
 fog is most persistent in wind-sheltered river valleys (Danube, parts of the Rhine) and around Lake Constance:
 <https://www.wetterdienst.de/Deutschlandwetter/Thema_des_Tages/5686/der-januar-laeuft-zum-finale-zur-hochform-auf>.
 It puts the high-pressure centre over southern Germany on 27 January, moving east. It does not say where fog lay on
-the morning of 28 January.
+the morning of 28 January. (The text is republished on wetterdienst.de; © Deutscher Wetterdienst.)
 
-Labels: fixed 0.108, dynamic 0.149 (threshold 4.62 K, dynamic). The 03:00 scene gives 0.101 and 0.137.
+Labels: fixed 0.115, dynamic 0.158 (threshold 4.62 K, dynamic). The 03:00 scene gives 0.106 and 0.144.
 
 ![28 January 2024, dynamic labels](figures/hero_20240128T0500_dynamic.png)
 
 Where is the fog the labels found? The dataset has longitude and latitude for every pixel, so the labels can be
-counted inside boxes. The boxes are rough rectangles, not country borders. The five main boxes do not overlap; the
-last two lie inside the Germany box on purpose.
+counted inside boxes. The boxes are rough rectangles, not country borders (lower bounds included, upper bounds
+excluded). The five main boxes do not overlap; the last two lie inside the Germany box on purpose.
 
 | Box | Longitude (E) | Latitude (N) | Fog, 28 Jan 05:00 | Fog, 7 Nov 05:00 |
 |---|---|---|---|---|
-| Germany | 6 to 15 | 47.5 to 55 | 0.7 % | 84.9 % |
-| Poland | 15 to 24 | 49 to 54.5 | 61.8 % | 40.2 % |
-| Slovakia and Hungary | 15 to 22 | 46 to 49 | 7.3 % | 13.0 % |
-| Po Valley | 8 to 13 | 44.7 to 45.8 | 52.7 % | 27.7 % |
-| France | 2 to 6 | 44 to 50 | 0.0 % | 66.2 % |
-| Danube, southern Germany (inside Germany) | 8 to 13.5 | 47.8 to 49 | 0.0 % | 98.5 % |
+| Germany | 6 to 15 | 47.5 to 55 | 0.7 % | 92.9 % |
+| Poland | 15 to 24 | 49 to 54.5 | 69.8 % | 42.4 % |
+| Slovakia and Hungary | 15 to 22 | 46 to 49 | 8.0 % | 13.5 % |
+| Po Valley | 8 to 13 | 44.7 to 45.8 | 55.7 % | 29.2 % |
+| France | 2 to 6 | 44 to 50 | 0.0 % | 67.8 % |
+| Danube, southern Germany (inside Germany) | 8 to 13.5 | 47.8 to 49 | 0.0 % | 99.7 % |
 | Lake Constance (inside Germany, 168 pixels) | 8.8 to 10 | 47.5 to 47.8 | 0.0 % | 100.0 % |
 
-Each figure is the share of the decided pixels (label 0 or 1, not 255) in the box that are labelled fog. In the east
-on 7 November many pixels are twilight and ignored (34 % in the Poland box, 43 % in the Slovakia and Hungary box), so
-those two shares rest on fewer pixels. The numbers come from this code, which anyone with the dataset can re-run:
+Each figure is the share of the decided pixels (label 0 or 1, not 255) in the box that are labelled fog. Many pixels
+are ignored, so these shares rest on fewer pixels than the box holds: on 7 November 21 % of the Germany box, 37 % of the
+Poland box and 46 % of the Slovakia and Hungary box are ignored (27 % and 41 % of the last two are twilight in the east,
+the rest lies within 0.5 K of the threshold or in small patches); on 28 January 28 % of the Poland box and 17 % of the
+Lake Constance box are ignored. The numbers come from this code, which anyone with the dataset can re-run:
 
 ```python
 import numpy as np
@@ -231,7 +264,8 @@ for name, box in boxes.items():
     print(name, round(fog_share("2024-01-28T05:00", box), 3))
 ```
 
-The largest connected fog area on 28 January (about 6600 pixels) covers Poland and its neighbours, from about 14 to
+The largest connected fog area on 28 January (about 6600 pixels, counted with 4-connectivity; the band does not change
+it) covers Poland and its neighbours, from about 14 to
 24 degrees East and 48.5 to about 55.4 degrees North; the next largest lies in the Po Valley.
 
 So the picture agrees with the DWD article only loosely. Large fog or low-stratus decks are found in the east and in the
@@ -253,8 +287,9 @@ dense low-stratus deck lay over almost all of Germany that morning
 background on the "Dunkelflaute" of 2 to 7 November 2024 from Clean Energy Wire
 (<https://www.cleanenergywire.org/news/climate-change-unlikely-increase-dunkelflaute-events-central-europe-weather-service>).
 
-Labels: fixed 0.438, dynamic 0.500, threshold 4.62 K. In the labels 84.9 % of the decided pixels in the Germany box are
-fog (98.5 % in the Danube box, see the table above), which agrees with the caption.
+Labels: fixed 0.466, dynamic 0.523, threshold 4.62 K. In the labels 92.9 % of the decided pixels in the Germany box are
+fog (99.7 % in the Danube box, see the table above), which agrees with the caption. One fifth of the Germany box (21 %)
+is ignored, mostly where the deck's BTD lies close to the threshold (the hatching in the north of the figure).
 
 ![7 November 2024, dynamic labels](figures/showcase_20241107T0500_dynamic.png)
 
@@ -270,7 +305,11 @@ sits on the rising flank of the deck hump). The deck is labelled, so here the me
   (00:00) is an ambiguous example: the pale decks have a BTD of only 4 to 5.5 K, the threshold is 5.38 K, and only small
   patches are labelled although much of the scene is pale cloud. 13 December may be another. There is no cloud mask to
   decide this.
-- **Mild nights fall back to 5.0 K**, which sits only about 0.3 to 0.4 K above the ground there (10 December).
+- **Fallback nights use a fixed 5.0 K.** On fallback nights the dominant hump at the upper edge of the window is usually
+  a low-cloud deck, not clear ground (3 February 05:00, 8 January 05:00), so 5.0 K tends to cut through the deck (missed
+  fog or hatched pixels) rather than to label clear ground as fog. This is a visual judgement on two scenes; without a
+  cloud mask or stations it cannot be proved. Kept by decision of the project owner (25 October 2026); to be revisited
+  with the METAR tuning.
 - **Viewing-angle drift** (+1 K from south to north, see `btd_exploration.md`): nothing obvious in the check scenes,
   for example no band of false fog on the clear land in the north, but without a cloud mask this cannot be proved.
 - **Under high cloud the label is 0** (not ignore), even if fog lies below. A model trained on these labels learns that
@@ -289,8 +328,8 @@ Use **dynamic** as the default label mode (now set in `configs/default.yaml`).
   (12 January, 28 January).
 - Where it falls back (2 of the 15 check scenes, 11 of 304 training scenes), it uses the same 5.0 K as fixed mode, so
   the fallback cannot make it worse than the fixed mode.
-- The costs are known: on 12 January the threshold sits inside a hump, mild nights fall back to 5.0 K, and a low deck
-  inside the clear window is still a risk.
+- The costs are known: on 12 January the threshold sits inside a hump, fallback nights use a fixed 5.0 K that tends to
+  cut through the deck, and a low deck inside the clear window is still a risk.
 
 All of this evidence is from the training season. The test-season showcase scene was looked at only afterwards and is
 not part of the case for dynamic labels.

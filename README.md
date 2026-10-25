@@ -17,8 +17,8 @@ cloud are pale yellow-green. Top right: the labels over it, with fog in cyan and
 hatched (the eastern part is twilight). Bottom left: the BTD histogram with the threshold used.
 A dense low-stratus deck lay over almost all of Germany that morning
 ([Donnerwetter.de, 7 Nov 2024](https://www.donnerwetter.de/wetter-aktuell/wenig-wind-wolken-und-kuehle-temperaturen_cid_110468.html)),
-and the labels cover it (84.9 % of the decided pixels in a box over Germany are fog, see
-[`label_check.md`](docs/notes/label_check.md)). This night is from the **test season**: it was looked at only after all
+and the labels cover it (92.9 % of the decided pixels in a box over Germany are fog, while 21 % of the box is
+ignored, see [`label_check.md`](docs/notes/label_check.md)). This night is from the **test season**: it was looked at only after all
 thresholds were fixed and never used to set one. It shows how the labels behave, it does not
 measure their accuracy. Contains modified EUMETSAT Meteosat SEVIRI data (2024-25).*
 
@@ -42,7 +42,7 @@ its own clear-ground level. The measurements are in
 Every pixel of every scene gets one of three labels: `1` fog or low stratus, `0` not fog, `255`
 ignore (twilight, missing data, or too close to the threshold to call). A pixel is fog if its BTD
 is above a threshold, its cloud top is warm, it is not thin cirrus and the top is smooth; small
-patches and the pixels just above the threshold are ignored. Two modes exist:
+patches and the pixels within 0.5 K of the threshold (on either side) are ignored. Two modes exist:
 
 - `fixed`: the threshold is 5.0 K for every scene.
 - `dynamic` (the default): the threshold is the scene's clear-ground peak plus 1.5 K, and 5.0 K

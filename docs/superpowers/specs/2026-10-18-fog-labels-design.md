@@ -108,9 +108,20 @@ the 3.9 µm channel) or if IR_039, IR_108 or IR_120 is missing (e.g. the 1,238 i
 
 **Step 3, cleanup.**
 
-- **Uncertainty band**: candidates with `|BTD − T_btd| < band` → `255` (provisional band: 0.5 K).
+- **Uncertainty band**: among the pixels that pass the other fog tests (warm top, no thin cirrus, smooth top),
+  those with `|BTD − T_btd| < band`, **on either side** of the threshold, → `255` (band: 0.5 K). Pixels above
+  `T_btd + band` are candidates; pixels below `T_btd − band` stay `0`.
 - **Small blobs**: connected groups of candidate pixels smaller than `min_blob` → `255`
   (provisional: 5 pixels, ~100 km²). `255` rather than `0`, because a small blob can be real valley fog.
+  The groups are counted on the candidates left after the band.
+
+**Amended after the final review (2026-10-25, agreed with the project owner).** The band was first one-sided
+(only candidates *above* the threshold became `255`), so a pixel 0.0 to 0.5 K below it received a confident `0`.
+It is now symmetric. The owner also decided to keep the fixed 5.0 K as the fallback threshold, and to record as a
+known limitation that on fallback nights the hump at the upper edge of the clear-ground window is usually a
+low-cloud deck: the fixed 5.0 K then tends to cut through the deck (missed fog) rather than label clear ground as
+fog. This was judged by eye on two scenes (3 February and 8 January 2024, 05:00); it is to be revisited with the
+METAR tuning (Section 7). See `docs/notes/label_check.md`.
 
 **Step 4.** Everything else that is night and valid → `0`.
 
@@ -195,7 +206,7 @@ POD 71–74 %, FAR 15 % (low cloud), 34 % (ground fog). Not part of this PR.
 |---|---|
 | Trust masks | daytime pixel → 255; missing IR_039 → 255 |
 | Fog tests | warm + high BTD → 1; cold → 0; thin cirrus → 0; rough top → 0 |
-| Uncertainty band | BTD just above threshold → 255 |
+| Uncertainty band | BTD just above or just below the threshold → 255 (cold top just below → 0) |
 | Blob cleanup | 3-pixel island → 255; 10-pixel deck stays 1 |
 | Dynamic threshold | clear-ground hump → peak + offset; peak on the window edge or too few pixels → fallback; extreme value → clamped |
 | Label store | shape, `uint8`, metadata with all thresholds, overwrite refusal, no `.part` left after an error, `xr.merge` with the dataset aligns |

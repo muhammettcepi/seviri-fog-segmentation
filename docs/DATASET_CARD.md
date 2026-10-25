@@ -124,28 +124,35 @@ dataset, so a store explains itself.
 flowchart TD
     px["one pixel"] --> trust{"night and valid?<br/>sza above 95°, no missing value"}
     trust -- no --> ignore1["255 ignore"]
-    trust -- yes --> fog{"all four tests pass?<br/>BTD, warm top, no cirrus, smooth"}
-    fog -- no --> zero["0 not fog"]
-    fog -- yes --> clean{"BTD near the threshold<br/>or tiny patch?"}
-    clean -- yes --> ignore2["255 ignore"]
-    clean -- no --> one["1 fog / low stratus"]
+    trust -- yes --> other{"warm top, no cirrus, smooth?"}
+    other -- no --> zero["0 not fog"]
+    other -- yes --> band{"BTD within 0.5 K of the threshold,<br/>above or below?"}
+    band -- yes --> ignore2["255 ignore"]
+    band -- no --> high{"BTD above the threshold?"}
+    high -- no --> zero
+    high -- yes --> tiny{"in a patch of fewer<br/>than 5 pixels?"}
+    tiny -- yes --> ignore3["255 ignore"]
+    tiny -- no --> one["1 fog / low stratus"]
 ```
 
 1. **Trust.** A pixel is `255` if the solar zenith angle is 95° or less (reflected sunlight in
    IR_039) or if IR_039, IR_108 or IR_120 is missing.
-2. **Four tests.** A trusted pixel is a fog candidate only if it passes all of them:
+2. **Three tests besides the BTD.** A trusted pixel can only be fog if it passes all of them; a pixel
+   that fails one becomes `0`:
 
    | Test | Rule |
    |---|---|
-   | Water droplets | `IR_108 − IR_039` above the BTD threshold |
    | Low cloud | `IR_108` at least 255 K |
    | Not thin cirrus | `IR_108 − IR_120` below 1.5 K |
    | Smooth top | standard deviation of `IR_108` in a 3 × 3 window below 1.5 K |
 
-3. **Cleanup.** A candidate whose BTD is less than 0.5 K above the threshold becomes `255`, and so
-   does a candidate in a group of fewer than 5 connected pixels (about 100 km² here), since a small
-   patch can be real valley fog.
-4. **Everything else** that is trusted becomes `0`.
+3. **BTD against the threshold** (water droplets), for the pixels that passed step 2. If `IR_108 − IR_039`
+   is within 0.5 K of the BTD threshold, **on either side**, the pixel is too uncertain and becomes `255`.
+   Above the threshold plus 0.5 K it is a fog candidate; below the threshold minus 0.5 K it is `0`.
+4. **Small patches.** A fog candidate in a group of fewer than 5 connected pixels (about 100 km² here)
+   becomes `255`, since a small patch can be real valley fog. The groups are counted on the candidates
+   that are left after step 3.
+5. **Everything else** that is trusted becomes `0`.
 
 All values are in the `labels` section of [`configs/default.yaml`](../configs/default.yaml): `night_min_sza`
 95.0, `warm_min_bt108` 255.0, `cirrus_max_split` 1.5, `smooth_max_std` 1.5, `uncertainty_band` 0.5,
@@ -160,7 +167,8 @@ All values are in the `labels` section of [`configs/default.yaml`](../configs/de
   the trusted, warm, non-cirrus pixels is put in a histogram (bins of 0.25 K from −2 to 8 K, smoothed over
   3 bins). The clear-ground peak is its highest bin inside the window 1.5 to 4.75 K, and the
   threshold is that peak plus 1.5 K, the distance at which the valley between clear ground and low
-  cloud lay in the training season. The result is limited to 3.5 to 6.0 K.
+  cloud lay in the training season. The result is limited to 3.5 to 6.0 K; with the current window the upper limit is never reached, because the
+  highest accepted peak is 4.375 K, so the highest threshold is 5.875 K.
   The scene falls back to the fixed 5.0 K (`threshold_source = fallback`) if the histogram has fewer
   than 2,000 pixels or the highest bin is at the edge of the window, so no real peak was found.
 
@@ -172,15 +180,18 @@ mean over scenes of `fog_fraction`, "mean ignore fraction" the mean of `ignore_f
 
 | Mode | Season | Mean fog fraction | Mean ignore fraction | Dynamic threshold | Fallback to 5.0 K |
 |---|---|---|---|---|---|
-| fixed | 2023-24 (training) | 0.0508 | 0.0618 | – | – |
-| fixed | 2024-25 (test) | 0.1194 | 0.0793 | – | – |
-| dynamic | 2023-24 (training) | 0.0537 | 0.0601 | 293 scenes | 11 scenes |
-| dynamic | 2024-25 (test) | 0.1302 | 0.0778 | 288 scenes | 16 scenes |
+| fixed | 2023-24 (training) | 0.0534 | 0.0961 | – | – |
+| fixed | 2024-25 (test) | 0.1270 | 0.1264 | – | – |
+| dynamic | 2023-24 (training) | 0.0563 | 0.0911 | 293 scenes | 11 scenes |
+| dynamic | 2024-25 (test) | 0.1382 | 0.1225 | 288 scenes | 16 scenes |
 
 In the training season the dynamic threshold has a median of 5.1 K (middle half 4.6 to 5.4 K,
-range 3.5 to 5.9 K; [btd_exploration](notes/btd_exploration.md)). Fog is a small class: about 5 %
-of the decided pixels in the training season, about 13 % in the test season, so the class balance
-differs between the two. The test-season numbers describe the labels only; nothing was tuned on them.
+range 3.5 to 5.9 K; [btd_exploration](notes/btd_exploration.md)). Fog is a small class: the mean fog
+fraction is about 6 % of the decided pixels in the training season and about 14 % in the test season
+(dynamic labels), so the class balance differs between the two. The ignore fraction is higher than it
+would be with a one-sided band, because pixels just below the threshold are ignored too (the dynamic
+training season had a mean ignore fraction of 0.060 before the band became symmetric). The test-season
+numbers describe the labels only; nothing was tuned on them.
 
 ### How the labels were checked
 
@@ -204,9 +215,12 @@ not a measure of accuracy.
 - **A low-cloud deck inside the clear-ground window.** If a deck covers most of the region and its BTD
   is only slightly above the ground, the dynamic method may take the deck for clear ground and set the
   threshold too high (for example 21 November 2023, 00:00). There is no cloud mask to decide this.
-- **Mild nights fall back to 5.0 K**, only about 0.3 to 0.4 K above the ground peak there, so some
-  clear ground or thin cloud may be labelled as fog (11 of 304 training scenes; both modes give the
-  same label there).
+- **Fallback nights use a fixed 5.0 K.** When the histogram peak lies at the upper edge of the window,
+  that hump is usually a low-cloud deck, not clear ground (looked at on 3 February 2024 and 8 January
+  2024, 05:00). The fixed 5.0 K then tends to cut through the deck (missed fog or ignored pixels) rather
+  than to label clear ground as fog. This is a visual judgement on two scenes; without a cloud mask or
+  station observations it cannot be proved. It affects 11 of 304 training scenes and 16 of 304 test
+  scenes, and both modes give the same label there. To be revisited with METAR tuning.
 - **The viewing-angle drift is not corrected.** The clear-ground BTD rises by about 1 K from 54° to
   65.5° viewing angle, which in this region means from south to north (the two are almost the
   same thing, so the effect is mixed with surface type and air temperature). Nothing obvious showed
