@@ -33,6 +33,19 @@ SEVIRI_LINE_SPACING = 3_000.403  # metres
 SECONDS_PER_LINE = 0.6 / 3
 
 
+def variable_length_strings(dataset: xr.Dataset) -> xr.Dataset:
+    """The same dataset, with fixed-width text variables turned into variable-length strings.
+
+    Zarr v3 has no stable specification for fixed-width unicode: older zarr-python versions warn
+    that such arrays may become unreadable. Variable-length strings are part of the specification.
+    """
+    converted = dataset
+    for name, variable in dataset.variables.items():
+        if variable.dtype.kind == "U":
+            converted = converted.assign({name: variable.astype(object)})
+    return converted
+
+
 def grid_lonlats(grid: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
     """Longitude and latitude of every pixel centre, from the grid saved by `fogseg fetch`."""
     area = AreaDefinition(
@@ -186,6 +199,7 @@ def write_batches(
         scenes, batch_invalid = mask_invalid(scenes)
         n_invalid += batch_invalid
         scenes = add_sun_zenith(scenes, lons, lats, scan_delay)
+        scenes = variable_length_strings(scenes)
 
         is_first_batch = start == 0
         if is_first_batch:

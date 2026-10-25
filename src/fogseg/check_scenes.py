@@ -99,7 +99,7 @@ def scene_statistics(dataset: xr.Dataset, labels: xr.Dataset) -> pd.DataFrame:
             "fog_fraction": labels["fog_fraction"].values,
             "high_cloud_fraction": np.concatenate(high_cloud_parts),
             "twilight_fraction": np.concatenate(twilight_parts),
-            "threshold_source": labels["threshold_source"].values.astype(str),
+            "threshold_source": [str(source) for source in labels["threshold_source"].values],
         }
     )
     return stats.sort_values("time").reset_index(drop=True)

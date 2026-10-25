@@ -23,9 +23,6 @@ from fogseg.labels import FOG, IGNORE, NO_FOG, LabelParams, histogram_pixels, la
 
 MODES = ("fixed", "dynamic")
 LABEL_CHANNELS = ["IR_039", "IR_108", "IR_120"]
-# Every batch must be written with the same string width, or appending would truncate a longer
-# name; "fallback" is the longest threshold source.
-SOURCE_DTYPE = "U8"
 # Same fixed time units as the dataset, so appended batches are stored exactly like the first one.
 TIME_ENCODING = {"units": "minutes since 2000-01-01", "dtype": "int64"}
 
@@ -102,7 +99,8 @@ def label_batch(
     n_scenes = bt.shape[0]
     labels = np.empty((n_scenes, bt.shape[2], bt.shape[3]), dtype=np.uint8)
     thresholds = np.empty(n_scenes, dtype=np.float32)
-    sources = np.empty(n_scenes, dtype=SOURCE_DTYPE)
+    # object dtype is stored as a variable-length string; Zarr v3 has no spec for fixed-width text
+    sources = np.empty(n_scenes, dtype=object)
     fog_fractions = np.empty(n_scenes, dtype=np.float32)
     ignore_fractions = np.empty(n_scenes, dtype=np.float32)
 

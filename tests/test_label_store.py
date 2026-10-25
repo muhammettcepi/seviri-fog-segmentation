@@ -2,6 +2,7 @@
 
 import argparse
 import dataclasses
+import json
 import logging
 import warnings
 from pathlib import Path
@@ -52,6 +53,15 @@ def test_store_has_spec_variables_and_aligns_with_the_dataset(tmp_path):
     merged = xr.merge([open_store(data), labels])
     assert merged.sizes["time"] == 3
     assert labels.attrs["btd_fixed"] == TEST_PARAMS.btd_fixed
+
+
+def test_threshold_source_is_stored_as_a_variable_length_string(tmp_path):
+    data = make_label_dataset(tmp_path / "data.zarr")
+    out = tmp_path / "labels_fixed.zarr"
+    label_dataset(data, out, "fixed", TEST_PARAMS)
+
+    metadata = json.loads((out / "threshold_source" / "zarr.json").read_text())
+    assert metadata["data_type"] == "string"
 
 
 def test_store_variables_have_the_documented_layout(tmp_path):

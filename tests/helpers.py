@@ -9,6 +9,7 @@ import numpy as np
 import xarray as xr
 from pyproj import CRS
 
+from fogseg.build import variable_length_strings
 from fogseg.dynamic_threshold import DynamicParams
 from fogseg.labels import LabelParams
 
@@ -104,5 +105,5 @@ def make_label_dataset(
         },
         attrs={"created": LABEL_DATASET_CREATED},
     )
-    dataset.to_zarr(path, mode="w", zarr_format=3, consolidated=False)
+    variable_length_strings(dataset).to_zarr(path, mode="w", zarr_format=3, consolidated=False)
     return path

@@ -1,6 +1,7 @@
 """Tests for stacking per-scene files into the Zarr dataset."""
 
 import datetime as dt
+import json
 
 import numpy as np
 import pytest
@@ -32,6 +33,15 @@ def test_build_stacks_all_scenes_in_time_order(interim_dir, tmp_path):
         assert float(ds["bt"].sel(time=np.datetime64(t, "ns")).mean()) == pytest.approx(270.0 + i)
     assert list(ds["platform"].values) == ["Meteosat-10"] * 3
     assert ds["source_file"].values[0] == "fake_20231120T2100.nat"
+
+
+def test_text_is_stored_as_variable_length_strings(interim_dir, tmp_path):
+    out = tmp_path / "data.zarr"
+    build_zarr(interim_dir, out, CHANNELS, batch=2)
+
+    for name in ["channel", "platform", "source_file"]:
+        metadata = json.loads((out / name / "zarr.json").read_text())
+        assert metadata["data_type"] == "string", name
 
 
 def test_build_adds_metadata_and_lonlat(interim_dir, tmp_path):
