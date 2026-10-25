@@ -39,8 +39,11 @@ Low cloud sits at about 5 to 8 K, but it covers only part of a scene and its BTD
 303 scenes (mostly January and February) have a second peak, and the valley between the two is shallow (median depth
 0.78, where the first design needed 0.5 or less). The first dynamic threshold, a valley between two humps, finds a valley
 in **0 of 304 scenes** (1 with windows made from the measurements, 41 if the depth test is dropped; the notebook rebuilds
-the rules of the first design to count this). In those 41 scenes the valley lies about **1.5 K above the clear-ground
-peak**: median 1.5 K, standard deviation 0.32 K, range 1.0 to 2.25 K. These scenes are mostly from January and February,
+the rules of the first design to count this, with the agreed pixels for the last two). Separately, 41 of 303 scenes
+(listed in the notebook as the "two-hump scenes", counted with the first-guess pixels) have a second peak at least 1.5 K
+above the clear one; the two groups are different sets (different pixels and rules) and share 30 scenes. In the two-hump scenes the
+valley lies about **1.5 K above the clear-ground peak**: median 1.5 K, standard deviation 0.32 K, range 1.0 to 2.25 K.
+These scenes are mostly from January and February,
 with a mean clear peak of 3.1 K against 3.5 K over the whole season, so the offset comes from a subset that may not
 represent the rest. The clear-ground peak itself is found in 303 of 304 scenes.
 
@@ -55,7 +58,7 @@ this much confounding, a correction would be a guess. The check scenes will show
 
 **4. Warm tops and cirrus.**
 Low-cloud tops (night, smooth, BTD at least 5.5 K, no ice signature in `IR_087 - IR_108`) are colder in November to
-January: the 1st percentile of `IR_108` is 249 to 256 K. A limit of 260 K would throw away 14 % of the low cloud in
+January: at BTD of at least 5.5 K the 1st percentile of `IR_108` is 250 to 256 K. A limit of 260 K would throw away 14 % of the low cloud in
 November and December, 255 K at most 2 % in any month for low cloud with BTD of at least 5.5 K (2.3 % in November
 for BTD of at least 5.0 K). For cirrus, low cloud has `IR_108 - IR_120` of 0.2 K (median, 99 % below 1.2 K), thin cirrus
 (ice signature, still warmer than 250 K) 3.75 K (median; 5 % below 1.9 K, 1 % below 1.15 K). A limit of 1.5 K removes
@@ -101,7 +104,7 @@ method needs is almost never there.
   the ground, and 26 October and 11 December are similarly ambiguous. The dynamic threshold would then sit too high for
   the fog. The grouping by cold and cirrus cover in the notebook cannot detect this (a low-cloud deck counts as a
   histogram pixel), and there is no cloud mask to prove it either way. The check scenes (Task 8) will examine it.
-- **Viewing-angle drift.** About +1 K from 54 to 65 degrees means the clear ground in the north is closer to the fixed
+- **Viewing-angle drift.** About +1 K from 54 to 65.5 degrees means the clear ground in the north is closer to the fixed
   5.0 K than in the south. The check scenes should show whether this produces false fog in the north.
 - **Fallback scenes.** 11 scenes (for example 3 February 2024) have their clear peak in the last bin of the window or
   above it: measured in a wider window (1.5 to 6.0 K) their peaks are 4.6 to 5.1 K. The peak is not accepted as real, so
