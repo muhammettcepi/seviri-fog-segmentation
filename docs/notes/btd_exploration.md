@@ -75,7 +75,7 @@ for BTD of at least 5.0 K). For cirrus, low cloud has `IR_108 - IR_120` of 0.2 K
 | `warm_min_bt108` | 260 K | **255 K** | Removes at most 2 % of low cloud in any month at BTD of at least 5.5 K, 2.3 % in November at 5.0 K (260 K: 14 % in Nov and Dec). |
 | `cirrus_max_split` | 2.0 K | **1.5 K** | 0.2 % of low cloud removed, 2.1 % of cirrus kept; equal-error point 1.2 K. |
 | `dynamic.clear_window` | 0.5 to 3.0 K | **1.5 to 4.75 K** | Covers the 1st to 99th percentile of the scene peaks (1.9 to 4.6 K). |
-| `dynamic.offset` | (valley) | **1.5 K** | In the 41 scenes with a valley, it lies 1.5 K above the clear peak (median; IQR 1.5 to 1.75 K, range 1.0 to 2.25 K; mostly Jan/Feb scenes, so a subset). |
+| `dynamic.offset` | (valley) | **1.5 K** | In the 41 two-hump scenes (first-guess pixels), the valley lies 1.5 K above the clear peak (median; IQR 1.5 to 1.75 K, range 1.0 to 2.25 K; mostly Jan/Feb scenes, so a subset). |
 | `dynamic.clamp` | 1.5 to 5.0 K | **3.5 to 6.0 K** | Clear peak 1.9 to 4.6 K plus 1.5 K gives 3.4 to 6.1 K. |
 | `dynamic.min_pixels` | 2000 | 2000 | unchanged |
 | `smooth_max_std`, `uncertainty_band`, `min_blob_pixels` | 1.5 K, 0.5 K, 5 | unchanged | not measured here |
