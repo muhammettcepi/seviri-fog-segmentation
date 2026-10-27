@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="340" viewBox="0 0 680 340" role="img" font-family="Helvetica, Arial, sans-serif">
+  <title>Fog droplets seen at 10.8 and 3.9 micrometres</title>
+  <desc>The same fog deck glows strongly at 10.8 micrometres, so the satellite reads its true temperature of 275 K. At 3.9 micrometres the droplets glow weakly, so it reads 270 K. The difference of 5 K is the fog signal.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#EF9F27" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <rect width="680" height="340" fill="#FFFFFF"/>
+
+  <g font-size="14" font-weight="500" fill="#2C2C2A" text-anchor="middle">
+    <text x="180" y="36">Satellite at 10.8 µm</text>
+    <text x="500" y="36">Satellite at 3.9 µm</text>
+  </g>
+
+  <g stroke="#888780" stroke-width="0.5" fill="#F1EFE8">
+    <rect x="80" y="52" width="200" height="52" rx="8"/>
+    <rect x="400" y="52" width="200" height="52" rx="8"/>
+  </g>
+  <g text-anchor="middle" dominant-baseline="central">
+    <text x="180" y="70" font-size="14" font-weight="500" fill="#444441">Reads 275 K</text>
+    <text x="180" y="88" font-size="12" fill="#5F5E5A">Droplets glow fully</text>
+    <text x="500" y="70" font-size="14" font-weight="500" fill="#444441">Reads 270 K</text>
+    <text x="500" y="88" font-size="12" fill="#5F5E5A">Droplets glow weakly</text>
+  </g>
+
+  <g stroke="#EF9F27" stroke-width="3" marker-end="url(#arrow)">
+    <line x1="110" y1="186" x2="110" y2="114"/>
+    <line x1="145" y1="186" x2="145" y2="114"/>
+    <line x1="180" y1="186" x2="180" y2="114"/>
+    <line x1="215" y1="186" x2="215" y2="114"/>
+    <line x1="250" y1="186" x2="250" y2="114"/>
+  </g>
+  <g stroke="#EF9F27" stroke-width="1.5" opacity="0.45" marker-end="url(#arrow)">
+    <line x1="465" y1="186" x2="465" y2="114"/>
+    <line x1="535" y1="186" x2="535" y2="114"/>
+  </g>
+
+  <g stroke="#185FA5" stroke-width="0.5" fill="#E6F1FB">
+    <rect x="60" y="190" width="240" height="60" rx="8"/>
+    <rect x="380" y="190" width="240" height="60" rx="8"/>
+  </g>
+  <g fill="#378ADD">
+    <circle cx="78" cy="204" r="4"/><circle cx="98" cy="212" r="4"/><circle cx="118" cy="203" r="4"/>
+    <circle cx="138" cy="211" r="4"/><circle cx="158" cy="204" r="4"/><circle cx="178" cy="212" r="4"/>
+    <circle cx="198" cy="203" r="4"/><circle cx="218" cy="211" r="4"/><circle cx="238" cy="204" r="4"/>
+    <circle cx="258" cy="212" r="4"/><circle cx="280" cy="205" r="4"/>
+    <circle cx="398" cy="204" r="4"/><circle cx="418" cy="212" r="4"/><circle cx="438" cy="203" r="4"/>
+    <circle cx="458" cy="211" r="4"/><circle cx="478" cy="204" r="4"/><circle cx="498" cy="212" r="4"/>
+    <circle cx="518" cy="203" r="4"/><circle cx="538" cy="211" r="4"/><circle cx="558" cy="204" r="4"/>
+    <circle cx="578" cy="212" r="4"/><circle cx="600" cy="205" r="4"/>
+  </g>
+  <g font-size="12" fill="#0C447C" text-anchor="middle" dominant-baseline="central">
+    <text x="180" y="236">Fog top, truly 275 K</text>
+    <text x="500" y="236">Same fog, same 275 K</text>
+  </g>
+
+  <text x="340" y="286" font-size="14" font-weight="500" fill="#2C2C2A" text-anchor="middle">BTD = 275 − 270 = +5 K, a fog signal</text>
+  <text x="340" y="310" font-size="12" fill="#5F5E5A" text-anchor="middle">Illustrative numbers. Clear ground reads almost the same in both channels.</text>
+</svg>
