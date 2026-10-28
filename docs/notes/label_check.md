@@ -24,10 +24,15 @@ those come later (METAR, see the limitations).
 scenes that fell back to the fixed threshold can be found too. Rerunning the selection on the labels made with the
 symmetric band gives exactly the same 15 scenes, so the list the project owner reviewed stays as it is.
 
+After the review, foggy and clear were limited to scenes with at least half of their pixels decided: a fog fraction
+on a mostly ignored scene rests on few pixels. A rerun with this rule would swap two scenes: clear 8 October 05:00
+(32 % decided) becomes 13 December 00:00, and high_cloud 13 December 03:00 then becomes 3 November 03:00. The
+reviewed list in `configs/check_scenes.yaml` is kept; `fogseg select-scenes` only replaces it with `--overwrite`.
+
 | Group | Scenes | Rule |
 |---|---|---|
-| foggy | 3 | highest fog fraction |
-| clear | 3 | lowest fog fraction (ties go to the earlier scene) |
+| foggy | 3 | highest fog fraction, of the scenes with at least half of their pixels decided |
+| clear | 3 | lowest fog fraction, of the same scenes (ties go to the earlier scene) |
 | high_cloud | 3 | largest share of night pixels colder than 240 K in `IR_108` |
 | twilight | 2 | largest share of pixels with solar zenith angle at or below 95 degrees |
 | fallback | 2 | first scenes where the dynamic threshold fell back to 5.0 K |

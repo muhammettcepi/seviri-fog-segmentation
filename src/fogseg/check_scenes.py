@@ -16,11 +16,16 @@ import xarray as xr
 import yaml
 
 from fogseg.build import CHUNK_TIME
+from fogseg.label_store import check_labels_match
 
 TRAINING_SEASON = "2023-24"
 HIGH_CLOUD_MAX_BT108 = 240.0  # K
 BATCH_SCENES = 4 * CHUNK_TIME
 NIGHT_SPLIT = pd.Timedelta(hours=12)  # moves the small hours back to the evening they belong to
+# The fog fraction is a share of the decided pixels, so on a scene that is mostly ignored (twilight,
+# missing data) it rests on few pixels. The foggy and clear groups only take scenes with at least
+# half of their pixels decided; in the training season 9 of 304 scenes have less.
+MIN_DECIDED_FRACTION = 0.5
 
 N_FOGGY = 3
 N_CLEAR = 3
@@ -71,15 +76,9 @@ def batch_fractions(scenes: xr.Dataset, night_min_sza: float) -> tuple[np.ndarra
     return high_cloud, twilight
 
 
-def check_same_scenes(dataset: xr.Dataset, labels: xr.Dataset) -> None:
-    """The label store must have been made from this dataset, scene for scene."""
-    if not np.array_equal(dataset["time"].values, labels["time"].values):
-        raise ValueError("The label store has other scenes than the dataset; run `fogseg label` again")
-
-
 def scene_statistics(dataset: xr.Dataset, labels: xr.Dataset) -> pd.DataFrame:
-    """One row per scene: time, season, fog, high-cloud and twilight fraction, threshold source."""
-    check_same_scenes(dataset, labels)
+    """One row per scene: time, season, fog, decided, high-cloud and twilight fraction, threshold source."""
+    check_labels_match(dataset, labels)
     night_min_sza = float(labels.attrs["night_min_sza"])
 
     high_cloud_parts = []
@@ -97,6 +96,8 @@ def scene_statistics(dataset: xr.Dataset, labels: xr.Dataset) -> pd.DataFrame:
             "time": times,
             "season": [season_of(time) for time in times],
             "fog_fraction": labels["fog_fraction"].values,
+            # a pixel is decided (0 or 1) exactly when it is not ignored (255)
+            "decided_fraction": 1.0 - labels["ignore_fraction"].values.astype(float),
             "high_cloud_fraction": np.concatenate(high_cloud_parts),
             "twilight_fraction": np.concatenate(twilight_parts),
             "threshold_source": [str(source) for source in labels["threshold_source"].values],
@@ -125,10 +126,11 @@ def top_scenes(candidates: pd.DataFrame, column: str, n: int, highest: bool) -> 
 
 def pick_group(candidates: pd.DataFrame, group: str) -> pd.DataFrame:
     """The scenes of one group, from the candidates no earlier group has taken."""
+    well_decided = candidates[candidates["decided_fraction"] >= MIN_DECIDED_FRACTION]
     if group == "foggy":
-        return top_scenes(candidates, "fog_fraction", N_FOGGY, highest=True)
+        return top_scenes(well_decided, "fog_fraction", N_FOGGY, highest=True)
     if group == "clear":
-        return top_scenes(candidates, "fog_fraction", N_CLEAR, highest=False)
+        return top_scenes(well_decided, "fog_fraction", N_CLEAR, highest=False)
     if group == "high_cloud":
         return top_scenes(candidates, "high_cloud_fraction", N_HIGH_CLOUD, highest=True)
     if group == "twilight":

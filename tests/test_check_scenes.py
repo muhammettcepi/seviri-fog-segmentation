@@ -13,7 +13,13 @@ import xarray as xr
 import yaml
 from helpers import CHANNELS, TEST_PARAMS, make_label_dataset
 
-from fogseg.check_scenes import night_of, scene_statistics, season_of, select_check_scenes
+from fogseg.check_scenes import (
+    MIN_DECIDED_FRACTION,
+    night_of,
+    scene_statistics,
+    season_of,
+    select_check_scenes,
+)
 from fogseg.cli import cmd_select_scenes
 from fogseg.config import load_config
 from fogseg.label_store import label_dataset, label_store_path
@@ -41,6 +47,7 @@ def make_stats(scenes_per_season: int = SCENES_PER_SEASON) -> pd.DataFrame:
             "time": times,
             "season": [season_of(time) for time in times],
             "fog_fraction": rng.permutation(n_scenes) / n_scenes,
+            "decided_fraction": 1.0,
             "high_cloud_fraction": rng.permutation(n_scenes) / n_scenes,
             "twilight_fraction": rng.permutation(n_scenes) / n_scenes,
             "threshold_source": sources,
@@ -67,6 +74,7 @@ def make_night_stats(n_nights: int = 20) -> pd.DataFrame:
             "time": slots,
             "season": [season_of(time) for time in slots],
             "fog_fraction": fog,
+            "decided_fraction": 1.0,
             "high_cloud_fraction": high_cloud,
             "twilight_fraction": twilight,
             "threshold_source": "dynamic",
@@ -157,6 +165,34 @@ def test_ties_go_to_the_earlier_scene():
     assert clear == list(stats["time"][3:6])
 
 
+def test_foggy_and_clear_skip_scenes_with_few_decided_pixels():
+    stats = make_stats()
+    training = stats[stats["season"] == "2023-24"]
+    most_fog = training["fog_fraction"].idxmax()
+    least_fog = training["fog_fraction"].idxmin()
+    # Mostly twilight: the extreme fog fractions rest on a few pixels
+    stats.loc[[most_fog, least_fog], "decided_fraction"] = MIN_DECIDED_FRACTION - 0.01
+
+    selected = select_check_scenes(stats)
+
+    in_fog_groups = selected.loc[selected["group"].isin(["foggy", "clear"]), "time"]
+    assert stats.loc[most_fog, "time"] not in set(in_fog_groups)
+    assert stats.loc[least_fog, "time"] not in set(in_fog_groups)
+    assert (selected["group"] == "foggy").sum() == 3
+    assert (selected["group"] == "clear").sum() == 3
+
+
+def test_scene_with_exactly_the_minimum_decided_share_can_be_foggy():
+    stats = make_stats()
+    training = stats[stats["season"] == "2023-24"]
+    most_fog = training["fog_fraction"].idxmax()
+    stats.loc[most_fog, "decided_fraction"] = MIN_DECIDED_FRACTION
+
+    selected = select_check_scenes(stats)
+
+    assert stats.loc[most_fog, "time"] in set(selected.loc[selected["group"] == "foggy", "time"])
+
+
 def test_selection_takes_at_most_one_scene_per_night():
     stats = make_night_stats()
 
@@ -218,16 +254,19 @@ def test_scene_statistics_reads_store_and_computes_fractions(tmp_path):
             warnings.simplefilter("error")
             stats = scene_statistics(with_known_fractions(data), labels)
         expected_fog = labels["fog_fraction"].values
+        expected_ignore = labels["ignore_fraction"].values.astype(float)
 
     assert list(stats.columns) == [
         "time",
         "season",
         "fog_fraction",
+        "decided_fraction",
         "high_cloud_fraction",
         "twilight_fraction",
         "threshold_source",
     ]
     assert list(stats.index) == [0, 1, 2, 3]
+    np.testing.assert_allclose(stats["decided_fraction"], 1.0 - expected_ignore)
     assert stats["time"].is_monotonic_increasing
     assert list(stats["season"]) == ["2023-24"] * 4
     assert list(stats["threshold_source"]) == ["fixed"] * 4
@@ -265,7 +304,7 @@ def test_cli_writes_the_check_scenes_next_to_the_config(tmp_path, caplog):
     config = write_config(tmp_path, dataset_path, mode="fixed")
 
     with caplog.at_level(logging.INFO, logger="fogseg"):
-        cmd_select_scenes(argparse.Namespace(config=config, labels=None))
+        cmd_select_scenes(argparse.Namespace(config=config, labels=None, overwrite=False))
 
     out_path = tmp_path / "check_scenes.yaml"
     written = yaml.safe_load(out_path.read_text(encoding="utf-8"))
@@ -278,3 +317,32 @@ def test_cli_writes_the_check_scenes_next_to_the_config(tmp_path, caplog):
         assert pd.Timestamp(scene["time"]) in dataset_times
     assert written["scenes"][0]["time"] == "2023-11-20T21:00"
     assert str(out_path) in caplog.text
+
+
+def test_cli_keeps_existing_check_scenes_without_overwrite(tmp_path):
+    dataset_path = make_label_dataset(tmp_path / "data.zarr", n_scenes=CLI_SCENES)
+    label_dataset(dataset_path, label_store_path(tmp_path / "labels", "fixed"), "fixed", TEST_PARAMS)
+    config = write_config(tmp_path, dataset_path, mode="fixed")
+    out_path = tmp_path / "check_scenes.yaml"
+    out_path.write_text("reviewed: true\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="--overwrite"):
+        cmd_select_scenes(argparse.Namespace(config=config, labels=None, overwrite=False))
+    assert out_path.read_text(encoding="utf-8") == "reviewed: true\n"
+
+    cmd_select_scenes(argparse.Namespace(config=config, labels=None, overwrite=True))
+    assert len(yaml.safe_load(out_path.read_text(encoding="utf-8"))["scenes"]) == 15
+
+
+def test_scene_statistics_rejects_a_label_store_of_another_dataset_build(tmp_path):
+    dataset_path = make_label_dataset(tmp_path / "data.zarr", n_scenes=4)
+    store_path = label_store_path(tmp_path / "labels", "fixed")
+    label_dataset(dataset_path, store_path, "fixed", TEST_PARAMS)
+
+    with (
+        xr.open_zarr(dataset_path, consolidated=False) as data,
+        xr.open_zarr(store_path, consolidated=False) as labels,
+        pytest.raises(ValueError, match="fogseg label"),
+    ):
+        data.attrs["created"] = "2026-02-01T00:00:00+00:00"
+        scene_statistics(data, labels)

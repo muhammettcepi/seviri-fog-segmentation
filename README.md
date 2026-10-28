@@ -118,7 +118,7 @@ fogseg build                          # stack them into one Zarr store
 
 fogseg label                          # labels_<mode>.zarr; mode = labels.mode in the config (dynamic)
 fogseg label --mode fixed             # the fixed-threshold version; --overwrite replaces a store
-fogseg select-scenes                  # write configs/check_scenes.yaml (uses labels.mode, or --labels)
+fogseg select-scenes                  # write configs/check_scenes.yaml (uses labels.mode, or --labels); --overwrite replaces it
 fogseg inspect --time 2024-02-29T03:00 --labels dynamic   # one check figure, a PNG in labels.figures_dir
 
 pip install -e ".[dev]" && pytest     # run the tests

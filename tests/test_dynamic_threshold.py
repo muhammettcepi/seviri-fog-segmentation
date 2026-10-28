@@ -71,6 +71,21 @@ def test_non_finite_samples_are_ignored():
     assert dynamic_threshold(with_nans, FIXED, PARAMS) == ThresholdChoice(FIXED, "fallback")
 
 
+def test_samples_outside_the_histogram_range_do_not_count_as_pixels():
+    in_range = clear_hump_with_cloud_shoulder(8)[: PARAMS.min_pixels - 1]
+    deck_above_range = np.full(PARAMS.min_pixels, PARAMS.bin_range[1] + 1.0)
+    below_range = np.full(PARAMS.min_pixels, PARAMS.bin_range[0] - 1.0)
+    btd = np.concatenate([in_range, deck_above_range, below_range])
+    assert dynamic_threshold(btd, FIXED, PARAMS) == ThresholdChoice(FIXED, "fallback")
+
+
+def test_samples_on_the_histogram_range_edges_count_as_pixels():
+    hump = clear_hump_with_cloud_shoulder(9)
+    hump = hump[(hump > PARAMS.bin_range[0]) & (hump < PARAMS.bin_range[1])][: PARAMS.min_pixels - 2]
+    on_edges = np.array(PARAMS.bin_range)
+    assert dynamic_threshold(np.concatenate([hump, on_edges]), FIXED, PARAMS).source == "dynamic"
+
+
 def test_non_finite_samples_do_not_change_the_threshold():
     btd = clear_hump_with_cloud_shoulder(7)
     with_nans = np.concatenate([btd, np.full(500, np.nan), np.full(500, np.inf)])

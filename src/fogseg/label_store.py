@@ -182,6 +182,23 @@ def write_metadata(store: Path, attrs: dict) -> None:
     zarr.open_group(store, mode="r+").attrs.update(attrs)
 
 
+def check_labels_match(dataset: xr.Dataset, labels: xr.Dataset) -> None:
+    """The label store must have been made from this build of the dataset, scene for scene.
+
+    Equal times are not enough: a rebuilt dataset can keep the times but change the pixels, so the
+    creation time the store recorded for its source must be the dataset's too.
+    """
+    if not np.array_equal(dataset["time"].values, labels["time"].values):
+        raise ValueError("The label store has other scenes than the dataset; run `fogseg label` again")
+    dataset_created = dataset.attrs.get("created", "unknown")
+    source_created = labels.attrs.get("source_created", "unknown")
+    if source_created != dataset_created:
+        raise ValueError(
+            f"The label store was made from the dataset created {source_created}, but the dataset was "
+            f"created {dataset_created}; run `fogseg label` again"
+        )
+
+
 def stored_params(attrs: dict, config_dynamic: DynamicParams) -> tuple[LabelParams, DynamicParams]:
     """The parameters a label store was made with, read from its attributes.
 

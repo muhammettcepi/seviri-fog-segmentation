@@ -154,6 +154,10 @@ def cmd_select_scenes(args: argparse.Namespace) -> None:
     cfg = load_config(args.config)
     labels_cfg = cfg["labels"]
     mode = args.labels or labels_cfg["mode"]
+    # The committed check scenes are the ones judged in docs/notes/label_check.md; replace them only on purpose.
+    out_path = Path(args.config).parent / "check_scenes.yaml"
+    if out_path.exists() and not args.overwrite:
+        raise FileExistsError(f"{out_path} exists; use --overwrite to replace it")
 
     dataset_path = Path(cfg["data"]["processed_path"])
     store_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
@@ -164,7 +168,6 @@ def cmd_select_scenes(args: argparse.Namespace) -> None:
         stats = scene_statistics(data, labels)
 
     selected = select_check_scenes(stats)
-    out_path = Path(args.config).parent / "check_scenes.yaml"
     write_check_scenes(selected, mode, out_path)
     log.info("Wrote %d check scenes to %s", len(selected), out_path)
     log.info("Scenes per group: %s", group_counts(selected))
@@ -296,6 +299,9 @@ def main() -> None:
     select_scenes.add_argument("--config", default="configs/default.yaml")
     select_scenes.add_argument(
         "--labels", choices=["fixed", "dynamic"], help="default: labels.mode of the config"
+    )
+    select_scenes.add_argument(
+        "--overwrite", action="store_true", help="replace check_scenes.yaml if it exists"
     )
     select_scenes.set_defaults(func=cmd_select_scenes)
 

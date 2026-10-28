@@ -18,6 +18,7 @@ from matplotlib.axes import Axes
 from matplotlib.patches import Patch
 
 from fogseg.dynamic_threshold import DynamicParams
+from fogseg.label_store import check_labels_match
 from fogseg.labels import FOG, IGNORE, LabelParams, histogram_pixels
 
 # Set after the imports on purpose: figures are only written to files, never shown, so no GUI
@@ -170,14 +171,15 @@ def inspect_figure(
     out_dir: Path,
 ) -> Path:
     """Write the four-panel check figure of the scene at `wanted` and return its path."""
+    # Labels of another dataset build would be drawn over pixels they were not made from.
+    check_labels_match(dataset, labels)
     scene = find_scene(pd.DatetimeIndex(dataset["time"].values), wanted)
-    label_scene_index = find_scene(pd.DatetimeIndex(labels["time"].values), wanted)
 
     ir039, ir108, ir120 = scene_channels(dataset, scene)
     sza = dataset["sza"].isel(time=scene).values
-    label_image = labels["label"].isel(time=label_scene_index).values
-    threshold = float(labels["btd_threshold"].isel(time=label_scene_index).values)
-    source = str(labels["threshold_source"].isel(time=label_scene_index).values)
+    label_image = labels["label"].isel(time=scene).values
+    threshold = float(labels["btd_threshold"].isel(time=scene).values)
+    source = str(labels["threshold_source"].isel(time=scene).values)
     mode = str(labels.attrs["mode"])
 
     rgb = night_microphysics_rgb(ir039, ir108, ir120)

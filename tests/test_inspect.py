@@ -141,6 +141,27 @@ def test_inspect_rejects_a_time_that_is_not_in_the_dataset(tmp_path):
         inspect_figure(data, labels, missing, TEST_PARAMS, TEST_DYNAMIC, tmp_path)
 
 
+def test_inspect_rejects_labels_of_another_dataset_build(tmp_path):
+    dataset_path, store_path = make_stores(tmp_path)
+    with open_zarr(dataset_path) as data, open_zarr(store_path) as labels:
+        data.attrs["created"] = "2026-02-01T00:00:00+00:00"  # rebuilt: same times, other pixels
+        with pytest.raises(ValueError, match="fogseg label"):
+            inspect_figure(data, labels, WANTED, TEST_PARAMS, TEST_DYNAMIC, tmp_path / "figures")
+    assert not (tmp_path / "figures").exists()
+
+
+def test_inspect_rejects_labels_of_other_scenes(tmp_path):
+    dataset_path = make_label_dataset(tmp_path / "data.zarr", n_scenes=4)
+    store_path = label_store_path(tmp_path / "labels", "fixed")
+    label_dataset(make_label_dataset(tmp_path / "other.zarr", n_scenes=3), store_path, "fixed", TEST_PARAMS)
+    with (
+        open_zarr(dataset_path) as data,
+        open_zarr(store_path) as labels,
+        pytest.raises(ValueError, match="other scenes"),
+    ):
+        inspect_figure(data, labels, WANTED, TEST_PARAMS, TEST_DYNAMIC, tmp_path / "figures")
+
+
 def write_config(tmp_path: Path, dataset: Path, mode: str) -> Path:
     cfg = load_config("configs/default.yaml")
     cfg["data"]["processed_path"] = str(dataset)

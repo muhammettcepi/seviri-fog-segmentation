@@ -127,7 +127,10 @@ def dynamic_threshold(btd: np.ndarray, fixed: float, params: DynamicParams) -> T
     """Threshold `offset` above the clear-ground peak, or `fixed` if there is no usable peak."""
     fallback = ThresholdChoice(float(fixed), "fallback")
 
-    samples = btd[np.isfinite(btd)]
+    # Only pixels inside bin_range reach the histogram (the upper edge belongs to the last bin), so
+    # only they count towards min_pixels.
+    low, high = params.bin_range
+    samples = btd[np.isfinite(btd) & (btd >= low) & (btd <= high)]
     if samples.size < params.min_pixels:
         return fallback
 

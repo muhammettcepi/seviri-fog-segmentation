@@ -170,7 +170,7 @@ All values are in the `labels` section of [`configs/default.yaml`](../configs/de
   cloud lay in the training season. The result is limited to 3.5 to 6.0 K; with the current window the upper limit is never reached, because the
   highest accepted peak is 4.375 K, so the highest threshold is 5.875 K.
   The scene falls back to the fixed 5.0 K (`threshold_source = fallback`) if the histogram has fewer
-  than 2,000 pixels or the highest bin is at the edge of the window, so no real peak was found.
+  than 2,000 pixels inside its range of -2 to 8 K or the highest bin is at the edge of the window, so no real peak was found.
 
 ### Label statistics
 
