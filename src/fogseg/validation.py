@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import itertools
+import logging
+from pathlib import Path
+from typing import NamedTuple
+
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-from fogseg.labels import LabelParams
+from fogseg.labels import IGNORE, LabelParams
+from fogseg.scores import COUNT_NAMES, bootstrap_skill, contingency, counts_by_night, skill
 
+log = logging.getLogger("fogseg")
+
+SPEC_PATH = "docs/superpowers/specs/2026-10-28-station-validation-design.md"
+SOURCES = ("metar", "synop")
+INTERVAL_SCORES = ("pod", "far", "csi")
 TRUTH_YES, TRUTH_NO, TRUTH_UNDEFINED = 1, 0, -1
 EARTH_RADIUS_KM = 6371.0
 STATION_COLUMNS = ["station", "source", "lat", "lon", "elevation_m"]
@@ -188,3 +199,110 @@ def station_cases(
         threshold_source=labels["threshold_source"].isel(time=at_cases["time"]).values.astype(object),
     )
     return cases[CASE_COLUMNS]
+
+
+def season_bounds(cfg: dict, season: str) -> tuple[np.datetime64, np.datetime64]:
+    """Noon of a season's first day to noon after its last, so each night keeps its 00:00 to 05:00 slots."""
+    seasons = {entry["name"]: entry for entry in cfg["time"]["seasons"]}
+    if season not in seasons:
+        raise ValueError(f"Unknown season {season!r}; the config has {', '.join(seasons)}")
+    noon = np.timedelta64(12, "h")
+    first_day = np.datetime64(seasons[season]["start"], "D")
+    last_day = np.datetime64(seasons[season]["end"], "D")
+    return (
+        (first_day + noon).astype("datetime64[ns]"),
+        (last_day + np.timedelta64(1, "D") + noon).astype("datetime64[ns]"),
+    )
+
+
+def check_season_allowed(cfg: dict, season: str, final: bool) -> None:
+    """Refuse every season but the tuning season unless `final`, so the test season stays unseen."""
+    tune_season = cfg["stations"]["tune_season"]
+    if season != tune_season and not final:
+        raise PermissionError(
+            f"Season {season} is not the tuning season {tune_season}. Score it once, at the very end, "
+            f"with --final; see {SPEC_PATH}"
+        )
+
+
+def read_observations(data_dir: Path) -> pd.DataFrame:
+    """The METAR and SYNOP tables that `fogseg stations` wrote; one of them may be missing."""
+    tables = []
+    for source in SOURCES:
+        path = data_dir / f"observations_{source}.csv"
+        if path.exists():
+            tables.append(pd.read_csv(path, dtype={"station": str}, parse_dates=["time"]))
+        else:
+            log.warning("%s is missing; scoring without %s observations", path, source)
+    if not tables:
+        raise FileNotFoundError(f"No observation tables in {data_dir}; run `fogseg stations` first")
+    return pd.concat(tables, ignore_index=True)
+
+
+class View(NamedTuple):
+    """One row of the score table: a group of cases, the truth it is scored against, and the hidden rule."""
+
+    name: str
+    group: str
+    cases: pd.DataFrame
+    truth_column: str = "truth_fls"
+    keep_hidden: bool = False
+
+
+def score_row(view: View, n_samples: int, seed: int) -> dict:
+    """Counts, scores with bootstrap intervals, and the cases of the view that were not scored.
+
+    `n_fls_hidden` counts all hidden cases of the view; the two ignored counts are taken among the
+    cases that stay in, so no case is counted twice.
+    """
+    scored = view.cases if view.keep_hidden else view.cases[~view.cases["hidden"]]
+    label, truth, night = (
+        scored["label"].to_numpy(),
+        scored[view.truth_column].to_numpy(),
+        scored["night"].to_numpy(),
+    )
+    counts = contingency(label, truth)
+    night_counts = counts_by_night(night, label, truth, np.unique(night))
+    if len(night_counts) > 0:
+        intervals = bootstrap_skill(night_counts, n_samples, seed)
+    else:
+        intervals = dict.fromkeys(INTERVAL_SCORES, (np.nan, np.nan))
+
+    row = {"view": view.name, "group": view.group, "n_cases": int(counts.sum())}
+    row |= dict(zip(COUNT_NAMES, counts.tolist(), strict=True))
+    point = skill(counts)
+    for name in INTERVAL_SCORES:
+        low, high = intervals[name]
+        row |= {name: float(point[name]), f"{name}_low": low, f"{name}_high": high}
+    row["bias"] = float(point["bias"])
+
+    is_ignored = label == IGNORE
+    row["n_fls_ignored"] = int(np.sum(is_ignored & (truth == TRUTH_YES)))
+    row["n_no_fls_ignored"] = int(np.sum(is_ignored & (truth == TRUTH_NO)))
+    row["n_fls_hidden"] = int(np.sum(view.cases["hidden"] & (view.cases[view.truth_column] == TRUTH_YES)))
+    return row
+
+
+def score_table(cases: pd.DataFrame, lat_bands: list[float], n_samples: int, seed: int) -> pd.DataFrame:
+    """POD, FAR, CSI and bias with bootstrap intervals, one row per view of the case table.
+
+    Besides the pooled `main` row there are rows per source, threshold source, latitude band and slot,
+    one against the fog-only truth, and one that keeps the hidden cases.
+    """
+    pooled = deduplicate(cases)
+    views = [View("main", "all", pooled)]
+    views += [View("source", source, deduplicate(cases[cases["source"] == source])) for source in SOURCES]
+    views += [
+        View("threshold_source", name, pooled[pooled["threshold_source"] == name])
+        for name in sorted(pooled["threshold_source"].unique())
+    ]
+    views += [
+        View("lat_band", f"{low:g}-{high:g}", pooled[(pooled["lat"] >= low) & (pooled["lat"] < high)])
+        for low, high in itertools.pairwise(lat_bands)
+    ]
+    views += [View("slot", slot, pooled[pooled["slot"] == slot]) for slot in sorted(pooled["slot"].unique())]
+    views += [
+        View("fog_only", "all", pooled, truth_column="truth_fog"),
+        View("with_hidden", "all", pooled, keep_hidden=True),
+    ]
+    return pd.DataFrame([score_row(view, n_samples, seed) for view in views])

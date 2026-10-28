@@ -141,6 +141,67 @@ def cmd_stations(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_validate(args: argparse.Namespace) -> None:
+    import numpy as np
+    import xarray as xr
+
+    from fogseg.dynamic_threshold import DynamicParams
+    from fogseg.label_store import check_labels_match, label_store_path, stored_params
+    from fogseg.validation import (
+        check_season_allowed,
+        read_observations,
+        score_table,
+        season_bounds,
+        station_cases,
+    )
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    mode = args.labels or labels_cfg["mode"]
+    start, end = season_bounds(cfg, args.season)
+    check_season_allowed(cfg, args.season, args.final)
+
+    data_dir = Path(stations_cfg["data_dir"])
+    observations = read_observations(data_dir)
+
+    store_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
+    with (
+        xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
+        xr.open_zarr(store_path, consolidated=False) as labels,
+    ):
+        check_labels_match(data, labels)
+        # The hidden test must use the thresholds the labels were made with, even after a config edit.
+        params, _ = stored_params(labels.attrs, DynamicParams.from_config(labels_cfg["dynamic"]))
+        times = labels["time"].values
+        in_season = np.flatnonzero((times >= start) & (times < end))
+        if in_season.size == 0:
+            raise ValueError(f"The label store has no scenes in season {args.season}")
+        cases = station_cases(
+            data.isel(time=in_season), labels.isel(time=in_season), observations, stations_cfg, params
+        )
+
+    scores = score_table(
+        cases, stations_cfg["lat_bands"], stations_cfg["bootstrap_samples"], stations_cfg["seed"]
+    )
+    cases_path = data_dir / f"cases_{mode}_{args.season}.csv"
+    scores_path = data_dir / f"scores_{mode}_{args.season}.csv"
+    cases.to_csv(cases_path, index=False)
+    scores.to_csv(scores_path, index=False)
+
+    main = scores[scores["view"] == "main"].iloc[0]
+    log.info(
+        "Season %s, %s labels, %d cases: POD %.3f, FAR %.3f, CSI %.3f, bias %.3f",
+        args.season,
+        mode,
+        main["n_cases"],
+        main["pod"],
+        main["far"],
+        main["csi"],
+        main["bias"],
+    )
+    log.info("Wrote %s and %s", cases_path, scores_path)
+
+
 def cmd_inspect(args: argparse.Namespace) -> None:
     import pandas as pd
     import xarray as xr
@@ -313,6 +374,15 @@ def main() -> None:
     stations.add_argument("--config", default="configs/default.yaml")
     stations.add_argument("--source", choices=["metar", "synop"], help="default: both")
     stations.set_defaults(func=cmd_stations)
+
+    validate = sub.add_parser("validate", help="score the label store against station observations")
+    validate.add_argument("--config", default="configs/default.yaml")
+    validate.add_argument("--labels", choices=["fixed", "dynamic"], help="default: labels.mode of the config")
+    validate.add_argument("--season", required=True, help="season name from the config, e.g. 2023-24")
+    validate.add_argument(
+        "--final", action="store_true", help="allow the test season, which is scored once at the end"
+    )
+    validate.set_defaults(func=cmd_validate)
 
     inspect_cmd = sub.add_parser(
         "inspect", help="write a check figure of one scene (RGB, labels, histogram, sza)"
