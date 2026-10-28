@@ -53,3 +53,25 @@ labels:
     offset: 1.5
     min_pixels: 2000
     clamp: [3.5, 6.0]
+
+# Station observations that check and tune the labels; design in docs/superpowers/specs/2026-10-28-station-validation-design.md
+stations:
+  data_dir: "/mnt/d/fogseg-data/stations"
+  iem_networks: [AT__ASOS, BA__ASOS, BE__ASOS, BY__ASOS, CH__ASOS, CZ__ASOS, DE__ASOS, DK__ASOS, FR__ASOS, HR__ASOS,
+                 HU__ASOS, IT__ASOS, LT__ASOS, LU__ASOS, NL__ASOS, PL__ASOS, RO__ASOS, RS__ASOS, SE__ASOS, SI__ASOS,
+                 SK__ASOS, UA__ASOS]
+  wmo_blocks: ["02", "06", "07", "10", "11", "12", "13", "14", "15", "16", "26", "33"]
+  isd_history_url: "https://www.ncei.noaa.gov/pub/data/noaa/isd-history.csv"
+  request_pause_s: 10
+  max_tries: 3
+  max_distance_km: 5.0
+  max_elevation_m: 1000.0
+  truth_limit_m: 1000.0
+  scan_delay_min: 12
+  time_tolerance_min: 30
+  lat_bands: [43, 47, 51, 56]
+  tune_season: "2023-24"
+  offset_grid: [0.5, 3.0, 0.25]      # start, stop (included), step in K
+  btd_fixed_grid: [4.0, 7.0, 0.25]
+  bootstrap_samples: 1000
+  seed: 0

@@ -117,6 +117,30 @@ def cmd_label(args: argparse.Namespace) -> None:
     log.info("Mean fog fraction over scenes with decided pixels: %.4f", mean_fog_fraction)
 
 
+def cmd_stations(args: argparse.Namespace) -> None:
+    import xarray as xr
+
+    from fogseg.observations import collect_observations
+
+    cfg = load_config(args.config)
+    data_dir = Path(cfg["stations"]["data_dir"])
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        lon, lat = data["lon"].values, data["lat"].values
+
+    for source in [args.source] if args.source else ["metar", "synop"]:
+        observations = collect_observations(source, cfg, lon, lat)
+        out_path = data_dir / f"observations_{source}.csv"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        observations.to_csv(out_path, index=False)
+        log.info(
+            "Wrote %d %s observations of %d stations to %s",
+            len(observations),
+            source,
+            observations["station"].nunique(),
+            out_path,
+        )
+
+
 def cmd_inspect(args: argparse.Namespace) -> None:
     import pandas as pd
     import xarray as xr
@@ -282,6 +306,13 @@ def main() -> None:
     label.add_argument("--mode", choices=["fixed", "dynamic"], help="default: labels.mode of the config")
     label.add_argument("--overwrite", action="store_true", help="replace the label store if it exists")
     label.set_defaults(func=cmd_label)
+
+    stations = sub.add_parser(
+        "stations", help="download METAR and SYNOP observations of the dataset nights (resumable)"
+    )
+    stations.add_argument("--config", default="configs/default.yaml")
+    stations.add_argument("--source", choices=["metar", "synop"], help="default: both")
+    stations.set_defaults(func=cmd_stations)
 
     inspect_cmd = sub.add_parser(
         "inspect", help="write a check figure of one scene (RGB, labels, histogram, sza)"
