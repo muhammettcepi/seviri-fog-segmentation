@@ -15,6 +15,7 @@ NO_CLOUD_TOKENS = {"NSC", "NCD", "SKC", "CLR", "CAVOK"}
 VISIBILITY_GROUP = re.compile(r"\d{4}(NDV)?")
 CLOUD_LAYER = re.compile(r"(?P<amount>FEW|SCT|BKN|OVC)(?P<height>\d{3}|///)(CB|TCU|///)?")
 VERTICAL_VISIBILITY = re.compile(r"(?P<amount>VV)(?P<height>\d{3}|///)")
+UNKNOWN_LAYER = re.compile(r"/{6}(CB|TCU|///)?")
 CEILING_AMOUNTS = {"BKN", "OVC", "VV"}
 
 
@@ -49,13 +50,18 @@ def prevailing_visibility_m(metar: str) -> float:
 def ceiling_m(metar: str) -> float:
     """Base in m of the first (lowest) BKN, OVC or VV layer of the main body.
 
-    Infinite when the body reports cloud but no such layer; NaN when the base is `///` or the body has
-    no cloud information.
+    Infinite when the body reports cloud but no such layer. NaN when the base is `///`, when a layer of
+    unknown amount (`//////`) is reported and no known BKN, OVC or VV layer comes first, or when the body
+    has no cloud information.
     """
     has_cloud_information = False
+    has_unknown_layer = False
     for token in main_body(metar):
         if token in NO_CLOUD_TOKENS:
             has_cloud_information = True
+            continue
+        if UNKNOWN_LAYER.fullmatch(token):
+            has_unknown_layer = True
             continue
         layer = CLOUD_LAYER.fullmatch(token) or VERTICAL_VISIBILITY.fullmatch(token)
         if layer is None:
@@ -63,6 +69,8 @@ def ceiling_m(metar: str) -> float:
         has_cloud_information = True
         if layer["amount"] in CEILING_AMOUNTS:
             return _base_m(layer["height"])
+    if has_unknown_layer:
+        return math.nan
     return math.inf if has_cloud_information else math.nan
 
 

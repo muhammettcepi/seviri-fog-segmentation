@@ -76,6 +76,17 @@ def test_unknown_n_uses_cover_of_8_group():
     assert synop.ceiling_m == 300
 
 
+def test_unknown_cover_in_8_group_falls_back_to_n():
+    low = decode_synop("AAXX 28031 10870 11408 32504 10012 8////==")
+    assert low.ceiling_m == math.inf
+
+    overcast = decode_synop("AAXX 28031 10870 11408 82504 10012 8////==")
+    assert overcast.ceiling_m == 300
+
+    unknown = decode_synop("AAXX 28031 10870 11408 /2504 10012 8////==")
+    assert math.isnan(unknown.ceiling_m)
+
+
 def test_unknown_base_with_low_cover_is_no_ceiling():
     synop = decode_synop("AAXX 28031 10870 11/60 32504==")
     assert synop.ceiling_m == math.inf

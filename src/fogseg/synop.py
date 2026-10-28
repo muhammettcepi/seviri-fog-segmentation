@@ -67,7 +67,8 @@ def decode_synop(message: str) -> Synop | None:
 def _ceiling_m(cloud_group: str, optional_groups: list[str], base_class: str) -> float:
     """Lower edge of the `h` base class when more than 5 oktas are reported; infinite when 5 or fewer.
 
-    The cover is `Nh` of the first well-formed `8NhCLCMCH` group, else `N` of the `Nddff` group. Skipping the
+    The cover is `Nh` of the first well-formed `8NhCLCMCH` group, else `N` of the `Nddff` group; an unknown
+    `Nh` (`/`) also falls back to `N`, as `Nh` cannot exceed `N`. Skipping the
     optional `00fff` group after a wind of 99 kt or more needs no special case because the search is by
     leading `8`.
     """
@@ -77,6 +78,8 @@ def _ceiling_m(cloud_group: str, optional_groups: list[str], base_class: str) ->
         None,
     )
     cover = low_cloud_group[1] if low_cloud_group else total_cover
+    if cover == "/":
+        cover = total_cover
     if SKY_OBSCURED in (total_cover, cover):
         return 0.0
     if cover == "/":

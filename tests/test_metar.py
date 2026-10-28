@@ -63,6 +63,21 @@ def test_unknown_layer_height_is_nan():
     assert math.isnan(ceiling_m(unknown_cumulonimbus))
 
 
+@pytest.mark.parametrize(
+    ("layers", "expected"),
+    [
+        ("FEW005 //////CB", math.nan),
+        ("FEW005 //////", math.nan),
+        ("//////CB", math.nan),
+        ("BKN004 //////CB", 4 * 100 * 0.3048),
+        ("FEW005", math.inf),
+    ],
+)
+def test_unknown_layer_makes_the_ceiling_unknown_unless_a_known_one_lies_below(layers, expected):
+    metar = f"EDDF 010050Z 22005KT 9999 {layers} 05/02 Q1020"
+    assert ceiling_m(metar) == pytest.approx(expected, nan_ok=True)
+
+
 def test_missing_cloud_information_is_nan():
     metar = "EDDM 010050Z AUTO 22005KT 9999 05/02 Q1020"
     assert math.isnan(ceiling_m(metar))
