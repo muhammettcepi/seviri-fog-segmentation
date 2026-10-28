@@ -43,6 +43,8 @@ TEST_DYNAMIC = DynamicParams(
 LABEL_NY, LABEL_NX = 8, 10
 DEEP_NIGHT_SZA = 120.0
 LABEL_DATASET_CREATED = "2026-01-01T00:00:00+00:00"
+GRID_LON0, GRID_LAT0 = 10.0, 50.0
+COLD_PIXEL = (7, 8)
 
 
 def make_scene(time: dt.datetime, value: float, x=None) -> xr.Dataset:
@@ -68,18 +70,12 @@ def make_scene(time: dt.datetime, value: float, x=None) -> xr.Dataset:
     )
 
 
-def make_label_dataset(
-    path: Path,
-    n_scenes: int = 3,
-    scene_sza: dict[int, float] | None = None,
-    background_btd: float = 1.8,
-) -> Path:
-    """A tiny dataset in the layout `fogseg build` writes, for the label tests.
-
-    Each scene has a warm clear background (BTD `background_btd` K) and a 5 x 5 fog patch
-    (BTD 5.0 K) in the corner, all with a flat IR_108 field. `scene_sza` maps a scene index to
-    its solar zenith angle; every other scene is in deep night.
-    """
+def label_scenes(
+    n_scenes: int,
+    scene_sza: dict[int, float] | None,
+    background_btd: float,
+) -> xr.Dataset:
+    """The scenes of `make_label_dataset`, before they are written."""
     times = np.datetime64("2023-11-20T21:00", "ns") + np.arange(n_scenes) * np.timedelta64(3, "h")
 
     bt = np.empty((n_scenes, len(CHANNELS), LABEL_NY, LABEL_NX), dtype="float32")
@@ -104,6 +100,40 @@ def make_label_dataset(
             "x": np.arange(LABEL_NX, dtype="float64"),
         },
         attrs={"created": LABEL_DATASET_CREATED},
+    )
+    return dataset
+
+
+def make_label_dataset(
+    path: Path,
+    n_scenes: int = 3,
+    scene_sza: dict[int, float] | None = None,
+    background_btd: float = 1.8,
+) -> Path:
+    """A tiny dataset in the layout `fogseg build` writes, for the label tests.
+
+    Each scene has a warm clear background (BTD `background_btd` K) and a 5 x 5 fog patch
+    (BTD 5.0 K) in the corner, all with a flat IR_108 field. `scene_sza` maps a scene index to
+    its solar zenith angle; every other scene is in deep night.
+    """
+    dataset = label_scenes(n_scenes, scene_sza, background_btd)
+    variable_length_strings(dataset).to_zarr(path, mode="w", zarr_format=3, consolidated=False)
+    return path
+
+
+def make_station_dataset(path: Path) -> Path:
+    """Like `make_label_dataset`, with `lon` / `lat` on (y, x) and one cold pixel at `COLD_PIXEL`.
+
+    The grid starts at `GRID_LON0`, `GRID_LAT0` with 0.1 degree spacing and north at the top. The
+    cold pixel (IR_108 230 K) is high cloud: its label is 0 and a station on it is hidden.
+    """
+    dataset = label_scenes(n_scenes=3, scene_sza=None, background_btd=1.8)
+    dataset["bt"].loc[{"channel": "IR_108", "y": float(COLD_PIXEL[0]), "x": float(COLD_PIXEL[1])}] = 230.0
+
+    lon, lat = np.meshgrid(GRID_LON0 + 0.1 * np.arange(LABEL_NX), GRID_LAT0 - 0.1 * np.arange(LABEL_NY))
+    dataset = dataset.assign_coords(
+        lon=(("y", "x"), lon.astype("float32")),
+        lat=(("y", "x"), lat.astype("float32")),
     )
     variable_length_strings(dataset).to_zarr(path, mode="w", zarr_format=3, consolidated=False)
     return path
