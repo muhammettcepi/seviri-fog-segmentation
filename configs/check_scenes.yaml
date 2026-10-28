@@ -1,0 +1,32 @@
+labels: dynamic
+scenes:
+- time: 2023-10-02T05:00
+  group: twilight
+- time: 2023-10-04T05:00
+  group: twilight
+- time: 2023-10-05T21:00
+  group: spread
+- time: 2023-10-08T05:00
+  group: clear
+- time: 2023-10-20T05:00
+  group: clear
+- time: 2023-10-24T05:00
+  group: high_cloud
+- time: 2023-12-10T21:00
+  group: fallback
+- time: 2023-12-13T03:00
+  group: high_cloud
+- time: 2023-12-27T03:00
+  group: fallback
+- time: 2024-01-12T05:00
+  group: foggy
+- time: 2024-02-09T05:00
+  group: high_cloud
+- time: 2024-02-11T03:00
+  group: clear
+- time: 2024-02-17T05:00
+  group: foggy
+- time: 2024-02-26T21:00
+  group: spread
+- time: 2024-02-29T03:00
+  group: foggy

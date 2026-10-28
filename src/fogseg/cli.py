@@ -95,6 +95,84 @@ def cmd_build(args: argparse.Namespace) -> None:
     log.info("Wrote %d scenes to %s in %.0f s", n, out_path, time.time() - started)
 
 
+def cmd_label(args: argparse.Namespace) -> None:
+    from fogseg.dynamic_threshold import DynamicParams
+    from fogseg.label_store import label_dataset, label_store_path, summarize_store
+    from fogseg.labels import LabelParams
+
+    cfg = load_config(args.config)
+    labels_cfg = cfg["labels"]
+    mode = args.mode or labels_cfg["mode"]
+    params = LabelParams.from_config(labels_cfg)
+    dynamic = DynamicParams.from_config(labels_cfg["dynamic"]) if mode == "dynamic" else None
+
+    dataset_path = Path(cfg["data"]["processed_path"])
+    out_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
+    started = time.time()
+    n = label_dataset(dataset_path, out_path, mode, params, dynamic, overwrite=args.overwrite)
+    log.info("Wrote %d scenes to %s in %.0f s", n, out_path, time.time() - started)
+
+    source_counts, mean_fog_fraction = summarize_store(out_path)
+    log.info("Threshold sources: %s", source_counts)
+    log.info("Mean fog fraction over scenes with decided pixels: %.4f", mean_fog_fraction)
+
+
+def cmd_inspect(args: argparse.Namespace) -> None:
+    import pandas as pd
+    import xarray as xr
+
+    from fogseg.dynamic_threshold import DynamicParams
+    from fogseg.inspect import inspect_figure
+    from fogseg.label_store import label_store_path, stored_params
+
+    cfg = load_config(args.config)
+    labels_cfg = cfg["labels"]
+    mode = args.labels or labels_cfg["mode"]
+    config_dynamic = DynamicParams.from_config(labels_cfg["dynamic"])
+
+    dataset_path = Path(cfg["data"]["processed_path"])
+    store_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
+    with (
+        xr.open_zarr(dataset_path, consolidated=False) as data,
+        xr.open_zarr(store_path, consolidated=False) as labels,
+    ):
+        # The figure must show the pixels the labels were made from, even after a config edit.
+        params, dynamic = stored_params(labels.attrs, config_dynamic)
+        wanted = pd.Timestamp(args.time)
+        if wanted.tzinfo is not None:
+            wanted = wanted.tz_convert("UTC").tz_localize(None)
+        png = inspect_figure(data, labels, wanted, params, dynamic, Path(labels_cfg["figures_dir"]))
+    log.info("Wrote %s", png)
+
+
+def cmd_select_scenes(args: argparse.Namespace) -> None:
+    import xarray as xr
+
+    from fogseg.check_scenes import group_counts, scene_statistics, select_check_scenes, write_check_scenes
+    from fogseg.label_store import label_store_path
+
+    cfg = load_config(args.config)
+    labels_cfg = cfg["labels"]
+    mode = args.labels or labels_cfg["mode"]
+    # The committed check scenes are the ones judged in docs/notes/label_check.md; replace them only on purpose.
+    out_path = Path(args.config).parent / "check_scenes.yaml"
+    if out_path.exists() and not args.overwrite:
+        raise FileExistsError(f"{out_path} exists; use --overwrite to replace it")
+
+    dataset_path = Path(cfg["data"]["processed_path"])
+    store_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
+    with (
+        xr.open_zarr(dataset_path, consolidated=False) as data,
+        xr.open_zarr(store_path, consolidated=False) as labels,
+    ):
+        stats = scene_statistics(data, labels)
+
+    selected = select_check_scenes(stats)
+    write_check_scenes(selected, mode, out_path)
+    log.info("Wrote %d check scenes to %s", len(selected), out_path)
+    log.info("Scenes per group: %s", group_counts(selected))
+
+
 def cmd_check(args: argparse.Namespace) -> None:
     """Test EUMETSAT access in seconds: token, search, and the first 1 KB of one download."""
     from fogseg.download import connect, find_product
@@ -198,6 +276,34 @@ def main() -> None:
     build.add_argument("--config", default="configs/default.yaml")
     build.add_argument("--overwrite", action="store_true", help="rebuild if the store already exists")
     build.set_defaults(func=cmd_build)
+
+    label = sub.add_parser("label", help="write fog / low-stratus labels for every scene")
+    label.add_argument("--config", default="configs/default.yaml")
+    label.add_argument("--mode", choices=["fixed", "dynamic"], help="default: labels.mode of the config")
+    label.add_argument("--overwrite", action="store_true", help="replace the label store if it exists")
+    label.set_defaults(func=cmd_label)
+
+    inspect_cmd = sub.add_parser(
+        "inspect", help="write a check figure of one scene (RGB, labels, histogram, sza)"
+    )
+    inspect_cmd.add_argument("--config", default="configs/default.yaml")
+    inspect_cmd.add_argument("--time", required=True, help="scene time in UTC, e.g. 2023-11-21T00:00")
+    inspect_cmd.add_argument(
+        "--labels", choices=["fixed", "dynamic"], help="default: labels.mode of the config"
+    )
+    inspect_cmd.set_defaults(func=cmd_inspect)
+
+    select_scenes = sub.add_parser(
+        "select-scenes", help="choose the training-season scenes to check, into check_scenes.yaml"
+    )
+    select_scenes.add_argument("--config", default="configs/default.yaml")
+    select_scenes.add_argument(
+        "--labels", choices=["fixed", "dynamic"], help="default: labels.mode of the config"
+    )
+    select_scenes.add_argument(
+        "--overwrite", action="store_true", help="replace check_scenes.yaml if it exists"
+    )
+    select_scenes.set_defaults(func=cmd_select_scenes)
 
     args = parser.parse_args()
     cfg = load_config(args.config)

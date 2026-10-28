@@ -29,3 +29,27 @@ time:
   # 2 = every second night: 608 scenes instead of 1212 (brief's target is 600-800).
   # Consecutive nights are similar anyway, so skipping every other one loses little.
   every_nth_night: 2
+
+# Fog / low-stratus labels (0 not fog, 1 fog, 255 ignore).
+# Thresholds measured on the 2023-24 training season; evidence and reasons in docs/notes/btd_exploration.md.
+labels:
+  mode: dynamic   # fixed | dynamic; dynamic chosen on the check scenes, see docs/notes/label_check.md
+  output_dir: "/mnt/d/fogseg-data/processed"
+  figures_dir: "/mnt/d/fogseg-data/figures/inspect"
+  night_min_sza: 95.0
+  btd_fixed: 5.0
+  warm_min_bt108: 255.0
+  cirrus_max_split: 1.5
+  smooth_max_std: 1.5
+  uncertainty_band: 0.5
+  min_blob_pixels: 5
+  dynamic:
+    bin_width: 0.25
+    bin_range: [-2.0, 8.0]
+    smoothing_bins: 3
+    clear_window: [1.5, 4.75]
+    # The valley between clear ground and low cloud lies 1.5 K above the clear-ground peak in the
+    # training season, see docs/notes/btd_exploration.md.
+    offset: 1.5
+    min_pixels: 2000
+    clamp: [3.5, 6.0]

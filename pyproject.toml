@@ -19,12 +19,16 @@ dependencies = [
     "numpy",
     "pandas",
     "pyyaml",
+    "scipy",
+    "matplotlib",
     "zarr>=3",
 ]
 
 [project.optional-dependencies]
 # ruff is pinned: its default rule set changes between versions, and CI must lint like local runs
 dev = ["pytest", "ruff==0.17.*"]
+# to run the notebooks, also headless: jupyter nbconvert --to notebook --execute --inplace <file>
+notebooks = ["nbclient", "ipykernel", "jupyter"]
 
 [project.scripts]
 fogseg = "fogseg.cli:main"
