@@ -298,6 +298,29 @@ def test_score_table_views():
     assert table.loc[("fog_only", "all"), count_names].tolist() == [2, 0, 1, 2]
 
 
+def test_score_table_counts_a_hidden_fls_case_with_ignored_label_in_both_diagnostics():
+    cases = case_frame(
+        [
+            case("2023-11-20", "A", "metar", 1, 1, 255, hidden=True),
+            case("2023-11-20", "B", "metar", 2, 0, 255),
+        ]
+    )
+
+    main = table_of(cases).loc[("main", "all")]
+
+    assert main["n_cases"] == 0
+    assert (main["n_fls_ignored"], main["n_no_fls_ignored"], main["n_fls_hidden"]) == (1, 1, 1)
+
+
+def test_score_table_puts_a_station_on_a_band_edge_into_the_upper_band():
+    cases = case_frame([case("2023-11-20", "A", "metar", 1, 1, 1, lat=47.0)])
+
+    table = table_of(cases)
+
+    assert table.loc[("lat_band", "43-47"), "n_cases"] == 0
+    assert table.loc[("lat_band", "47-51"), "n_cases"] == 1
+
+
 def test_score_table_empty_group_is_nan():
     empty_band = table_of(score_cases()).loc[("lat_band", "51-56")]
     assert empty_band["n_cases"] == 0
@@ -325,8 +348,10 @@ def test_read_observations_keeps_station_ids_as_text(tmp_path, caplog):
     assert "observations_synop.csv" in caplog.text
 
 
-def test_read_observations_without_any_table_names_the_command(tmp_path):
-    with pytest.raises(FileNotFoundError, match="fogseg stations"):
+def test_read_observations_without_any_table_names_the_files_and_the_command(tmp_path):
+    with pytest.raises(
+        FileNotFoundError, match="observations_metar.csv.*observations_synop.csv.*fogseg stations"
+    ):
         read_observations(station_files(tmp_path, ()))
 
 
@@ -342,21 +367,30 @@ def validate_config(tmp_path: Path, dataset_path: Path) -> Path:
     return config_path
 
 
-def validate_setup(tmp_path: Path) -> argparse.Namespace:
-    """Dataset, fixed label store and a METAR table with a fog and a clear station; no SYNOP table."""
-    dataset_path = make_station_dataset(tmp_path / "data.zarr")
+FOG_AND_CLEAR = [
+    ("FOG", GRID_LAT0 - 0.2, GRID_LON0 + 0.2, 500.0, "2023-11-21T00:12"),
+    ("CLEAR", GRID_LAT0 - 0.5, GRID_LON0 + 0.1, 9999.0, "2023-11-21T00:12"),
+]
+
+
+def validate_setup(
+    tmp_path: Path,
+    observations: list[tuple[str, float, float, float, str]] = FOG_AND_CLEAR,
+    n_scenes: int = 3,
+) -> argparse.Namespace:
+    """Dataset, fixed label store and a METAR table of (station, lat, lon, visibility, time); no SYNOP table."""
+    dataset_path = make_station_dataset(tmp_path / "data.zarr", n_scenes)
     label_dataset(dataset_path, label_store_path(tmp_path / "labels", "fixed"), "fixed", TEST_PARAMS)
-    stations = [("FOG", 2, 2, 500.0), ("CLEAR", 5, 1, 9999.0)]
     data_dir = station_files(tmp_path, ())
     pd.DataFrame(
         {
             "source": "metar",
-            "station": [name for name, *_ in stations],
-            "time": pd.Timestamp("2023-11-21T00:12"),
-            "lat": [GRID_LAT0 - 0.1 * iy for _, iy, _, _ in stations],
-            "lon": [GRID_LON0 + 0.1 * ix for _, _, ix, _ in stations],
+            "station": [row[0] for row in observations],
+            "time": pd.to_datetime([row[4] for row in observations]),
+            "lat": [row[1] for row in observations],
+            "lon": [row[2] for row in observations],
             "elevation_m": 100.0,
-            "visibility_m": [visibility for *_, visibility in stations],
+            "visibility_m": [row[3] for row in observations],
             "ceiling_m": np.inf,
         }
     ).to_csv(data_dir / "observations_metar.csv", index=False)
@@ -399,3 +433,33 @@ def test_validate_rejects_labels_of_other_scenes(tmp_path):
 
     with pytest.raises(ValueError, match="fogseg label"):
         cmd_validate(args)
+
+
+def test_validate_keeps_only_the_scenes_of_the_season(tmp_path):
+    observations = [
+        ("FOG", GRID_LAT0 - 0.2, GRID_LON0 + 0.2, 500.0, "2023-11-21T00:12"),
+        ("FOG", GRID_LAT0 - 0.2, GRID_LON0 + 0.2, 500.0, "2023-11-21T12:12"),
+    ]
+    args = validate_setup(tmp_path, observations, n_scenes=6)
+    cfg = load_config(args.config)
+    cfg["time"]["seasons"].append({"name": "one-night", "start": "2023-11-20", "end": "2023-11-20"})
+    args.config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    args.season, args.final = "one-night", True
+
+    cmd_validate(args)
+
+    cases = pd.read_csv(tmp_path / "stations" / "cases_fixed_one-night.csv", parse_dates=["scene_time"])
+    assert cases["scene_time"].tolist() == [pd.Timestamp("2023-11-21T00:00")]
+
+
+def test_validate_warns_and_still_writes_when_no_case_matches(tmp_path, caplog):
+    args = validate_setup(tmp_path, [("FAR", 60.0, 0.0, 500.0, "2023-11-21T00:12")])
+
+    with caplog.at_level(logging.WARNING, logger="fogseg"):
+        cmd_validate(args)
+
+    data_dir = tmp_path / "stations"
+    assert pd.read_csv(data_dir / "cases_fixed_2023-24.csv").empty
+    assert (data_dir / "scores_fixed_2023-24.csv").exists()
+    assert "2023-24" in caplog.text
+    assert "observations_metar.csv" in caplog.text

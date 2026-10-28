@@ -121,13 +121,13 @@ def make_label_dataset(
     return path
 
 
-def make_station_dataset(path: Path) -> Path:
+def make_station_dataset(path: Path, n_scenes: int = 3) -> Path:
     """Like `make_label_dataset`, with `lon` / `lat` on (y, x) and one cold pixel at `COLD_PIXEL`.
 
     The grid starts at `GRID_LON0`, `GRID_LAT0` with 0.1 degree spacing and north at the top. The
     cold pixel (IR_108 230 K) is high cloud: its label is 0 and a station on it is hidden.
     """
-    dataset = label_scenes(n_scenes=3, scene_sza=None, background_btd=1.8)
+    dataset = label_scenes(n_scenes=n_scenes, scene_sza=None, background_btd=1.8)
     dataset["bt"].loc[{"channel": "IR_108", "y": float(COLD_PIXEL[0]), "x": float(COLD_PIXEL[1])}] = 230.0
 
     lon, lat = np.meshgrid(GRID_LON0 + 0.1 * np.arange(LABEL_NX), GRID_LAT0 - 0.1 * np.arange(LABEL_NY))

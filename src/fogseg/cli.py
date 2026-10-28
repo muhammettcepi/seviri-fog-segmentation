@@ -149,6 +149,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
     from fogseg.label_store import check_labels_match, label_store_path, stored_params
     from fogseg.validation import (
         check_season_allowed,
+        observation_paths,
         read_observations,
         score_table,
         season_bounds,
@@ -178,6 +179,13 @@ def cmd_validate(args: argparse.Namespace) -> None:
             raise ValueError(f"The label store has no scenes in season {args.season}")
         cases = station_cases(
             data.isel(time=in_season), labels.isel(time=in_season), observations, stations_cfg, params
+        )
+
+    if cases.empty:
+        log.warning(
+            "No station observation matches a scene of season %s; check %s",
+            args.season,
+            ", ".join(str(path) for path in observation_paths(data_dir)),
         )
 
     scores = score_table(

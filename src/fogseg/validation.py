@@ -225,17 +225,21 @@ def check_season_allowed(cfg: dict, season: str, final: bool) -> None:
         )
 
 
+def observation_paths(data_dir: Path) -> list[Path]:
+    return [data_dir / f"observations_{source}.csv" for source in SOURCES]
+
+
 def read_observations(data_dir: Path) -> pd.DataFrame:
     """The METAR and SYNOP tables that `fogseg stations` wrote; one of them may be missing."""
     tables = []
-    for source in SOURCES:
-        path = data_dir / f"observations_{source}.csv"
+    for source, path in zip(SOURCES, observation_paths(data_dir), strict=True):
         if path.exists():
             tables.append(pd.read_csv(path, dtype={"station": str}, parse_dates=["time"]))
         else:
             log.warning("%s is missing; scoring without %s observations", path, source)
     if not tables:
-        raise FileNotFoundError(f"No observation tables in {data_dir}; run `fogseg stations` first")
+        missing = " and ".join(path.name for path in observation_paths(data_dir))
+        raise FileNotFoundError(f"{missing} not found in {data_dir}; run `fogseg stations` first")
     return pd.concat(tables, ignore_index=True)
 
 
@@ -252,8 +256,9 @@ class View(NamedTuple):
 def score_row(view: View, n_samples: int, seed: int) -> dict:
     """Counts, scores with bootstrap intervals, and the cases of the view that were not scored.
 
-    `n_fls_hidden` counts all hidden cases of the view; the two ignored counts are taken among the
-    cases that stay in, so no case is counted twice.
+    The three `n_fls_*` counts take every case of the view, hidden or not, so they are separate
+    diagnostics that may overlap: a hidden case with an ignored label is in both. They refer to the
+    truth the view is scored against, which is the fog truth in the `fog_only` row.
     """
     scored = view.cases if view.keep_hidden else view.cases[~view.cases["hidden"]]
     label, truth, night = (
@@ -276,10 +281,11 @@ def score_row(view: View, n_samples: int, seed: int) -> dict:
         row |= {name: float(point[name]), f"{name}_low": low, f"{name}_high": high}
     row["bias"] = float(point["bias"])
 
-    is_ignored = label == IGNORE
-    row["n_fls_ignored"] = int(np.sum(is_ignored & (truth == TRUTH_YES)))
-    row["n_no_fls_ignored"] = int(np.sum(is_ignored & (truth == TRUTH_NO)))
-    row["n_fls_hidden"] = int(np.sum(view.cases["hidden"] & (view.cases[view.truth_column] == TRUTH_YES)))
+    all_truth = view.cases[view.truth_column]
+    is_ignored = view.cases["label"] == IGNORE
+    row["n_fls_ignored"] = int(np.sum(is_ignored & (all_truth == TRUTH_YES)))
+    row["n_no_fls_ignored"] = int(np.sum(is_ignored & (all_truth == TRUTH_NO)))
+    row["n_fls_hidden"] = int(np.sum(view.cases["hidden"] & (all_truth == TRUTH_YES)))
     return row
 
 
