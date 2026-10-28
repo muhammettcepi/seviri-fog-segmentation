@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import http.client
 import io
 import json
 import logging
@@ -41,9 +42,9 @@ def fetch_text(url: str, timeout: float = 120) -> str:
         return response.read().decode("utf-8", errors="replace")
 
 
-def iem_stations(network: str) -> pd.DataFrame:
+def iem_stations(network_geojson: str) -> pd.DataFrame:
     """The stations of one IEM network, with coordinates and elevation from its GeoJSON file."""
-    features = json.loads(fetch_text(IEM_NETWORK_URL.format(network=network)))["features"]
+    features = json.loads(network_geojson)["features"]
     rows = [
         (
             feature["id"],
@@ -127,44 +128,70 @@ def download(url: str, path: Path, pause_s: float, max_tries: int, is_valid: Cal
 
 
 def _answer(url: str) -> str:
-    """The answer to `url`, empty after a network error."""
+    """The answer to `url`, empty after a network error or a connection that broke while reading."""
     try:
         return fetch_text(url)
-    except OSError as err:
+    except (OSError, http.client.HTTPException) as err:
         log.warning("Request %s failed: %s", url, err)
         return ""
 
 
+def observation_table(rows: list[tuple], skipped_lines: int) -> pd.DataFrame:
+    """The observation table of `rows`; `attrs["skipped_lines"]` holds the number of malformed lines."""
+    table = pd.DataFrame(rows, columns=OBSERVATION_COLUMNS)
+    table = table.astype({"time": "datetime64[ns]", "visibility_m": float, "ceiling_m": float})
+    table.attrs["skipped_lines"] = skipped_lines
+    return table
+
+
 def parse_metar_csv(text: str) -> pd.DataFrame:
-    """Decode the raw METARs of an IEM answer with the header `station,valid,metar`."""
-    rows = pd.read_csv(io.StringIO(text), dtype=str, keep_default_na=False)
-    rows = rows[~rows["metar"].isin(MISSING_METAR)]
-    return pd.DataFrame(
-        {
-            "source": "metar",
-            "station": rows["station"],
-            "time": pd.to_datetime(rows["valid"]),
-            "visibility_m": rows["metar"].map(prevailing_visibility_m).astype(float),
-            "ceiling_m": rows["metar"].map(ceiling_m).astype(float),
-        }
-    ).reset_index(drop=True)
+    """Decode the raw METARs of an IEM answer with the header `station,valid,metar`.
+
+    Lines are split on the first two commas only, because the METAR text may contain commas. Malformed
+    lines are skipped and counted in `attrs["skipped_lines"]`.
+    """
+    rows = []
+    skipped_lines = 0
+    for line in text.splitlines()[1:]:
+        parts = line.split(",", 2)
+        if len(parts) < 3:
+            skipped_lines += 1
+            continue
+        station, valid, metar = parts
+        if metar in MISSING_METAR:
+            continue
+        try:
+            time_utc = dt.datetime.strptime(valid, "%Y-%m-%d %H:%M")
+        except ValueError:
+            skipped_lines += 1
+            continue
+        rows.append(("metar", station, time_utc, prevailing_visibility_m(metar), ceiling_m(metar)))
+    return observation_table(rows, skipped_lines)
 
 
 def parse_synop_text(text: str) -> pd.DataFrame:
-    """Decode the lines `station,year,month,day,hour,minute,message` of an Ogimet answer; NIL reports are dropped."""
+    """Decode the Ogimet lines `station,year,month,day,hour,minute,message`; NIL reports are dropped.
+
+    Lines without a valid date and time are skipped and counted in `attrs["skipped_lines"]`.
+    """
     rows = []
+    skipped_lines = 0
     for line in text.splitlines():
         parts = line.split(",", 6)
         if len(parts) < 7:
+            if line.strip():
+                skipped_lines += 1
             continue
         station, year, month, day, hour, minute, message = parts
-        synop = decode_synop(message)
-        if synop is None:
+        try:
+            time_utc = dt.datetime(int(year), int(month), int(day), int(hour), int(minute))
+        except ValueError:
+            skipped_lines += 1
             continue
-        time_utc = dt.datetime(int(year), int(month), int(day), int(hour), int(minute))
-        rows.append(("synop", station, time_utc, synop.visibility_m, synop.ceiling_m))
-    table = pd.DataFrame(rows, columns=OBSERVATION_COLUMNS)
-    return table.astype({"time": "datetime64[ns]", "visibility_m": float, "ceiling_m": float})
+        synop = decode_synop(message)
+        if synop is not None:
+            rows.append(("synop", station, time_utc, synop.visibility_m, synop.ceiling_m))
+    return observation_table(rows, skipped_lines)
 
 
 def night_windows(cfg: dict) -> list[tuple[dt.datetime, dt.datetime]]:
@@ -182,8 +209,12 @@ def is_synop_answer(text: str) -> bool:
     return "AAXX" in text
 
 
-def is_isd_history_answer(text: str) -> bool:
+def is_isd_answer(text: str) -> bool:
     return text.startswith('"USAF"')
+
+
+def is_geojson_answer(text: str) -> bool:
+    return text.startswith("{")
 
 
 ANSWER_CHECKS = {"metar": is_metar_answer, "synop": is_synop_answer}
@@ -191,30 +222,39 @@ PARSERS = {"metar": parse_metar_csv, "synop": parse_synop_text}
 
 
 def candidate_stations(source: str, stations_cfg: dict, data_dir: Path) -> pd.DataFrame:
-    """All stations of the source that might be used, before they are matched to the grid."""
-    if source == "metar":
-        return pd.concat(
-            [iem_stations(network) for network in stations_cfg["iem_networks"]], ignore_index=True
-        )
+    """All stations of the source that might be used, before they are matched to the grid.
 
-    isd_path = data_dir / "raw" / ISD_HISTORY_FILE
-    is_downloaded = download(
-        stations_cfg["isd_history_url"],
-        isd_path,
-        stations_cfg["request_pause_s"],
-        stations_cfg["max_tries"],
-        is_isd_history_answer,
-    )
-    if not is_downloaded:
-        raise RuntimeError(f"Could not download {stations_cfg['isd_history_url']}")
-    stations = wmo_stations(isd_path.read_text(encoding="utf-8"))
-    return stations[stations["station"].str[:2].isin(stations_cfg["wmo_blocks"])].reset_index(drop=True)
+    The station files are downloaded like the observations, so a re-run uses the same lists.
+    """
+    stations_dir = data_dir / "raw" / "stations"
+    if source == "synop":
+        isd_path = stations_dir / ISD_HISTORY_FILE
+        if not download_station_file(stations_cfg["isd_history_url"], isd_path, stations_cfg, is_isd_answer):
+            raise RuntimeError(f"Could not download {stations_cfg['isd_history_url']}")
+        stations = wmo_stations(isd_path.read_text(encoding="utf-8"))
+        return stations[stations["station"].str[:2].isin(stations_cfg["wmo_blocks"])].reset_index(drop=True)
+
+    networks = []
+    for network in stations_cfg["iem_networks"]:
+        path = stations_dir / f"{network}.geojson"
+        url = IEM_NETWORK_URL.format(network=network)
+        if download_station_file(url, path, stations_cfg, is_geojson_answer):
+            networks.append(iem_stations(path.read_text(encoding="utf-8")))
+        else:
+            log.error("Skipping network %s: could not download %s", network, url)
+    if not networks:
+        raise RuntimeError("Could not download any IEM network file")
+    return pd.concat(networks, ignore_index=True).drop_duplicates(["station", "source"], ignore_index=True)
+
+
+def download_station_file(url: str, path: Path, stations_cfg: dict, is_valid: Callable[[str], bool]) -> bool:
+    return download(url, path, stations_cfg["request_pause_s"], stations_cfg["max_tries"], is_valid)
 
 
 def download_requests(
     source: str, stations: pd.DataFrame, cfg: dict, raw_dir: Path
 ) -> list[tuple[str, Path]]:
-    """(url, raw file) of every request for the selected stations: METAR per station and season, SYNOP per block and night."""
+    """(url, raw file) per request: METAR per station and season, SYNOP per block and night."""
     if source == "metar":
         seasons = cfg["time"]["seasons"]
         return [
@@ -286,15 +326,17 @@ def collect_observations(source: str, cfg: dict, lon: np.ndarray, lat: np.ndarra
 
     requests = download_requests(source, selected, cfg, data_dir / "raw" / source)
     failed = download_all(requests, stations_cfg, ANSWER_CHECKS[source])
-    log.info(
-        "%s: %d of %d downloads failed; run the command again to fetch them", source, failed, len(requests)
-    )
+    if failed:
+        log.warning("%s: %d of %d downloads failed; run the command again", source, failed, len(requests))
 
     parse = PARSERS[source]
     tables = [parse(path.read_text(encoding="utf-8")) for _, path in requests if path.exists()]
     if not tables:
         raise RuntimeError(f"No {source} observations: all {len(requests)} downloads failed")
 
+    skipped_lines = sum(table.attrs["skipped_lines"] for table in tables)
+    if skipped_lines:
+        log.warning("%s: skipped %d malformed lines in the raw files", source, skipped_lines)
     located = pd.concat(tables, ignore_index=True).merge(selected[STATION_COLUMNS], on=["station", "source"])
     scenes = np.array(scene_times(cfg), dtype="datetime64[ns]")
     kept = located[is_near_scene(located["time"].values, scenes)]

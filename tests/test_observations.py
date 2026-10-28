@@ -1,6 +1,7 @@
 """Tests for the observation downloads and parsers; the network is replaced by `fetch_text` stubs."""
 
 import datetime as dt
+import http.client
 import json
 import math
 
@@ -12,6 +13,7 @@ from fogseg import observations
 from fogseg.observations import (
     collect_observations,
     download,
+    is_near_scene,
     night_windows,
     parse_metar_csv,
     parse_synop_text,
@@ -234,3 +236,132 @@ def test_collect_synop_observations(monkeypatch, tmp_path):
     assert table["station"].tolist() == ["10381"]
     assert table.iloc[0]["time"] == pd.Timestamp("2024-01-02 00:00")
     assert table.iloc[0]["lat"] == 48.4
+
+
+@pytest.mark.parametrize(
+    "error",
+    [http.client.IncompleteRead(b"partial"), http.client.RemoteDisconnected("closed"), TimeoutError()],
+    ids=["incomplete-read", "remote-disconnected", "timeout"],
+)
+def test_download_survives_broken_connections(monkeypatch, tmp_path, error):
+    calls = []
+
+    def fetch_text(url: str, timeout: float = 120) -> str:
+        calls.append(url)
+        raise error
+
+    monkeypatch.setattr(observations, "fetch_text", fetch_text)
+    path = tmp_path / "answer.csv"
+
+    assert not download("https://example.test", path, 0, 3, lambda text: bool(text))
+
+    assert len(calls) == 3
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_parse_metar_csv_keeps_commas_of_the_metar():
+    text = (
+        "station,valid,metar\n"
+        "EDDM,2024-01-28 00:20,EDDM 280020Z 24005KT, 0800 FG VV002 02/02 Q1020\n"
+        "EDDM,not a time,EDDM 280050Z 24005KT CAVOK 02/02 Q1020\n"
+        "EDDM\n"
+        "EDDM,2024-01-28 01:20,M\n"
+    )
+
+    table = parse_metar_csv(text)
+
+    assert table["time"].tolist() == [pd.Timestamp("2024-01-28 00:20")]
+    assert table["visibility_m"].tolist() == [800.0]
+    assert table.attrs["skipped_lines"] == 2
+
+
+def test_parse_synop_text_skips_lines_with_a_bad_date():
+    text = (
+        "10381,2024,13,45,00,00,AAXX 28001 10381 41002 82105 10062=\n"
+        "10381,2024,01,28,00,00,AAXX 28001 10381 41002 82105 10062=\n"
+        "<html>busy</html>\n"
+        "\n"
+    )
+
+    table = parse_synop_text(text)
+
+    assert table["time"].tolist() == [pd.Timestamp("2024-01-28 00:00")]
+    assert table.attrs["skipped_lines"] == 2
+
+
+def test_is_near_scene_boundaries():
+    scenes = np.array(["2024-01-01T21:00", "2024-01-02T00:00"], dtype="datetime64[ns]")
+    times = np.array(
+        [
+            "2024-01-01T20:00",  # exactly one hour before the first scene
+            "2024-01-01T19:59",
+            "2024-01-01T22:30",  # between the scenes, within reach of none
+            "2024-01-02T01:00",  # exactly one hour after the last scene
+            "2024-01-02T01:01",
+        ],
+        dtype="datetime64[ns]",
+    )
+
+    assert is_near_scene(times, scenes).tolist() == [True, False, False, True, False]
+
+
+def geojson_stub(monkeypatch, networks: dict[str, str], csv_text: str) -> list[str]:
+    """Serve the GeoJSON of each network name (an empty answer for others) and `csv_text` for METAR requests."""
+    urls = []
+
+    def fetch_text(url: str, timeout: float = 120) -> str:
+        urls.append(url)
+        if "asos.py" in url:
+            return csv_text
+        network = url.rsplit("/", 1)[-1].removesuffix(".geojson")
+        return networks.get(network, "")
+
+    monkeypatch.setattr(observations, "fetch_text", fetch_text)
+    return urls
+
+
+EDDM_GEOJSON = json.dumps(
+    {
+        "features": [
+            {"id": "EDDM", "geometry": {"coordinates": [11.8, 48.4]}, "properties": {"elevation": 448}}
+        ]
+    }
+)
+EDDM_CSV = "station,valid,metar\nEDDM,2024-01-01 21:00,EDDM 012100Z 24005KT 0800 FG VV002 02/02 Q1020\n"
+
+
+def test_collect_uses_a_station_listed_in_two_networks_once(monkeypatch, tmp_path):
+    cfg = one_night_config(tmp_path)
+    cfg["stations"]["iem_networks"] = ["DE__ASOS", "AT__ASOS"]
+    urls = geojson_stub(monkeypatch, {"DE__ASOS": EDDM_GEOJSON, "AT__ASOS": EDDM_GEOJSON}, EDDM_CSV)
+    lon, lat = small_grid()
+
+    table = collect_observations("metar", cfg, lon, lat)
+
+    assert len(table) == 1
+    assert sum("asos.py" in url for url in urls) == 1
+
+
+def test_collect_skips_a_network_that_cannot_be_downloaded(monkeypatch, tmp_path):
+    cfg = one_night_config(tmp_path)
+    cfg["stations"]["iem_networks"] = ["DE__ASOS", "XX__ASOS"]
+    geojson_stub(monkeypatch, {"DE__ASOS": EDDM_GEOJSON}, EDDM_CSV)
+    lon, lat = small_grid()
+
+    table = collect_observations("metar", cfg, lon, lat)
+
+    assert table["station"].tolist() == ["EDDM"]
+    assert not (tmp_path / "stations" / "raw" / "stations" / "XX__ASOS.geojson").exists()
+
+
+def test_second_collect_run_makes_no_requests(monkeypatch, tmp_path):
+    cfg = one_night_config(tmp_path)
+    urls = geojson_stub(monkeypatch, {"DE__ASOS": EDDM_GEOJSON}, EDDM_CSV)
+    lon, lat = small_grid()
+    first = collect_observations("metar", cfg, lon, lat)
+    urls.clear()
+
+    second = collect_observations("metar", cfg, lon, lat)
+
+    assert urls == []
+    pd.testing.assert_frame_equal(first, second)
