@@ -54,8 +54,10 @@ flowchart LR
 | Module | Job |
 |---|---|
 | `observations.py` | Station lists, downloads (IEM, Ogimet), turning both sources into one observation table |
-| `synop.py` | Pure SYNOP decoding of the groups needed: `iRiXhVV`, `Nddff`, `7wwW1W2`, `8NhCLCMCH` |
-| `validation.py` | Truth rule, station-to-pixel and observation-to-scene matching, contingency scores, bootstrap |
+| `metar.py` | Pure METAR decoding: prevailing visibility and the ceiling, from the raw message |
+| `synop.py` | Pure SYNOP decoding of the groups needed: `iRiXhVV`, `Nddff`, `8NhCLCMCH` |
+| `scores.py` | Contingency table, POD / FAR / CSI / bias, bootstrap over nights, paired bootstrap |
+| `validation.py` | Truth rule, station-to-pixel and observation-to-scene matching, the case table, the score table |
 | `tuning.py` | Re-labels the training scenes for a grid of thresholds and scores each grid value |
 
 Pure functions (decoding, truth, matching, scores) are separated from file and network I/O, as in `labels.py`, so
@@ -75,7 +77,7 @@ the tests need no network and no real data.
 ### 3.3 Config: new `stations:` section in `configs/default.yaml`
 
 Data folder (`/mnt/d/fogseg-data/stations`), IEM networks and WMO blocks to fetch, the Ogimet window length and
-pause, the station limits (distance to pixel, elevation), the truth thresholds, the time tolerance, the scan delay,
+pause, the station limits (distance to pixel, elevation), the truth thresholds, the time tolerance, the scan delay, the latitude bands,
 the tuning grids, the number of bootstrap samples and the random seed. The training season is named here
 (`tune_season: "2023-24"`); the test season is the other one in `time.seasons`.
 
@@ -85,8 +87,8 @@ the tuning grids, the number of bootstrap samples and the random seed. The train
 
 | Source | Where | Content used | Notes |
 |---|---|---|---|
-| METAR | Iowa Environmental Mesonet (IEM) `asos.py`, one request per station and season | Decoded visibility (`vsby`, miles → m), cloud layers `skyc1-4` / `skyl1-4` (cover, base in ft), raw METAR kept | Station coordinates and elevation from the IEM network files (`<CC>__ASOS`) |
-| SYNOP | Ogimet `getsynop`, per WMO block and window | Raw `AAXX` messages, decoded by `synop.py` | Ogimet answers too large or too frequent requests with an empty body: windows of at most 3 days (default 2), a pause between requests, an empty answer is retried after a longer pause |
+| METAR | Iowa Environmental Mesonet (IEM) `asos.py`, one request per station and season | Raw METAR, decoded by `metar.py`: prevailing visibility in m and cloud layers. IEM's own decoded visibility is in miles, so 1000 m would come back as 998 m and fall on the wrong side of the limit | Station coordinates and elevation from the IEM network files (`<CC>__ASOS`) |
+| SYNOP | Ogimet `getsynop`, one request per WMO block and dataset night (20:00 to 06:00 UTC) | Raw `AAXX` messages, decoded by `synop.py` | Ogimet answers too large or too frequent requests with an empty body (a week of block 10 came back empty, three days did not): a pause between requests; an empty answer is retried after a longer pause and, if it stays empty, not saved, so the next run asks again |
 | SYNOP stations | NOAA `isd-history.csv` | WMO id, latitude, longitude, elevation | Only needed for SYNOP |
 
 No API keys are involved. Raw files and tables live in the data folder, outside the repository.
