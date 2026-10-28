@@ -11,14 +11,14 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from fogseg.label_store import check_labels_match
 from fogseg.labels import IGNORE, LabelParams
-from fogseg.scores import COUNT_NAMES, bootstrap_skill, contingency, counts_by_night, skill
+from fogseg.scores import counts_by_night, score_summary
 
 log = logging.getLogger("fogseg")
 
 SPEC_PATH = "docs/superpowers/specs/2026-10-28-station-validation-design.md"
 SOURCES = ("metar", "synop")
-INTERVAL_SCORES = ("pod", "far", "csi")
 TRUTH_YES, TRUTH_NO, TRUTH_UNDEFINED = 1, 0, -1
 EARTH_RADIUS_KM = 6371.0
 STATION_COLUMNS = ["station", "source", "lat", "lon", "elevation_m"]
@@ -150,26 +150,34 @@ def deduplicate(cases: pd.DataFrame) -> pd.DataFrame:
     return ordered.drop_duplicates(["scene_time", "iy", "ix"]).reset_index(drop=True)
 
 
-def station_cases(
-    data: xr.Dataset,
-    labels: xr.Dataset,
-    observations: pd.DataFrame,
-    stations_cfg: dict,
-    params: LabelParams,
-) -> pd.DataFrame:
-    """The case table: truth of every matched station observation next to the label at its pixel.
-
-    `hidden` marks cases whose pixel fails the labels' own warm-top and no-cirrus tests, so a
-    high cloud covers the fog. `data` and `labels` must hold the same scenes.
-    """
+def on_grid_stations(data: xr.Dataset, observations: pd.DataFrame, stations_cfg: dict) -> pd.DataFrame:
+    """The stations of the table that are close to a pixel centre and low enough, with that pixel."""
     stations = observations[STATION_COLUMNS].drop_duplicates(["station", "source"])
-    selected = select_stations(
+    return select_stations(
         stations,
         data["lon"].values,
         data["lat"].values,
         stations_cfg["max_distance_km"],
         stations_cfg["max_elevation_m"],
     )
+
+
+def station_cases(
+    data: xr.Dataset,
+    labels: xr.Dataset,
+    observations: pd.DataFrame,
+    stations_cfg: dict,
+    params: LabelParams,
+    selected: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """The case table: truth of every matched station observation next to the label at its pixel.
+
+    `hidden` marks cases whose pixel fails the labels' own warm-top and no-cirrus tests, so a
+    high cloud covers the fog. `data` and `labels` must hold the same scenes. `selected` is the
+    result of `on_grid_stations`, which is computed here if the caller does not have it yet.
+    """
+    if selected is None:
+        selected = on_grid_stations(data, observations, stations_cfg)
     pixels = selected[["station", "source", "iy", "ix"]]
     matched = match_observations(
         observations.merge(pixels, on=["station", "source"]),
@@ -213,6 +221,53 @@ def season_bounds(cfg: dict, season: str) -> tuple[np.datetime64, np.datetime64]
         (first_day + noon).astype("datetime64[ns]"),
         (last_day + np.timedelta64(1, "D") + noon).astype("datetime64[ns]"),
     )
+
+
+def scenes_between(times: np.ndarray, start: np.datetime64, end: np.datetime64, season: str) -> np.ndarray:
+    """Indices of the scenes with `start <= time < end`; a season without scenes is an error."""
+    in_season = np.flatnonzero((times >= start) & (times < end))
+    if in_season.size == 0:
+        raise ValueError(f"The label store has no scenes in season {season}")
+    return in_season
+
+
+def log_stations_without_cases(selected: pd.DataFrame, cases: pd.DataFrame, season: str) -> None:
+    """Log the on-grid stations that have no case in the season, which is no error."""
+    has_case = selected["station"].isin(cases["station"])
+    without_cases = sorted(selected.loc[~has_case, "station"].unique())
+    if without_cases:
+        log.info(
+            "%d of %d on-grid stations have no case in season %s",
+            len(without_cases),
+            selected["station"].nunique(),
+            season,
+        )
+        log.info("Stations without a case: %s", ", ".join(without_cases))
+
+
+def season_cases(
+    data: xr.Dataset,
+    labels: xr.Dataset,
+    observations: pd.DataFrame,
+    cfg: dict,
+    season: str,
+    params: LabelParams,
+) -> pd.DataFrame:
+    """The case table of the scenes of one season, from a dataset and the label store made from it.
+
+    `params` are the thresholds the labels were made with, so the `hidden` test agrees with them.
+    The on-grid stations without any case in the season are logged.
+    """
+    check_labels_match(data, labels)
+    start, end = season_bounds(cfg, season)
+    in_season = scenes_between(labels["time"].values, start, end, season)
+    stations_cfg = cfg["stations"]
+    selected = on_grid_stations(data, observations, stations_cfg)
+    cases = station_cases(
+        data.isel(time=in_season), labels.isel(time=in_season), observations, stations_cfg, params, selected
+    )
+    log_stations_without_cases(selected, cases, season)
+    return cases
 
 
 def check_season_allowed(cfg: dict, season: str, final: bool) -> None:
@@ -266,20 +321,10 @@ def score_row(view: View, n_samples: int, seed: int) -> dict:
         scored[view.truth_column].to_numpy(),
         scored["night"].to_numpy(),
     )
-    counts = contingency(label, truth)
     night_counts = counts_by_night(night, label, truth, np.unique(night))
-    if len(night_counts) > 0:
-        intervals = bootstrap_skill(night_counts, n_samples, seed)
-    else:
-        intervals = dict.fromkeys(INTERVAL_SCORES, (np.nan, np.nan))
 
-    row = {"view": view.name, "group": view.group, "n_cases": int(counts.sum())}
-    row |= dict(zip(COUNT_NAMES, counts.tolist(), strict=True))
-    point = skill(counts)
-    for name in INTERVAL_SCORES:
-        low, high = intervals[name]
-        row |= {name: float(point[name]), f"{name}_low": low, f"{name}_high": high}
-    row["bias"] = float(point["bias"])
+    row = {"view": view.name, "group": view.group}
+    row |= score_summary(night_counts, n_samples, seed)
 
     all_truth = view.cases[view.truth_column]
     is_ignored = view.cases["label"] == IGNORE

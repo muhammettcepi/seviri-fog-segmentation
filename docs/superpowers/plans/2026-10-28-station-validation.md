@@ -361,7 +361,7 @@ stations:
   Task 4 `station_cases` output (the case table).
 - Produces:
   - `grid_values(spec: list[float]) -> np.ndarray` — `[start, stop, step]` with `stop` included, rounded to 1e-6.
-  - `scene_thresholds(peak: float, offset: float, fallback: float, clamp: tuple[float, float]) -> float` — clipped
+  - `scene_threshold(peak: float, offset: float, fallback: float, clamp: tuple[float, float]) -> float` — clipped
     `peak + offset`, or `fallback` when `peak` is NaN.
   - `grid_labels(data: xr.Dataset, cases: pd.DataFrame, params: LabelParams, dynamic: DynamicParams, parameter: str, values: np.ndarray, mode: str) -> pd.DataFrame`
     — for every scene that has cases: read the three channels and `sza` once, compute the peak once

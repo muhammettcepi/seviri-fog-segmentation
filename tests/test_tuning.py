@@ -23,10 +23,13 @@ from helpers import (
     make_planted_dataset,
 )
 
+from fogseg import tuning
+from fogseg.build import CHUNK_TIME
 from fogseg.cli import cmd_tune
 from fogseg.config import load_config
+from fogseg.dynamic_threshold import scene_threshold
 from fogseg.label_store import label_dataset, label_store_path
-from fogseg.tuning import Decision, decide, grid_labels, grid_values, scene_thresholds
+from fogseg.tuning import Decision, decide, grid_labels, grid_values
 
 # 80 pixels only: the clear background alone is 47. The clamp is wide so no offset of the grid is cut.
 PLANTED_DYNAMIC = dataclasses.replace(TEST_DYNAMIC, min_pixels=20, clamp=(2.0, 6.0))
@@ -51,10 +54,10 @@ def test_grid_values_are_rounded_so_they_compare_equal_to_decimals():
 def test_scene_threshold_clamps_and_falls_back():
     clamp = (3.5, 6.0)
 
-    assert scene_thresholds(2.125, 1.5, 5.0, clamp) == pytest.approx(3.625)
-    assert scene_thresholds(1.0, 1.5, 5.0, clamp) == 3.5
-    assert scene_thresholds(5.0, 3.0, 5.0, clamp) == 6.0
-    assert scene_thresholds(float("nan"), 1.5, 7.0, clamp) == 7.0
+    assert scene_threshold(2.125, 1.5, 5.0, clamp) == pytest.approx(3.625)
+    assert scene_threshold(1.0, 1.5, 5.0, clamp) == 3.5
+    assert scene_threshold(5.0, 3.0, 5.0, clamp) == 6.0
+    assert scene_threshold(float("nan"), 1.5, 7.0, clamp) == 7.0
 
 
 def planted_cases(stations=tuple(STATION_PIXELS)) -> pd.DataFrame:
@@ -149,7 +152,9 @@ def test_grid_labels_reject_a_parameter_and_mode_that_do_not_go_together(tmp_pat
         planted_grid(tmp_path, parameter, OFFSETS, mode)
 
 
-def test_grid_labels_at_the_current_offset_equal_the_label_store(tmp_path):
+@pytest.mark.parametrize("chunk_time", [CHUNK_TIME, 2], ids=["one chunk", "cases in a later chunk"])
+def test_grid_labels_at_the_current_offset_equal_the_label_store(tmp_path, monkeypatch, chunk_time):
+    monkeypatch.setattr(tuning, "CHUNK_TIME", chunk_time)
     dataset_path = make_planted_dataset(tmp_path / "planted.zarr")
     store = tmp_path / "labels_dynamic.zarr"
     label_dataset(dataset_path, store, "dynamic", PLANTED_PARAMS, PLANTED_DYNAMIC)
@@ -246,6 +251,15 @@ def test_decide_table_columns_and_ignored_cases():
     assert np.isnan(table.loc[0, "csi"])
 
 
+def test_decision_carries_the_ignored_cases_of_the_current_and_the_best_value():
+    grid = grid_of_nights(4, {1.0: 255, 1.5: 1})
+
+    _, decision = decide(grid, "offset", current=1.0, n_samples=20, seed=0)
+
+    assert (decision.current, decision.best) == (1.0, 1.5)
+    assert (decision.ignored_current, decision.ignored_best) == (4, 0)
+
+
 def test_decide_breaks_ties_towards_the_current_value():
     grid = grid_of_nights(5, {1.0: 1, 1.5: 1, 2.0: 1, 2.5: 1})
 
@@ -262,7 +276,7 @@ def test_decide_rejects_a_current_value_outside_the_grid():
 
 
 def test_decision_changed_needs_a_different_value_and_a_positive_lower_bound():
-    decision = Decision("offset", 1.5, 2.0, 0.5, 0.6, 0.01, 0.2)
+    decision = Decision("offset", 1.5, 2.0, 0.5, 0.6, 0.01, 0.2, 0, 0)
 
     assert decision.changed
     assert not dataclasses.replace(decision, difference_low=0.0).changed
@@ -345,6 +359,25 @@ def test_tune_writes_three_tables_and_logs_each_decision(tmp_path, caplog):
     ]
 
 
+def test_tune_reports_the_fixed_mode_without_deciding_and_shows_the_ignored_cases(tmp_path, caplog):
+    args = tune_setup(tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="fogseg"):
+        cmd_tune(args)
+
+    lines = {
+        record.getMessage().split(":")[0]: record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Tune ")
+    }
+    fixed_mode = lines["Tune btd_fixed (fixed mode)"]
+    assert fixed_mode.endswith("report only")
+    assert "changed" not in fixed_mode
+    assert "kept" not in fixed_mode
+    assert lines["Tune btd_fixed"].endswith(("changed", "kept"))
+    assert "ignored 3 -> 0" in fixed_mode
+
+
 def test_tune_changes_the_offset_where_the_current_one_misses_the_fog(tmp_path, caplog):
     args = tune_setup(tmp_path, offset=4.0)
 
@@ -356,6 +389,22 @@ def test_tune_changes_the_offset_where_the_current_one_misses_the_fog(tmp_path, 
     )
     assert "current 4, best 2.5" in offset_line
     assert offset_line.endswith("changed")
+
+
+def test_tune_lists_the_on_grid_stations_without_a_case_in_the_season(tmp_path, caplog):
+    args = tune_setup(tmp_path)
+    path = tmp_path / "stations" / "observations_metar.csv"
+    observations = pd.read_csv(path, parse_dates=["time"])
+    late = observations[observations["station"] == "FOG"].assign(
+        station="LATE", time=pd.Timestamp("2024-03-01T00:12")
+    )
+    pd.concat([observations, late]).to_csv(path, index=False)
+
+    with caplog.at_level(logging.INFO, logger="fogseg"):
+        cmd_tune(args)
+
+    assert "1 of 4 on-grid stations have no case in season 2023-24" in caplog.text
+    assert "Stations without a case: LATE" in caplog.text
 
 
 def test_tune_warns_and_stops_when_no_case_matches(tmp_path, caplog):

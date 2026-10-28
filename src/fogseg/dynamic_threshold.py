@@ -134,7 +134,7 @@ def usable_peak(btd: np.ndarray, params: DynamicParams) -> float:
     return clear_ground_peak(samples, params)
 
 
-def scene_thresholds(peak: float, offset: float, fallback: float, clamp: tuple[float, float]) -> float:
+def scene_threshold(peak: float, offset: float, fallback: float, clamp: tuple[float, float]) -> float:
     """`offset` above the clear-ground `peak`, kept within `clamp`; `fallback` if there is no peak."""
     if np.isnan(peak):
         return float(fallback)
@@ -145,4 +145,4 @@ def dynamic_threshold(btd: np.ndarray, fixed: float, params: DynamicParams) -> T
     """Threshold `offset` above the clear-ground peak, or `fixed` if there is no usable peak."""
     peak = usable_peak(btd, params)
     source = "fallback" if np.isnan(peak) else "dynamic"
-    return ThresholdChoice(scene_thresholds(peak, params.offset, fixed, params.clamp), source)
+    return ThresholdChoice(scene_threshold(peak, params.offset, fixed, params.clamp), source)

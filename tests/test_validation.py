@@ -452,6 +452,32 @@ def test_validate_keeps_only_the_scenes_of_the_season(tmp_path):
     assert cases["scene_time"].tolist() == [pd.Timestamp("2023-11-21T00:00")]
 
 
+def test_validate_lists_the_on_grid_stations_without_a_case_in_the_season(tmp_path, caplog):
+    observations = [
+        *FOG_AND_CLEAR,
+        ("LATE", GRID_LAT0 - 0.3, GRID_LON0 + 0.3, 500.0, "2024-03-01T00:12"),
+        ("ABSENT", GRID_LAT0 - 0.4, GRID_LON0 + 0.4, 500.0, "2024-03-02T00:12"),
+        ("OFFGRID", 60.0, 0.0, 500.0, "2023-11-21T00:12"),
+    ]
+    args = validate_setup(tmp_path, observations)
+
+    with caplog.at_level(logging.INFO, logger="fogseg"):
+        cmd_validate(args)
+
+    assert "2 of 4 on-grid stations have no case in season 2023-24" in caplog.text
+    assert "Stations without a case: ABSENT, LATE" in caplog.text
+    assert "OFFGRID" not in caplog.text
+
+
+def test_validate_does_not_list_stations_when_every_one_has_a_case(tmp_path, caplog):
+    args = validate_setup(tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="fogseg"):
+        cmd_validate(args)
+
+    assert "without a case" not in caplog.text
+
+
 def test_validate_warns_and_still_writes_when_no_case_matches(tmp_path, caplog):
     args = validate_setup(tmp_path, [("FAR", 60.0, 0.0, 500.0, "2023-11-21T00:12")])
 

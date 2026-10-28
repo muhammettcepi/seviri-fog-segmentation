@@ -9,10 +9,10 @@ import pandas as pd
 import xarray as xr
 
 from fogseg.build import CHUNK_TIME
-from fogseg.dynamic_threshold import DynamicParams, scene_thresholds, usable_peak
+from fogseg.dynamic_threshold import DynamicParams, scene_threshold, usable_peak
 from fogseg.label_store import LABEL_CHANNELS
 from fogseg.labels import IGNORE, LabelParams, histogram_pixels, label_scene
-from fogseg.scores import COUNT_NAMES, bootstrap_skill, counts_by_night, paired_csi_difference, skill
+from fogseg.scores import counts_by_night, paired_csi_difference, score_summary
 
 GRID_COLUMNS = ["value", "night", "label", "truth_fls"]
 GRIDS = {("dynamic", "offset"), ("dynamic", "btd_fixed"), ("fixed", "btd_fixed")}
@@ -21,7 +21,11 @@ GRID_DECIMALS = 6
 
 @dataclass(frozen=True)
 class Decision:
-    """The best value of a parameter against the current one, with the interval of their CSI difference."""
+    """The best value of a parameter against the current one, with the interval of their CSI difference.
+
+    `ignored_current` and `ignored_best` count the cases each value leaves undecided, as a value can
+    gain CSI by moving cases into the uncertainty band.
+    """
 
     parameter: str
     current: float
@@ -30,6 +34,8 @@ class Decision:
     csi_best: float
     difference_low: float
     difference_high: float
+    ignored_current: int
+    ignored_best: int
 
     @property
     def changed(self) -> bool:
@@ -58,8 +64,8 @@ def grid_threshold(
     if mode == "fixed":
         return value
     if parameter == "offset":
-        return scene_thresholds(peak, value, params.btd_fixed, dynamic.clamp)
-    return scene_thresholds(peak, dynamic.offset, value, dynamic.clamp)
+        return scene_threshold(peak, value, params.btd_fixed, dynamic.clamp)
+    return scene_threshold(peak, dynamic.offset, value, dynamic.clamp)
 
 
 def scene_grid_labels(
@@ -132,20 +138,9 @@ def grid_labels(
 
 def score_row(value: float, night_counts: np.ndarray, n_ignored: int, n_samples: int, seed: int) -> dict:
     """Counts, scores and the CSI interval of one grid value."""
-    counts = night_counts.sum(axis=0)
-    point = skill(counts)
-    csi_low, csi_high = bootstrap_skill(night_counts, n_samples, seed)["csi"]
-    row = {"value": float(value), "n_cases": int(counts.sum())}
-    row |= dict(zip(COUNT_NAMES, counts.tolist(), strict=True))
-    row |= {
-        "pod": float(point["pod"]),
-        "far": float(point["far"]),
-        "csi": float(point["csi"]),
-        "csi_low": csi_low,
-        "csi_high": csi_high,
-        "bias": float(point["bias"]),
-        "n_ignored": n_ignored,
-    }
+    row = {"value": float(value)}
+    row |= score_summary(night_counts, n_samples, seed, interval_scores=("csi",))
+    row["n_ignored"] = n_ignored
     return row
 
 
@@ -190,5 +185,23 @@ def decide(
         csi_best=float(table.loc[best_row, "csi"]),
         difference_low=difference_low,
         difference_high=difference_high,
+        ignored_current=int(table.loc[current_row, "n_ignored"]),
+        ignored_best=int(table.loc[best_row, "n_ignored"]),
     )
     return table, decision
+
+
+def tune_parameter(
+    data: xr.Dataset,
+    cases: pd.DataFrame,
+    params: LabelParams,
+    dynamic: DynamicParams,
+    parameter: str,
+    mode: str,
+    current: float,
+    stations_cfg: dict,
+) -> tuple[pd.DataFrame, Decision]:
+    """Score the grid of `parameter` from the stations config on the cases and decide against `current`."""
+    values = grid_values(stations_cfg[f"{parameter}_grid"])
+    grid = grid_labels(data, cases, params, dynamic, parameter, values, mode)
+    return decide(grid, parameter, current, stations_cfg["bootstrap_samples"], stations_cfg["seed"])

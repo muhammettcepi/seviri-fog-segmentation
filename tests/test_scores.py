@@ -6,7 +6,15 @@ import warnings
 
 import numpy as np
 
-from fogseg.scores import bootstrap_skill, contingency, counts_by_night, paired_csi_difference, skill
+from fogseg.scores import (
+    COUNT_NAMES,
+    bootstrap_skill,
+    contingency,
+    counts_by_night,
+    paired_csi_difference,
+    score_summary,
+    skill,
+)
 
 
 def test_contingency_counts_and_skips_ignore():
@@ -91,7 +99,31 @@ def test_paired_difference_of_identical_counts_is_zero():
     assert paired_csi_difference(night_counts, night_counts, n_samples=200, seed=0) == (0.0, 0.0)
 
 
-def test_paired_difference_uses_the_same_nights_for_both_systems():
+def test_score_summary_columns_follow_the_requested_intervals():
+    night_counts = synthetic_night_counts()
+
+    full = score_summary(night_counts, n_samples=50, seed=0)
+    csi_only = score_summary(night_counts, n_samples=50, seed=0, interval_scores=("csi",))
+
+    counts = ["n_cases", *COUNT_NAMES]
+    assert list(full) == [
+        *counts,
+        *("pod", "pod_low", "pod_high", "far", "far_low", "far_high", "csi", "csi_low", "csi_high", "bias"),
+    ]
+    assert list(csi_only) == [*counts, "pod", "far", "csi", "csi_low", "csi_high", "bias"]
+    assert full["n_cases"] == night_counts.sum()
+    assert full["csi"] == csi_only["csi"]
+    assert (full["csi_low"], full["csi_high"]) == (csi_only["csi_low"], csi_only["csi_high"])
+
+
+def test_score_summary_without_nights_is_empty_with_nan_intervals():
+    summary = score_summary(np.empty((0, 4), dtype=int), n_samples=50, seed=0)
+
+    assert summary["n_cases"] == 0
+    assert all(np.isnan(value) for name, value in summary.items() if name not in ("n_cases", *COUNT_NAMES))
+
+
+def test_paired_difference_detects_a_better_system():
     night_counts = synthetic_night_counts()
     better = night_counts.copy()
     better[:, 0] += 20

@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 COUNT_NAMES = ("hits", "misses", "false_alarms", "correct_negatives")
+INTERVAL_SCORES = ("pod", "far", "csi")
 INTERVAL_PERCENTILES = (2.5, 97.5)
 
 
@@ -29,7 +30,7 @@ def ratio(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
     return np.divide(numerator, denominator, out=out, where=denominator > 0)
 
 
-def skill(counts: np.ndarray) -> dict[str, float]:
+def skill(counts: np.ndarray) -> dict[str, np.ndarray]:
     """POD, FAR, CSI and frequency bias from counts in `COUNT_NAMES` order, along the last axis.
 
     A score is NaN where its denominator is 0, e.g. when a night or sample has no fog at all.
@@ -69,6 +70,31 @@ def bootstrap_skill(night_counts: np.ndarray, n_samples: int, seed: int) -> dict
     drawn = draw_nights(len(night_counts), n_samples, seed)
     sample_scores = skill(night_counts[drawn].sum(axis=1))
     return {name: interval(values) for name, values in sample_scores.items()}
+
+
+def score_summary(
+    night_counts: np.ndarray, n_samples: int, seed: int, interval_scores: tuple[str, ...] = INTERVAL_SCORES
+) -> dict[str, float | int]:
+    """Row of a score table: the case count, the four counts, the scores and their bootstrap intervals.
+
+    The columns are `n_cases`, `COUNT_NAMES`, then `pod`, `far` and `csi` with `<name>_low` and `<name>_high`
+    after each one in `interval_scores`, and `bias`. Without any night the intervals are NaN.
+    """
+    counts = night_counts.sum(axis=0)
+    point = skill(counts)
+    if len(night_counts) > 0:
+        intervals = bootstrap_skill(night_counts, n_samples, seed)
+    else:
+        intervals = dict.fromkeys(INTERVAL_SCORES, (np.nan, np.nan))
+
+    row = {"n_cases": int(counts.sum())}
+    row |= dict(zip(COUNT_NAMES, counts.tolist(), strict=True))
+    for name in INTERVAL_SCORES:
+        row[name] = float(point[name])
+        if name in interval_scores:
+            row[f"{name}_low"], row[f"{name}_high"] = intervals[name]
+    row["bias"] = float(point["bias"])
+    return row
 
 
 def paired_csi_difference(

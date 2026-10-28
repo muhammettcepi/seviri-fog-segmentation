@@ -9,8 +9,12 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fogseg.config import load_config, scene_filename, scene_times
+
+if TYPE_CHECKING:
+    from fogseg.tuning import Decision
 
 log = logging.getLogger("fogseg")
 
@@ -141,34 +145,22 @@ def cmd_stations(args: argparse.Namespace) -> None:
         )
 
 
-def scenes_between(times, start, end, season: str):
-    """Indices of the scenes with `start <= time < end`; a season without scenes is an error."""
-    import numpy as np
-
-    in_season = np.flatnonzero((times >= start) & (times < end))
-    if in_season.size == 0:
-        raise ValueError(f"The label store has no scenes in season {season}")
-    return in_season
-
-
 def cmd_validate(args: argparse.Namespace) -> None:
     import xarray as xr
 
     from fogseg.dynamic_threshold import DynamicParams
-    from fogseg.label_store import check_labels_match, label_store_path, stored_params
+    from fogseg.label_store import label_store_path, stored_params
     from fogseg.validation import (
         check_season_allowed,
         observation_paths,
         read_observations,
         score_table,
-        season_bounds,
-        station_cases,
+        season_cases,
     )
 
     cfg = load_config(args.config)
     labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
     mode = args.labels or labels_cfg["mode"]
-    start, end = season_bounds(cfg, args.season)
     check_season_allowed(cfg, args.season, args.final)
 
     data_dir = Path(stations_cfg["data_dir"])
@@ -179,13 +171,9 @@ def cmd_validate(args: argparse.Namespace) -> None:
         xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
         xr.open_zarr(store_path, consolidated=False) as labels,
     ):
-        check_labels_match(data, labels)
         # The hidden test must use the thresholds the labels were made with, even after a config edit.
         params, _ = stored_params(labels.attrs, DynamicParams.from_config(labels_cfg["dynamic"]))
-        in_season = scenes_between(labels["time"].values, start, end, args.season)
-        cases = station_cases(
-            data.isel(time=in_season), labels.isel(time=in_season), observations, stations_cfg, params
-        )
+        cases = season_cases(data, labels, observations, cfg, args.season, params)
 
     if cases.empty:
         log.warning(
@@ -216,29 +204,50 @@ def cmd_validate(args: argparse.Namespace) -> None:
     log.info("Wrote %s and %s", cases_path, scores_path)
 
 
+def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:
+    """Log the best value of a tuned parameter; a `report_only` grid does not decide the config value."""
+    if report_only:
+        verdict = "report only"
+    elif decision.changed:
+        verdict = "changed"
+    else:
+        verdict = "kept"
+    log.info(
+        "Tune %s: current %g, best %g, CSI %.3f -> %.3f, difference %+.3f to %+.3f, ignored %d -> %d, %s",
+        name,
+        decision.current,
+        decision.best,
+        decision.csi_current,
+        decision.csi_best,
+        decision.difference_low,
+        decision.difference_high,
+        decision.ignored_current,
+        decision.ignored_best,
+        verdict,
+    )
+
+
 def cmd_tune(args: argparse.Namespace) -> None:
     import dataclasses
 
     import xarray as xr
 
     from fogseg.dynamic_threshold import DynamicParams
-    from fogseg.label_store import check_labels_match, label_store_path
+    from fogseg.label_store import label_store_path
     from fogseg.labels import LabelParams
-    from fogseg.tuning import decide, grid_labels, grid_values
+    from fogseg.tuning import tune_parameter
     from fogseg.validation import (
         TRUTH_NO,
         TRUTH_YES,
         deduplicate,
         observation_paths,
         read_observations,
-        season_bounds,
-        station_cases,
+        season_cases,
     )
 
     cfg = load_config(args.config)
     labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
     season = stations_cfg["tune_season"]
-    start, end = season_bounds(cfg, season)
     params = LabelParams.from_config(labels_cfg)
     dynamic = DynamicParams.from_config(labels_cfg["dynamic"])
 
@@ -250,13 +259,7 @@ def cmd_tune(args: argparse.Namespace) -> None:
         xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
         xr.open_zarr(store_path, consolidated=False) as labels,
     ):
-        check_labels_match(data, labels)
-        in_season = scenes_between(labels["time"].values, start, end, season)
-        cases = deduplicate(
-            station_cases(
-                data.isel(time=in_season), labels.isel(time=in_season), observations, stations_cfg, params
-            )
-        )
+        cases = deduplicate(season_cases(data, labels, observations, cfg, season, params))
         cases = cases[cases["truth_fls"].isin([TRUTH_NO, TRUTH_YES]) & ~cases["hidden"]]
         if cases.empty:
             log.warning(
@@ -266,37 +269,26 @@ def cmd_tune(args: argparse.Namespace) -> None:
             )
             return
 
-        def tune(name: str, parameter: str, mode: str, settings: DynamicParams, current: float, file: str):
-            """Score the grid of one parameter, write its table to `file` and log the decision."""
-            values = grid_values(stations_cfg[f"{parameter}_grid"])
-            grid = grid_labels(data, cases, params, settings, parameter, values, mode)
-            n_samples, seed = stations_cfg["bootstrap_samples"], stations_cfg["seed"]
-            table, decision = decide(grid, parameter, current, n_samples, seed)
-            table.to_csv(data_dir / file, index=False)
-            log.info(
-                "Tune %s: current %g, best %g, CSI %.3f -> %.3f, difference %+.3f to %+.3f, %s",
-                name,
-                decision.current,
-                decision.best,
-                decision.csi_current,
-                decision.csi_best,
-                decision.difference_low,
-                decision.difference_high,
-                "changed" if decision.changed else "kept",
-            )
-            return decision
-
-        offset = tune("offset", "offset", "dynamic", dynamic, dynamic.offset, "tuning_offset.csv")
-        chosen = dataclasses.replace(dynamic, offset=offset.best if offset.changed else dynamic.offset)
-        tune("btd_fixed", "btd_fixed", "dynamic", chosen, params.btd_fixed, "tuning_btd_fixed.csv")
-        tune(
-            "btd_fixed (fixed mode)",
-            "btd_fixed",
-            "fixed",
-            chosen,
-            params.btd_fixed,
-            "tuning_btd_fixed_fixed_mode.csv",
+        table, offset = tune_parameter(
+            data, cases, params, dynamic, "offset", "dynamic", dynamic.offset, stations_cfg
         )
+        table.to_csv(data_dir / "tuning_offset.csv", index=False)
+        log_decision("offset", offset)
+
+        # The fallback is tuned with the offset that was just decided
+        chosen = dataclasses.replace(dynamic, offset=offset.best if offset.changed else dynamic.offset)
+        table, fallback = tune_parameter(
+            data, cases, params, chosen, "btd_fixed", "dynamic", params.btd_fixed, stations_cfg
+        )
+        table.to_csv(data_dir / "tuning_btd_fixed.csv", index=False)
+        log_decision("btd_fixed", fallback)
+
+        # Fixed mode is scored for comparison only: the fallback above decides the config value
+        table, fixed = tune_parameter(
+            data, cases, params, chosen, "btd_fixed", "fixed", params.btd_fixed, stations_cfg
+        )
+        table.to_csv(data_dir / "tuning_btd_fixed_fixed_mode.csv", index=False)
+        log_decision("btd_fixed (fixed mode)", fixed, report_only=True)
 
 
 def cmd_inspect(args: argparse.Namespace) -> None:
