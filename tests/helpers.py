@@ -121,19 +121,49 @@ def make_label_dataset(
     return path
 
 
+def add_station_grid(dataset: xr.Dataset) -> xr.Dataset:
+    """`lon` / `lat` on (y, x): the grid starts at `GRID_LON0`, `GRID_LAT0` with 0.1 degree spacing, north at the top."""
+    lon, lat = np.meshgrid(GRID_LON0 + 0.1 * np.arange(LABEL_NX), GRID_LAT0 - 0.1 * np.arange(LABEL_NY))
+    return dataset.assign_coords(
+        lon=(("y", "x"), lon.astype("float32")),
+        lat=(("y", "x"), lat.astype("float32")),
+    )
+
+
 def make_station_dataset(path: Path, n_scenes: int = 3) -> Path:
     """Like `make_label_dataset`, with `lon` / `lat` on (y, x) and one cold pixel at `COLD_PIXEL`.
 
-    The grid starts at `GRID_LON0`, `GRID_LAT0` with 0.1 degree spacing and north at the top. The
-    cold pixel (IR_108 230 K) is high cloud: its label is 0 and a station on it is hidden.
+    The cold pixel (IR_108 230 K) is high cloud: its label is 0 and a station on it is hidden.
     """
     dataset = label_scenes(n_scenes=n_scenes, scene_sza=None, background_btd=1.8)
     dataset["bt"].loc[{"channel": "IR_108", "y": float(COLD_PIXEL[0]), "x": float(COLD_PIXEL[1])}] = 230.0
 
-    lon, lat = np.meshgrid(GRID_LON0 + 0.1 * np.arange(LABEL_NX), GRID_LAT0 - 0.1 * np.arange(LABEL_NY))
-    dataset = dataset.assign_coords(
-        lon=(("y", "x"), lon.astype("float32")),
-        lat=(("y", "x"), lat.astype("float32")),
+    variable_length_strings(add_station_grid(dataset)).to_zarr(
+        path, mode="w", zarr_format=3, consolidated=False
     )
-    variable_length_strings(dataset).to_zarr(path, mode="w", zarr_format=3, consolidated=False)
+    return path
+
+
+# A background of 2.0 K fills one 0.25 K bin (bins from -2 K); the smoothing makes the bin and its two
+# neighbours equal, and the peak search takes the first of them, the bin centred at 1.875 K.
+PLANTED_PEAK = 1.875
+PLANTED_PATCH_BTD = 5.0
+PLANTED_STRIP_BTD = 3.6
+PLANTED_FOG_PIXEL, PLANTED_STRIP_PIXEL, PLANTED_CLEAR_PIXEL = (2, 2), (6, 1), (3, 8)
+
+
+def make_planted_dataset(path: Path, n_scenes: int = 3) -> Path:
+    """Like `make_station_dataset`, built so that only some thresholds label it right.
+
+    A clear background (BTD 2.0 K, peak bin `PLANTED_PEAK`), the 5 x 5 fog patch (BTD `PLANTED_PATCH_BTD`)
+    and a 2 x 4 strip at an in-between BTD (`PLANTED_STRIP_BTD`) with a clear row between them. IR_108
+    is flat, so the smoothness test never interferes.
+    """
+    dataset = label_scenes(n_scenes=n_scenes, scene_sza=None, background_btd=2.0)
+    strip = {"channel": "IR_039", "y": slice(6.0, 7.0), "x": slice(0.0, 3.0)}
+    dataset["bt"].loc[strip] = 270.0 - PLANTED_STRIP_BTD
+
+    variable_length_strings(add_station_grid(dataset)).to_zarr(
+        path, mode="w", zarr_format=3, consolidated=False
+    )
     return path

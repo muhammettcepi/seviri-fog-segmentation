@@ -123,21 +123,26 @@ def clear_ground_peak(samples: np.ndarray, params: DynamicParams) -> float:
     )
 
 
-def dynamic_threshold(btd: np.ndarray, fixed: float, params: DynamicParams) -> ThresholdChoice:
-    """Threshold `offset` above the clear-ground peak, or `fixed` if there is no usable peak."""
-    fallback = ThresholdChoice(float(fixed), "fallback")
-
+def usable_peak(btd: np.ndarray, params: DynamicParams) -> float:
+    """Clear-ground peak of a scene's BTD values; NaN if there are too few of them or no real peak."""
     # Only pixels inside bin_range reach the histogram (the upper edge belongs to the last bin), so
     # only they count towards min_pixels.
     low, high = params.bin_range
     samples = btd[np.isfinite(btd) & (btd >= low) & (btd <= high)]
     if samples.size < params.min_pixels:
-        return fallback
+        return float("nan")
+    return clear_ground_peak(samples, params)
 
-    peak = clear_ground_peak(samples, params)
+
+def scene_thresholds(peak: float, offset: float, fallback: float, clamp: tuple[float, float]) -> float:
+    """`offset` above the clear-ground `peak`, kept within `clamp`; `fallback` if there is no peak."""
     if np.isnan(peak):
-        return fallback
+        return float(fallback)
+    return float(np.clip(peak + offset, *clamp))
 
-    clamp_low, clamp_high = params.clamp
-    value = float(np.clip(peak + params.offset, clamp_low, clamp_high))
-    return ThresholdChoice(value, "dynamic")
+
+def dynamic_threshold(btd: np.ndarray, fixed: float, params: DynamicParams) -> ThresholdChoice:
+    """Threshold `offset` above the clear-ground peak, or `fixed` if there is no usable peak."""
+    peak = usable_peak(btd, params)
+    source = "fallback" if np.isnan(peak) else "dynamic"
+    return ThresholdChoice(scene_thresholds(peak, params.offset, fixed, params.clamp), source)
