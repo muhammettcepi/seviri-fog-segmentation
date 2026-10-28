@@ -59,6 +59,13 @@ def test_counts_by_night_keeps_night_order():
     assert counts.tolist() == [[0, 0, 0, 0], [1, 0, 1, 1]]
 
 
+def test_counts_by_night_without_nights_has_integer_dtype():
+    counts = counts_by_night(np.array([]), np.array([]), np.array([]), np.array([]))
+
+    assert counts.shape == (0, 4)
+    assert np.issubdtype(counts.dtype, np.integer)
+
+
 def synthetic_night_counts() -> np.ndarray:
     rng = np.random.default_rng(1)
     return rng.integers(0, 20, size=(40, 4))
@@ -117,9 +124,12 @@ def test_score_summary_columns_follow_the_requested_intervals():
 
 
 def test_score_summary_without_nights_is_empty_with_nan_intervals():
-    summary = score_summary(np.empty((0, 4), dtype=int), n_samples=50, seed=0)
+    no_nights = counts_by_night(np.array([]), np.array([]), np.array([]), np.array([]))
+
+    summary = score_summary(no_nights, n_samples=50, seed=0)
 
     assert summary["n_cases"] == 0
+    assert all(isinstance(summary[name], int) for name in ("n_cases", *COUNT_NAMES))
     assert all(np.isnan(value) for name, value in summary.items() if name not in ("n_cases", *COUNT_NAMES))
 
 

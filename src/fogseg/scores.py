@@ -48,7 +48,8 @@ def counts_by_night(
     night: np.ndarray, label: np.ndarray, truth: np.ndarray, nights: np.ndarray
 ) -> np.ndarray:
     """Counts per night as an array of shape (len(nights), 4), rows in the order of `nights`."""
-    return np.array([contingency(label[night == one], truth[night == one]) for one in nights]).reshape(-1, 4)
+    counts = [contingency(label[night == one], truth[night == one]) for one in nights]
+    return np.array(counts, dtype=int).reshape(-1, 4)
 
 
 def draw_nights(n_nights: int, n_samples: int, seed: int) -> np.ndarray:
