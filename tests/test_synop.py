@@ -56,7 +56,7 @@ def test_unknown_base_with_overcast_is_nan():
     assert math.isnan(synop.ceiling_m)
 
 
-def test_high_wind_group_is_skipped():
+def test_cloud_group_found_after_high_wind_group():
     synop = decode_synop("AAXX 28031 10870 11408 82599 00105 10012 20008 87500==")
     assert synop.ceiling_m == 300
 
@@ -64,6 +64,56 @@ def test_high_wind_group_is_skipped():
 def test_groups_after_section_one_are_ignored():
     synop = decode_synop("AAXX 28031 10870 11560 32504 10012 20008 333 87500==")
     assert synop.ceiling_m == math.inf
+
+
+def test_overcast_n_with_low_cover_in_8_group_is_no_ceiling():
+    synop = decode_synop("AAXX 28031 10870 11408 82504 10012 83500==")
+    assert synop.ceiling_m == math.inf
+
+
+def test_unknown_n_uses_cover_of_8_group():
+    synop = decode_synop("AAXX 28031 10870 11408 /2504 10012 87500==")
+    assert synop.ceiling_m == 300
+
+
+def test_unknown_base_with_low_cover_is_no_ceiling():
+    synop = decode_synop("AAXX 28031 10870 11/60 32504==")
+    assert synop.ceiling_m == math.inf
+
+
+def test_obscured_sky_in_8_group():
+    synop = decode_synop("AAXX 28031 10870 11408 82504 10012 89500==")
+    assert synop.ceiling_m == 0
+
+
+@pytest.mark.parametrize("broken_group", ["8", "83", "835000", "8350/x"])
+def test_broken_8_group_is_ignored(broken_group):
+    synop = decode_synop(f"AAXX 28031 10870 11408 82504 10012 {broken_group}==")
+    assert synop.ceiling_m == 300
+
+
+def test_non_numeric_visibility_code_is_nan():
+    synop = decode_synop("AAXX 28031 10870 1141/ 82504==")
+    assert math.isnan(synop.visibility_m)
+    assert synop.ceiling_m == 300
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "",
+        "AAXX 28031 10870",
+        "AAXX 28031 10870 11408",
+        "AAXX 28031 10870 114 82504",
+        "AAXX 28031 10870 114080 82504",
+        "AAXX 28031 10870 11x08 82504",
+        "AAXX 28031 10870 11408 8",
+        "AAXX 28031 10870 11408 8x504",
+        "AAXX 28031 10870 NIL 333 55300",
+    ],
+)
+def test_malformed_message_is_undecodable(message):
+    assert decode_synop(message) is None
 
 
 def test_nil_message():
