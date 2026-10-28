@@ -290,6 +290,18 @@ def test_parse_synop_text_skips_lines_with_a_bad_date():
     assert table.attrs["skipped_lines"] == 2
 
 
+def test_parse_synop_text_skips_a_line_whose_date_is_too_large_to_convert():
+    text = (
+        "10381,2024,01,99999999999999999999,00,00,AAXX 28001 10381 41002 82105 10062=\n"
+        "10381,2024,01,28,00,00,AAXX 28001 10381 41002 82105 10062=\n"
+    )
+
+    table = parse_synop_text(text)
+
+    assert table["time"].tolist() == [pd.Timestamp("2024-01-28 00:00")]
+    assert table.attrs["skipped_lines"] == 1
+
+
 def test_is_near_scene_boundaries():
     scenes = np.array(["2024-01-01T21:00", "2024-01-02T00:00"], dtype="datetime64[ns]")
     times = np.array(
@@ -307,7 +319,7 @@ def test_is_near_scene_boundaries():
 
 
 def geojson_stub(monkeypatch, networks: dict[str, str], csv_text: str) -> list[str]:
-    """Serve the GeoJSON of each network name (an empty answer for others) and `csv_text` for METAR requests."""
+    """Serve the GeoJSON of each network (an empty answer for others) and `csv_text` for METAR requests."""
     urls = []
 
     def fetch_text(url: str, timeout: float = 120) -> str:

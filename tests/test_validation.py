@@ -378,7 +378,7 @@ def validate_setup(
     observations: list[tuple[str, float, float, float, str]] = FOG_AND_CLEAR,
     n_scenes: int = 3,
 ) -> argparse.Namespace:
-    """Dataset, fixed label store and a METAR table of (station, lat, lon, visibility, time); no SYNOP table."""
+    """Dataset, fixed label store and a METAR table of (station, lat, lon, visibility, time), no SYNOP."""
     dataset_path = make_station_dataset(tmp_path / "data.zarr", n_scenes)
     label_dataset(dataset_path, label_store_path(tmp_path / "labels", "fixed"), "fixed", TEST_PARAMS)
     data_dir = station_files(tmp_path, ())

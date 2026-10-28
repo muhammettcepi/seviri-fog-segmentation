@@ -10,7 +10,7 @@ INTERVAL_PERCENTILES = (2.5, 97.5)
 
 
 def contingency(label: np.ndarray, truth: np.ndarray) -> np.ndarray:
-    """Counts in `COUNT_NAMES` order; cases with an ignored label (255) or undefined truth (-1) are skipped."""
+    """Counts in `COUNT_NAMES` order; cases with label 255 (ignored) or truth -1 (undefined) are skipped."""
     is_scored = np.isin(label, (0, 1)) & np.isin(truth, (0, 1))
     is_fog = label[is_scored] == 1
     is_fls = truth[is_scored] == 1

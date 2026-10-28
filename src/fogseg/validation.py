@@ -88,7 +88,7 @@ def nearest_pixels(
     station_lon: np.ndarray,
     station_lat: np.ndarray,
 ) -> pd.DataFrame:
-    """Nearest pixel centre of each station on the 2-D `lon` / `lat` grid: row `iy`, column `ix`, distance in km."""
+    """Nearest pixel centre of each station on the 2-D `lon` / `lat` grid: `iy`, `ix` and distance in km."""
     rows = []
     for point_lon, point_lat in zip(station_lon, station_lat, strict=True):
         distance = haversine_km(lon, lat, point_lon, point_lat)

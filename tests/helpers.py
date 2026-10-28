@@ -122,7 +122,7 @@ def make_label_dataset(
 
 
 def add_station_grid(dataset: xr.Dataset) -> xr.Dataset:
-    """`lon` / `lat` on (y, x): the grid starts at `GRID_LON0`, `GRID_LAT0` with 0.1 degree spacing, north at the top."""
+    """`lon` / `lat` on (y, x): from `GRID_LON0`, `GRID_LAT0` in 0.1 degree steps, north at the top."""
     lon, lat = np.meshgrid(GRID_LON0 + 0.1 * np.arange(LABEL_NX), GRID_LAT0 - 0.1 * np.arange(LABEL_NY))
     return dataset.assign_coords(
         lon=(("y", "x"), lon.astype("float32")),

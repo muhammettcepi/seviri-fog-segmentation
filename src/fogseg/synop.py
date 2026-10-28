@@ -24,7 +24,7 @@ class Synop:
 
 
 def visibility_m(vv: str) -> float:
-    """Visibility in m from the two-digit VV code (WMO code table 4377); NaN for `//`, 51-55 and non-numeric codes."""
+    """Visibility in m from the two-digit VV code (WMO table 4377); NaN for `//`, 51-55 and non-digits."""
     if len(vv) != 2 or not vv.isdigit():
         return math.nan
     code = int(vv)

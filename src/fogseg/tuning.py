@@ -1,4 +1,4 @@
-"""Tune the BTD offset and the fallback threshold: relabel the station cases per value and score each value."""
+"""Tune the BTD offset and the fallback threshold: relabel the station cases per value and score them."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class Decision:
 
 
 def grid_values(spec: list[float]) -> np.ndarray:
-    """The values of a `[start, stop, step]` grid, `stop` included, rounded so they compare equal to decimals."""
+    """The values of a `[start, stop, step]` grid, `stop` included, rounded so they equal their decimals."""
     start, stop, step = spec
     if step <= 0 or stop < start:
         raise ValueError(f"A grid is [start, stop, step] with start <= stop and step > 0, got {spec}")

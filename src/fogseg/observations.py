@@ -185,7 +185,7 @@ def parse_synop_text(text: str) -> pd.DataFrame:
         station, year, month, day, hour, minute, message = parts
         try:
             time_utc = dt.datetime(int(year), int(month), int(day), int(hour), int(minute))
-        except ValueError:
+        except (ValueError, OverflowError):
             skipped_lines += 1
             continue
         synop = decode_synop(message)
