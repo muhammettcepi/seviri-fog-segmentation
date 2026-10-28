@@ -218,6 +218,7 @@ def is_geojson_answer(text: str) -> bool:
 
 
 ANSWER_CHECKS = {"metar": is_metar_answer, "synop": is_synop_answer}
+PAUSE_KEYS = {"metar": "iem_pause_s", "synop": "ogimet_pause_s"}
 PARSERS = {"metar": parse_metar_csv, "synop": parse_synop_text}
 
 
@@ -248,7 +249,7 @@ def candidate_stations(source: str, stations_cfg: dict, data_dir: Path) -> pd.Da
 
 
 def download_station_file(url: str, path: Path, stations_cfg: dict, is_valid: Callable[[str], bool]) -> bool:
-    return download(url, path, stations_cfg["request_pause_s"], stations_cfg["max_tries"], is_valid)
+    return download(url, path, stations_cfg["iem_pause_s"], stations_cfg["max_tries"], is_valid)
 
 
 def download_requests(
@@ -279,14 +280,14 @@ def download_requests(
 
 
 def download_all(
-    requests: list[tuple[str, Path]], stations_cfg: dict, is_valid: Callable[[str], bool]
+    requests: list[tuple[str, Path]], pause_s: float, max_tries: int, is_valid: Callable[[str], bool]
 ) -> int:
     """Download every request that has no raw file yet, logging progress; returns the number that failed."""
     counts = {"downloaded": 0, "cached": 0, "failed": 0}
     for done, (url, path) in enumerate(requests, start=1):
         if path.exists():
             counts["cached"] += 1
-        elif download(url, path, stations_cfg["request_pause_s"], stations_cfg["max_tries"], is_valid):
+        elif download(url, path, pause_s, max_tries, is_valid):
             counts["downloaded"] += 1
         else:
             counts["failed"] += 1
@@ -325,7 +326,8 @@ def collect_observations(source: str, cfg: dict, lon: np.ndarray, lat: np.ndarra
     log.info("%s: %d of %d stations lie on the grid", source, len(selected), len(candidates))
 
     requests = download_requests(source, selected, cfg, data_dir / "raw" / source)
-    failed = download_all(requests, stations_cfg, ANSWER_CHECKS[source])
+    pause_s = stations_cfg[PAUSE_KEYS[source]]
+    failed = download_all(requests, pause_s, stations_cfg["max_tries"], ANSWER_CHECKS[source])
     if failed:
         log.warning("%s: %d of %d downloads failed; run the command again", source, failed, len(requests))
 

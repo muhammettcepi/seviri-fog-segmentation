@@ -52,7 +52,8 @@ def one_night_config(tmp_path) -> dict:
             "iem_networks": ["DE__ASOS"],
             "wmo_blocks": ["10"],
             "isd_history_url": "https://example.test/isd-history.csv",
-            "request_pause_s": 0,
+            "iem_pause_s": 1,
+            "ogimet_pause_s": 2,
             "max_tries": 2,
             "max_distance_km": 5.0,
             "max_elevation_m": 1000.0,
@@ -365,3 +366,26 @@ def test_second_collect_run_makes_no_requests(monkeypatch, tmp_path):
 
     assert urls == []
     pd.testing.assert_frame_equal(first, second)
+
+
+def test_each_source_waits_its_own_pause(monkeypatch, tmp_path):
+    isd = (
+        '"USAF","WBAN","STATION NAME","CTRY","STATE","ICAO","LAT","LON","ELEV(M)","BEGIN","END"\n'
+        '"103810","99999","TEST","GM","","","+48.400","+011.800","+0448.0","20100102","20260101"\n'
+    )
+    synop = "10381,2024,01,02,00,00,AAXX 02001 10381 41002 82105 10062 20046=\n"
+    pauses = []
+    monkeypatch.setattr("time.sleep", pauses.append)
+    cfg = one_night_config(tmp_path)
+    lon, lat = small_grid()
+
+    geojson_stub(monkeypatch, {"DE__ASOS": EDDM_GEOJSON}, EDDM_CSV)
+    collect_observations("metar", cfg, lon, lat)
+    assert pauses == [1, 1]  # the network file, then the station's season
+
+    pauses.clear()
+    monkeypatch.setattr(
+        observations, "fetch_text", lambda url, timeout=120: isd if "isd-history" in url else synop
+    )
+    collect_observations("synop", cfg, lon, lat)
+    assert pauses == [1, 2]  # the NOAA station file, then the Ogimet night
