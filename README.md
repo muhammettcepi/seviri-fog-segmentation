@@ -4,11 +4,11 @@
 
 Segmenting fog and low stratus at night from Meteosat SEVIRI infrared imagery over Central Europe:
 a physics-based baseline (the 10.8 − 3.9 µm brightness temperature difference), weak labels derived
-from it, a small U-Net trained on them, and an evaluation of both against independent airport
-visibility observations (METAR).
+from it, a small U-Net trained on them, and an evaluation of both against independent station
+observations (METAR and SYNOP).
 
-> **Status: work in progress.** Data access, preprocessing and weak labels work; the model and the
-> evaluation against METAR are next.
+> **Status: work in progress.** Data access, preprocessing, weak labels and their check against
+> station observations work; the model is next.
 
 ![Night Microphysics RGB, fog labels, BTD histogram and solar zenith angle for 7 November 2024, 05:00 UTC](docs/notes/figures/showcase_20241107T0500_dynamic.png)
 
@@ -44,9 +44,9 @@ ignore (twilight, missing data, or too close to the threshold to call). A pixel 
 is above a threshold, its cloud top is warm, it is not thin cirrus and the top is smooth; small
 patches and the pixels within 0.5 K of the threshold (on either side) are ignored. Two modes exist:
 
-- `fixed`: the threshold is 5.0 K for every scene.
-- `dynamic` (the default): the threshold is the scene's clear-ground peak plus 1.5 K, and 5.0 K
-  when no peak can be found.
+- `fixed` (the default): the threshold is 4.0 K for every scene.
+- `dynamic`: the threshold is the scene's clear-ground peak plus 1.5 K, and 4.0 K when no peak can
+  be found.
 
 A clean training-season example, with two humps in the histogram and the threshold between them, is
 [29 February 2024, 03:00 UTC](docs/notes/figures/check_20240229T0300_dynamic.png).
@@ -54,12 +54,34 @@ A clean training-season example, with two humps in the histogram and the thresho
 The rule, the thresholds, and per-season statistics are in the
 [dataset card](docs/DATASET_CARD.md#labels). How the thresholds were measured is in
 [`docs/notes/btd_exploration.md`](docs/notes/btd_exploration.md); how the labels were checked by eye on
-15 training-season scenes, and why `dynamic` became the default, is in
-[`docs/notes/label_check.md`](docs/notes/label_check.md).
+15 training-season scenes is in [`docs/notes/label_check.md`](docs/notes/label_check.md).
 
 These are **weak labels**: a rule on satellite data, not an observation on the ground. A satellite
 sees cloud tops, so fog and low stratus cannot be told apart, and fog under higher cloud is
-labelled `0`. Airport visibility observations (METAR) will be used to judge and tune the labels.
+labelled `0`.
+
+## Validation against stations
+
+The labels were scored against 1175 airport (METAR) and weather stations (SYNOP) in the domain. A
+report counts as fog or low stratus when visibility is below 1 km or a broken or overcast deck has its
+base below 1 km. The BTD threshold was tuned on the training season 2023-24 only. Training season,
+cases the satellite can see:
+
+| Labels | POD | FAR | CSI (95 % interval) |
+|---|---|---|---|
+| before: `dynamic`, peak + 1.5 K, fallback 5.0 K | 0.27 | 0.19 | 0.26 (0.20–0.32) |
+| now: `fixed`, 4.0 K | 0.50 | 0.28 | 0.42 (0.37–0.47) |
+
+Some limits:
+
+- **The threshold was chosen on HSS / PSS.** CSI alone peaks at 3.5 K, but there half of the
+  cloud-free ground in the north is labelled fog, so 4.0 K was chosen instead.
+- **Clear ground in the north still gets false fog.** A quarter of it is labelled fog at 4.0 K, against 5 % in the
+  south (viewing-angle drift).
+- **Half of the reported fog lies under high cloud**, where the labels say `0`.
+
+Everything, including the test-season result, is in
+[`docs/notes/station_validation.md`](docs/notes/station_validation.md).
 
 ## How the parts fit together
 
@@ -79,6 +101,13 @@ flowchart LR
     dynamic --> select["fogseg select-scenes"]
     data --> select
     select --> check["configs/check_scenes.yaml"]
+    iem["IEM METAR, Ogimet SYNOP"] --> stations["fogseg stations"]
+    stations --> obs["observations_*.csv"]
+    obs --> validate["fogseg validate / tune"]
+    fixed --> validate
+    dynamic --> validate
+    data --> validate
+    validate --> scores["scores, cases, tuning grids"]
 ```
 
 ## What exists so far
@@ -93,7 +122,11 @@ flowchart LR
 | Weak fog labels (`0` / `1` / `255`), one Zarr store per mode, `fixed` or `dynamic` threshold | `fogseg label` ([`src/fogseg/label_store.py`](src/fogseg/label_store.py), [`labels.py`](src/fogseg/labels.py), [`dynamic_threshold.py`](src/fogseg/dynamic_threshold.py)) |
 | Check figure of one scene: RGB, labels, BTD histogram, solar zenith angle | `fogseg inspect` ([`src/fogseg/inspect.py`](src/fogseg/inspect.py)) |
 | Pick the 15 training-season scenes to check by eye, with a fixed rule | `fogseg select-scenes` → [`configs/check_scenes.yaml`](configs/check_scenes.yaml) |
-| The visual check of the labels and why `dynamic` is the default | [`docs/notes/label_check.md`](docs/notes/label_check.md) |
+| The visual check of the labels | [`docs/notes/label_check.md`](docs/notes/label_check.md) |
+| Download METAR and SYNOP reports for the stations in the domain (resumable) | `fogseg stations` ([`observations.py`](src/fogseg/observations.py), [`metar.py`](src/fogseg/metar.py), [`synop.py`](src/fogseg/synop.py)) |
+| Score a label store against the stations: POD, FAR, CSI with bootstrap intervals over nights | `fogseg validate` ([`validation.py`](src/fogseg/validation.py), [`scores.py`](src/fogseg/scores.py)) |
+| Tune the BTD threshold on the training season | `fogseg tune` ([`tuning.py`](src/fogseg/tuning.py)) |
+| The station check, the tuning decisions and where the labels fail | [`docs/notes/station_validation.md`](docs/notes/station_validation.md) |
 | All settings (region, channels, seasons, night slots, label thresholds, paths) | [`configs/default.yaml`](configs/default.yaml) |
 | Tests on tiny synthetic scenes (no data or credentials needed) | `pytest` ([`tests/`](tests/)) |
 
@@ -116,10 +149,14 @@ fogseg fetch --dry-run                # how many scenes would be fetched
 fogseg fetch --workers 2              # download + crop all scenes (resumable)
 fogseg build                          # stack them into one Zarr store
 
-fogseg label                          # labels_<mode>.zarr; mode = labels.mode in the config (dynamic)
-fogseg label --mode fixed             # the fixed-threshold version; --overwrite replaces a store
+fogseg label                          # labels_<mode>.zarr; mode = labels.mode in the config (fixed)
+fogseg label --mode dynamic           # the dynamic-threshold version; --overwrite replaces a store
 fogseg select-scenes                  # write configs/check_scenes.yaml (uses labels.mode, or --labels); --overwrite replaces it
 fogseg inspect --time 2024-02-29T03:00 --labels dynamic   # one check figure, a PNG in labels.figures_dir
+
+fogseg stations                       # METAR and SYNOP reports (no account needed; SYNOP takes many hours)
+fogseg validate --season 2023-24      # score labels.mode against the stations
+fogseg tune                           # tuning grids on the training season
 
 pip install -e ".[dev]" && pytest     # run the tests
 ```

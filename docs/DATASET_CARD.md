@@ -99,7 +99,7 @@ Weak labels for fog and low stratus, made by `fogseg label` from the dataset abo
 Zarr store per mode, next to the dataset: `labels_fixed.zarr` and `labels_dynamic.zarr` (folder
 `labels.output_dir` in [`configs/default.yaml`](../configs/default.yaml)). They have the same
 `time`, `y` and `x` as the dataset, so `xr.merge([dataset, labels])` lines them up. The default mode
-is `dynamic`.
+is `fixed`.
 
 | Value | Meaning |
 |---|---|
@@ -156,12 +156,15 @@ flowchart TD
 
 All values are in the `labels` section of [`configs/default.yaml`](../configs/default.yaml): `night_min_sza`
 95.0, `warm_min_bt108` 255.0, `cirrus_max_split` 1.5, `smooth_max_std` 1.5, `uncertainty_band` 0.5,
-`min_blob_pixels` 5, `btd_fixed` 5.0. They were measured on the 2023-24 training season only
-([`docs/notes/btd_exploration.md`](notes/btd_exploration.md)); the 2024-25 season was not used to set any of them.
+`min_blob_pixels` 5, `btd_fixed` 4.0. They were measured on the 2023-24 training season only
+([`docs/notes/btd_exploration.md`](notes/btd_exploration.md)); `btd_fixed` was then tuned against station
+observations of the same season ([`docs/notes/station_validation.md`](notes/station_validation.md)). The 2024-25
+season was not used to set any of them.
 
 ### The BTD threshold
 
-- **`fixed` mode:** 5.0 K (`btd_fixed`) in every scene.
+- **`fixed` mode:** 4.0 K (`btd_fixed`) in every scene. Tuned against 1175 stations in the training season; it
+  replaced 5.0 K, which missed most of the fog.
 - **`dynamic` mode:** clear ground has a BTD peak of its own in each scene, and it moves from night to
   night (1.9 to 4.6 K, 1st to 99th percentile in the training season). Per scene, the BTD of
   the trusted, warm, non-cirrus pixels is put in a histogram (bins of 0.25 K from −2 to 8 K, smoothed over
@@ -169,7 +172,7 @@ All values are in the `labels` section of [`configs/default.yaml`](../configs/de
   threshold is that peak plus 1.5 K, the distance at which the valley between clear ground and low
   cloud lay in the training season. The result is limited to 3.5 to 6.0 K; with the current window the upper limit is never reached, because the
   highest accepted peak is 4.375 K, so the highest threshold is 5.875 K.
-  The scene falls back to the fixed 5.0 K (`threshold_source = fallback`) if the histogram has fewer
+  The scene falls back to `btd_fixed`, 4.0 K (`threshold_source = fallback`), if the histogram has fewer
   than 2,000 pixels inside its range of -2 to 8 K or the highest bin is at the edge of the window, so no real peak was found.
 
 ### Label statistics
@@ -178,34 +181,46 @@ Computed from the stores on the 304 scenes of each season (a night belongs to th
 starts, so the morning slots after midnight count with the night before). "Mean fog fraction" is the
 mean over scenes of `fog_fraction`, "mean ignore fraction" the mean of `ignore_fraction`.
 
-| Mode | Season | Mean fog fraction | Mean ignore fraction | Dynamic threshold | Fallback to 5.0 K |
+| Mode | Season | Mean fog fraction | Mean ignore fraction | Dynamic threshold | Fallback to 4.0 K |
 |---|---|---|---|---|---|
-| fixed | 2023-24 (training) | 0.0534 | 0.0961 | – | – |
-| fixed | 2024-25 (test) | 0.1270 | 0.1264 | – | – |
-| dynamic | 2023-24 (training) | 0.0563 | 0.0911 | 293 scenes | 11 scenes |
-| dynamic | 2024-25 (test) | 0.1382 | 0.1225 | 288 scenes | 16 scenes |
+| fixed | 2023-24 (training) | 0.1250 | 0.1464 | – | – |
+| fixed | 2024-25 (test) | 0.2369 | 0.1619 | – | – |
+| dynamic | 2023-24 (training) | 0.0614 | 0.0904 | 293 scenes | 11 scenes |
+| dynamic | 2024-25 (test) | 0.1470 | 0.1194 | 288 scenes | 16 scenes |
 
 In the training season the dynamic threshold has a median of 5.1 K (middle half 4.6 to 5.4 K,
-range 3.5 to 5.9 K; [btd_exploration](notes/btd_exploration.md)). Fog is a small class: the mean fog
-fraction is about 6 % of the decided pixels in the training season and about 14 % in the test season
-(dynamic labels), so the class balance differs between the two. The ignore fraction is higher than it
-would be with a one-sided band, because pixels just below the threshold are ignored too (the dynamic
-training season had a mean ignore fraction of 0.060 before the band became symmetric). The test-season
-numbers describe the labels only; nothing was tuned on them.
+range 3.5 to 5.9 K; [btd_exploration](notes/btd_exploration.md)), so the dynamic labels mark much
+less fog than the fixed 4.0 K. Fog is a minority class: the mean fog fraction is about 13 % of the
+decided pixels in the training season and about 24 % in the test season (fixed labels), so the class
+balance differs between the two. The ignore fraction is higher with 4.0 K than it was with 5.0 K
+(0.146 against 0.096 in the training season), because the 0.5 K band on either side of the threshold now lies where many
+pixels are. The test-season numbers describe the labels only; nothing was tuned on them.
 
 ### How the labels were checked
 
-15 training-season scenes were looked at by eye, in both modes, before any model was trained; the
-choice of `dynamic` as the default and the decision to keep every threshold as measured are in
-[`docs/notes/label_check.md`](notes/label_check.md). The scenes are listed in
-[`configs/check_scenes.yaml`](../configs/check_scenes.yaml). This is a visual check of gross mistakes,
-not a measure of accuracy.
+15 training-season scenes were looked at by eye, in both modes, before any model was trained
+([`docs/notes/label_check.md`](notes/label_check.md); the scenes are listed in
+[`configs/check_scenes.yaml`](../configs/check_scenes.yaml)). That check chose `dynamic` at first.
+
+The labels were then scored against 1175 airport (METAR) and weather stations (SYNOP)
+([`docs/notes/station_validation.md`](notes/station_validation.md)). A report counts as fog or low stratus when
+visibility is below 1 km or a broken or overcast deck has its base below 1 km. On the training season, for the cases
+the satellite can see:
+
+| Labels | POD | FAR | CSI (95 % interval) |
+|---|---|---|---|
+| `dynamic`, peak + 1.5 K, fallback 5.0 K (before) | 0.27 | 0.19 | 0.26 (0.20–0.32) |
+| `fixed`, 4.0 K (now the default) | 0.50 | 0.28 | 0.42 (0.37–0.47) |
+
+The threshold was chosen on the Heidke and Peirce skill scores. CSI alone peaks at 3.5 K (0.44), but at 3.5 K far more
+clear ground is labelled fog. The test-season scores are in the note.
 
 ### Limitations
 
-- **Weak labels are not ground truth.** They come from a rule on satellite data. Airport visibility
-  observations (METAR) will be used later to judge and tune them.
-- **Fog under higher cloud gets `0`**, not `255`. The satellite sees only the top, so a model
+- **Weak labels are not ground truth.** They come from a rule on satellite data. Against stations they
+  find half of the visible fog and low stratus (POD 0.50), and 28 % of what they call fog is not (FAR).
+- **Fog under higher cloud gets `0`**, not `255`. 51 % of the fog or low-stratus reports in the training
+  season lie under a pixel that fails the high-cloud tests. The satellite sees only the top, so a model
   trained on these labels learns that fog is absent under thick cloud; that is a property of the
   data, not of the weather.
 - **Fog and low stratus cannot be told apart** from space. `1` means a low water-cloud deck that may or may not
@@ -215,22 +230,25 @@ not a measure of accuracy.
 - **A low-cloud deck inside the clear-ground window.** If a deck covers most of the region and its BTD
   is only slightly above the ground, the dynamic method may take the deck for clear ground and set the
   threshold too high (for example 21 November 2023, 00:00). There is no cloud mask to decide this.
-- **Fallback nights use a fixed 5.0 K.** When the histogram peak lies at the upper edge of the window,
-  that hump is usually a low-cloud deck, not clear ground (looked at on 3 February 2024 and 8 January
-  2024, 05:00). The fixed 5.0 K then tends to cut through the deck (missed fog or ignored pixels) rather
-  than to label clear ground as fog. This is a visual judgement on two scenes; without a cloud mask or
-  station observations it cannot be proved. It affects 11 of 304 training scenes and 16 of 304 test
-  scenes, and both modes give the same label there. To be revisited with METAR tuning.
+- **Fallback nights (dynamic mode).** When the histogram peak lies at the upper edge of the window,
+  that hump is usually a low-cloud deck, not clear ground. The stations confirm it: on those scenes
+  the old fallback of 5.0 K had CSI 0.30, the new 4.0 K has 0.59. This affects 11 of 304 training scenes
+  and 16 of 304 test scenes.
 - **The viewing-angle drift is not corrected.** The clear-ground BTD rises by about 1 K from 54° to
   65.5° viewing angle, which in this region means from south to north (the two are almost the
-  same thing, so the effect is mixed with surface type and air temperature). Nothing obvious showed
-  in the check scenes, but without a cloud mask this cannot be proved.
+  same thing, so the effect is mixed with surface type and air temperature). The stations confirm
+  it: at cloud-free stations the median BTD is 3.0 K in 43–47° N and 3.8 to 3.9 K in 51–56° N. With
+  one threshold for the whole region, 26 % of the cloud-free reports in 51–56° N are labelled fog,
+  against 5 % in 43–47° N.
+- **Many reported fog cases look like clear ground** in the BTD. At the station pixels, fog becomes
+  more likely than clear ground only about 0.5 K above the threshold. 60 % of the missed visible fog
+  fails the smoothness test (broken or patchy decks). No threshold separates these.
 
 ## What this dataset is not
 
 - **Not ground truth.** The labels are a physical rule, not observations; see the limitations above.
 - **Fog vs. low stratus:** the satellite sees cloud tops. It cannot tell whether a low cloud touches
-  the ground; that is checked separately against airport visibility (METAR).
+  the ground: against visibility below 1 km alone, 92 % of the labelled fog is not ground fog.
 - **Not redistributed.** The data are EUMETSAT data used under the EUMETSAT data licence; this
   repository contains the code to rebuild the dataset, not the data itself.
 
@@ -241,4 +259,6 @@ fogseg fetch --workers 2     # 608 scenes, ~4-8 h, resumable (needs a EUMETSAT A
 fogseg build                 # ~1-3 min
 fogseg label --mode fixed    # labels_fixed.zarr
 fogseg label --mode dynamic  # labels_dynamic.zarr
+fogseg stations              # station reports for the check; SYNOP takes many hours (Ogimet rate limit)
+fogseg validate --season 2023-24
 ```

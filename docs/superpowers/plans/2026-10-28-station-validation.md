@@ -254,11 +254,12 @@ pytest, ruff 0.17.
 stations:
   data_dir: "/mnt/d/fogseg-data/stations"
   iem_networks: [AT__ASOS, BA__ASOS, BE__ASOS, BY__ASOS, CH__ASOS, CZ__ASOS, DE__ASOS, DK__ASOS, FR__ASOS, HR__ASOS,
-                 HU__ASOS, IT__ASOS, LT__ASOS, LU__ASOS, ME__ASOS, NL__ASOS, PL__ASOS, RO__ASOS, RS__ASOS, SE__ASOS,
+                 HU__ASOS, IT__ASOS, LT__ASOS, LU__ASOS, NL__ASOS, PL__ASOS, RO__ASOS, RS__ASOS, SE__ASOS,
                  SI__ASOS, SK__ASOS, UA__ASOS]
   wmo_blocks: ["02", "06", "07", "10", "11", "12", "13", "14", "15", "16", "26", "33"]
   isd_history_url: "https://www.ncei.noaa.gov/pub/data/noaa/isd-history.csv"
-  request_pause_s: 10
+  iem_pause_s: 5
+  ogimet_pause_s: 22   # Ogimet allows one query per remote IP every 20 s
   max_tries: 3
   max_distance_km: 5.0
   max_elevation_m: 1000.0
@@ -426,4 +427,4 @@ stations:
 - [ ] README: a short "Validation against stations" section with the headline scores and a link to the note.
 - [ ] Dataset card: station validation and its limits.
 - [ ] `pytest -q`, `ruff check .`, `ruff format --check .` — all clean.
-- [ ] Commit, push the branch, open the PR into `feature/fog-labels` with `~/.local/bin/gh` in WSL.
+- [ ] Commit, push the branch, open the PR into `develop` (PR #3 is merged) with `~/.local/bin/gh` in WSL.
