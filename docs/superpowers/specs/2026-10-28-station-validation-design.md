@@ -229,6 +229,7 @@ season, and then, **once**, on the test season with `--final`.
 | 4 | `tuning.py`, `fogseg tune` | grid, decision |
 | 5 | Relabel, rescore training, then the one test-season run | final scores |
 | 6 | Notes, config, README, dataset card | documentation |
+| next | Better labels, investigated in its own spec (see the last section of the plan) | spec for the label step |
 
 ## 12. Risks and open questions
 

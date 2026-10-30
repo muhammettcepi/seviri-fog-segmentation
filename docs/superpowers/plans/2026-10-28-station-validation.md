@@ -428,3 +428,19 @@ stations:
 - [ ] Dataset card: station validation and its limits.
 - [ ] `pytest -q`, `ruff check .`, `ruff format --check .` — all clean.
 - [ ] Commit, push the branch, open the PR into `develop` (PR #3 is merged) with `~/.local/bin/gh` in WSL.
+
+## Next step, after this PR: better labels
+
+The station check showed that the labels miss half of the visible fog and that a U-Net trained on them alone would
+learn their errors. The next piece of work investigates better labels before the U-Net is trained. It gets its own
+spec and plan; the starting point is [`label_improvement_research.md`](../../notes/label_improvement_research.md) and
+the "Next step" section of [`station_validation.md`](../../notes/station_validation.md). Candidates, cheapest first:
+
+- Split the training season into training and validation nights and stations, and judge every change only on the
+  validation stations (the test season stays sealed).
+- Stop labelling fog under high cloud as `0` (own class or `255`).
+- Station-calibrated soft labels instead of a hard threshold, and a wider ignore band.
+- Relax the smoothness test.
+- A station point loss next to the dense labels when the U-Net is trained.
+- A station-trained model (Jahani et al. 2025 style) as benchmark and, if it beats the rule on held-out stations, as
+  the source of the dense labels.

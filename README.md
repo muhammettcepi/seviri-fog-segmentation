@@ -8,7 +8,8 @@ from it, a small U-Net trained on them, and an evaluation of both against indepe
 observations (METAR and SYNOP).
 
 > **Status: work in progress.** Data access, preprocessing, weak labels and their check against
-> station observations work; the model is next.
+> station observations work. Next: better labels using the stations
+> ([`label_improvement_research.md`](docs/notes/label_improvement_research.md)), then the model.
 
 ![Night Microphysics RGB, fog labels, BTD histogram and solar zenith angle for 7 November 2024, 05:00 UTC](docs/notes/figures/showcase_20241107T0500_dynamic.png)
 

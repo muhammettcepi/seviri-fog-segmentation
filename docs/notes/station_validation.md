@@ -239,9 +239,42 @@ The FAR per latitude band hides this. It is *highest* in the south (0.43 against
 in the north (59 % of the scored cases in 51–56° N against 19 % in 43–47° N), so the same false fog is
 diluted by more hits. Judged on the cloud-free reports, the north is clearly worse.
 
-**One quarter of the cloud-free northern ground is labelled fog even at 4.0 K.** A threshold that rises with latitude,
-or a per-scene clear-ground reference computed in latitude bands, would address it. That is a change to the label
-method and is left for a later step.
+**One quarter of the cloud-free northern ground is labelled fog even at 4.0 K.**
+
+**What drives it.** On 38,672 cloud-free reports, with each scene's mean removed so that night-to-night changes do not
+mix in:
+
+- **Viewing angle:** clear-ground BTD rises 0.07 K per degree (95 % interval 0.05–0.09).
+  - Latitude and viewing angle correlate 0.96 at the stations, so the data cannot fully separate them.
+  - Fitted together, viewing angle keeps its effect (+0.12 K per degree) and latitude does not, which fits the physics:
+    a longer slant path absorbs more at 3.9 µm.
+- **Ground height** matters little: −0.6 K per 1000 m, under 1 % of the variance, and mostly because high ground is
+  colder.
+- **Ground temperature** (`IR_108`) is the largest factor within a scene: +0.13 K per K, 19 % of the variance.
+- **Unexplained:** most of the variance remains. After viewing angle and height, station means still differ by 0.38 K
+  (standard deviation), most likely from the surface type.
+
+**Would a regional threshold help?** A rough test at the station pixels used the BTD rule only, without the smoothness,
+band and patch tests, so its numbers compare rules with each other, not with the label scores:
+
+| Rule | HSS | Cloud-free reports called fog, 43–47° N / 51–56° N |
+|---|---|---|
+| one threshold | **0.351** | 0.06 / 0.27 |
+| threshold rising 0.10 K per degree of viewing angle | 0.317 | 0.13 / 0.12 |
+| clear-ground peak per scene + offset | 0.329 | 0.10 / 0.29 |
+| clear-ground peak per latitude band and scene + offset | 0.278 | 0.13 / 0.12 |
+
+Both regional rules even out the false fog between south and north, but they lose more than they gain:
+
+- **Northern fog is lost.** Fog BTD rises only 0.5 K to the north and fog is common there, so a higher northern
+  threshold throws away much real fog.
+- **Band peaks are unstable.** The peak per band moves from night to night: the north-south difference has a standard
+  deviation of 0.9 K, and the bands correlate only 0.2–0.4 with each other.
+- **The band peak can be the fog deck.** In a band that is mostly fog, the histogram peak is the fog deck itself, which
+  pushes the threshold too high.
+
+The northern false fog is a limit of the BTD itself, where clear ground and fog overlap. Moving the threshold does not
+remove it. The single threshold was kept.
 
 ### Fallback scenes
 
@@ -277,6 +310,25 @@ published methods. They are weak labels for training, not a fog product.
 **Pending:** the test-season SYNOP download was still running when this was written. This section is filled in after
 `fogseg validate --labels fixed --season 2024-25 --final` (and the same for `dynamic`) has been run once, with every
 value above already fixed.
+
+## Next step: better labels before the U-Net
+
+The labels find half of the visible fog, and their errors are systematic (northern clear ground, patchy fog, fog under
+high cloud). A U-Net trained only on them would most likely learn those errors: no published study was found in which
+a network trained on a fog rule's output beat that rule against stations. The information that can correct them is
+the station network itself.
+
+A literature review ([`label_improvement_research.md`](label_improvement_research.md)) suggests these steps, cheapest
+first. They are the next piece of work, in their own spec:
+
+1. **Seal an evaluation inside the training season:** hold out blocks of nights and of stations, and judge every change
+   only on them. The test season stays closed.
+2. **Stop calling fog under high cloud "no fog":** an own class or `255` instead of `0`.
+3. **Station-calibrated soft labels** instead of a hard 4.0 K, with a wider ignore band around it.
+4. **Relax the smoothness test,** which rejects 60 % of the visible fog the labels miss.
+5. **A station point loss** next to the dense labels when the U-Net is trained.
+6. **A station-trained model** (in the style of Jahani et al. 2025) as a benchmark and, if it beats the rule on
+   held-out stations, as the source of the dense labels.
 
 ## Caveats
 
