@@ -65,15 +65,19 @@ labelled `0`.
 
 The labels were scored against 1175 airport (METAR) and weather stations (SYNOP) in the domain. A
 report counts as fog or low stratus when visibility is below 1 km or a broken or overcast deck has its
-base below 1 km. The BTD threshold was tuned on the training season 2023-24 only. Training season,
-cases the satellite can see:
+base below 1 km. The BTD threshold was tuned on the training season 2023-24 only, and the test season
+2024-25 was scored once at the end. Cases the satellite can see:
 
-| Labels | POD | FAR | CSI (95 % interval) |
-|---|---|---|---|
-| before: `dynamic`, peak + 1.5 K, fallback 5.0 K | 0.27 | 0.19 | 0.26 (0.20–0.32) |
-| now: `fixed`, 4.0 K | 0.50 | 0.28 | 0.42 (0.37–0.47) |
+| Labels | Season | POD | FAR | CSI (95 % interval) |
+|---|---|---|---|---|
+| before: `dynamic`, peak + 1.5 K, fallback 5.0 K | training | 0.27 | 0.19 | 0.26 (0.20–0.32) |
+| now: `fixed`, 4.0 K | training | 0.50 | 0.28 | 0.42 (0.37–0.47) |
+| now: `fixed`, 4.0 K | **test** | 0.70 | 0.19 | 0.60 (0.55–0.64) |
 
 Some limits:
+
+- **The test season was easier,** with wide low-stratus decks and less fog under high cloud. The gap between the seasons
+  says that one season's score is only a rough measure of the labels.
 
 - **The threshold was chosen on HSS / PSS.** CSI alone peaks at 3.5 K, but there half of the
   cloud-free ground in the north is labelled fog, so 4.0 K was chosen instead.

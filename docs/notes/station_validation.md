@@ -20,11 +20,12 @@ last section).
 | Source | Stations on the grid | Observations (night windows, both seasons) | Where from |
 |---|---|---|---|
 | METAR (airports) | 306 | 686,292 | Iowa Environmental Mesonet, raw METAR decoded by `fogseg` |
-| SYNOP (weather stations) | 869 | 679,662 in the training season | Ogimet, raw `AAXX` messages decoded by `fogseg`; coordinates from NOAA `isd-history.csv` |
+| SYNOP (weather stations) | 869 in the training season, 885 with the test season | 1,350,132 (679,662 in the training season) | Ogimet, raw `AAXX` messages decoded by `fogseg`; coordinates from NOAA `isd-history.csv` |
 
 A station is used when its nearest pixel centre is at most 5 km away and it lies at most 1000 m above sea level (a
-mountain station reports fog whenever it is inside a cloud). 1175 stations pass; 39 of them have no usable case in the
-training season (no report near the scan time).
+mountain station reports fog whenever it is inside a cloud). 1175 stations pass with the training-season reports, 1191
+with both seasons. 39 of them have no usable case in the training season and 44 none in the test season (no report near
+the scan time).
 
 ### Truth rule
 
@@ -302,18 +303,55 @@ stations and case selections, so they are not directly comparable:
 - Jahani et al. (2025), SEVIRI FLS against METAR over Europe, test set: POD 0.82, FAR 0.31, CSI 0.60.
 - FogPy / DWD against SYNOP visibility below 1 km: POD 71–74 %, FAR 15 % (low cloud) and 34 % (ground fog).
 
-The labels here reach CSI 0.42 on the visible cases with a single BTD threshold and no cloud mask, well below the
-published methods. They are weak labels for training, not a fog product.
+The labels here use a single BTD threshold and no cloud mask. On the visible cases they reach CSI 0.42 in the training
+season, well below the published methods, and 0.60 in the test season, which was an easier season (see the last
+section). They are weak labels for training, not a fog product.
 
 ## Test season: the one final evaluation
 
-**Pending:** the test-season SYNOP download was still running when this was written. This section is filled in after
-`fogseg validate --labels fixed --season 2024-25 --final` (and the same for `dynamic`) has been run once, with every
-value above already fixed.
+Run once on 30 October 2026, after every value above had been fixed:
+`fogseg validate --labels fixed --season 2024-25 --final` and the same for `dynamic`. Nothing was changed afterwards.
+
+| Labels | Season | Cases | POD | FAR | CSI (95 % interval) | Bias | HSS | PSS |
+|---|---|---|---|---|---|---|---|---|
+| fixed 4.0 K | 2023-24 (training) | 58,581 | 0.502 | 0.280 | 0.420 (0.369–0.472) | 0.70 | 0.371 | 0.356 |
+| **fixed 4.0 K** | **2024-25 (test)** | 82,900 | 0.698 | 0.187 | **0.602** (0.545–0.644) | 0.86 | 0.528 | 0.530 |
+| dynamic, offset 1.5 K | 2023-24 (training) | 65,574 | 0.297 | 0.188 | 0.277 (0.216–0.352) | 0.37 | 0.287 | 0.253 |
+| dynamic, offset 1.5 K | 2024-25 (test) | 87,971 | 0.526 | 0.125 | 0.489 (0.424–0.543) | 0.60 | 0.477 | 0.463 |
+
+The other views of the fixed labels on the test season:
+
+| View | Group | Cases | POD | FAR | CSI (95 % interval) | Bias |
+|---|---|---|---|---|---|---|
+| source | METAR | 40,267 | 0.700 | 0.199 | 0.597 (0.536–0.644) | 0.87 |
+| source | SYNOP | 61,112 | 0.692 | 0.180 | 0.601 (0.547–0.643) | 0.84 |
+| latitude | 43–47° N | 20,320 | 0.616 | 0.307 | 0.484 (0.431–0.529) | 0.89 |
+| latitude | 47–51° N | 33,312 | 0.710 | 0.131 | 0.642 (0.577–0.690) | 0.82 |
+| latitude | 51–56° N | 28,815 | 0.715 | 0.197 | 0.608 (0.551–0.656) | 0.89 |
+| fog only | all | 96,554 | 0.707 | 0.833 | 0.156 (0.126–0.185) | 4.23 |
+| with hidden | all | 131,683 | 0.466 | 0.187 | 0.421 (0.357–0.472) | 0.57 |
+
+What it shows:
+
+- **The choice holds on unseen data.** Fixed 4.0 K beats the dynamic labels on the test season too (HSS 0.53 against
+  0.48), as it did on the training season.
+- **The test score is higher than the training score because of the season, not the labels.** The rule and its values
+  are the same. 2024-25 had much more widespread low stratus:
+  - 24 % of the decided pixels are labelled fog, against 13 %;
+  - 47 % of the defined reports are FLS, against 44 %;
+  - only 30 % of the FLS reports lie under high cloud, against 51 %.
+
+  Wide, thick decks are the easy case for a BTD threshold. The two seasons differ by 0.18 in CSI, more than either
+  interval is wide: the intervals cover the spread between nights of one season, not between seasons. One season's
+  score is therefore a rough estimate of the labels' skill.
+- **The known failures are still there:**
+  - cloud-free reports labelled fog: 0.06 in 43–47° N and 0.23 in 51–56° N (0.05 and 0.26 in training);
+  - 17 % of the visible FLS reports are labelled `255` (20 % in training);
+  - fog under high cloud still gets `0`: counted in, CSI falls to 0.42.
 
 ## Next step: better labels before the U-Net
 
-The labels find half of the visible fog, and their errors are systematic (northern clear ground, patchy fog, fog under
+The labels find half (training season) to 70 % (test season) of the visible fog, and their errors are systematic (northern clear ground, patchy fog, fog under
 high cloud). A U-Net trained only on them would most likely learn those errors: no published study was found in which
 a network trained on a fog rule's output beat that rule against stations. The information that can correct them is
 the station network itself.
@@ -349,6 +387,7 @@ fogseg validate --season 2023-24                  # scores of labels.mode on the
 fogseg validate --labels dynamic --season 2023-24
 fogseg tune                                       # tuning grids on the training season, tuning_*.csv
 fogseg validate --season 2024-25 --final          # the one test-season run
+fogseg validate --labels dynamic --season 2024-25 --final
 ```
 
 Tables are written to `stations.data_dir`: `observations_*.csv`, `cases_<mode>_<season>.csv`,

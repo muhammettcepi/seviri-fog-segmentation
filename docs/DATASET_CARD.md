@@ -204,16 +204,17 @@ pixels are. The test-season numbers describe the labels only; nothing was tuned 
 
 The labels were then scored against 1175 airport (METAR) and weather stations (SYNOP)
 ([`docs/notes/station_validation.md`](notes/station_validation.md)). A report counts as fog or low stratus when
-visibility is below 1 km or a broken or overcast deck has its base below 1 km. On the training season, for the cases
-the satellite can see:
+visibility is below 1 km or a broken or overcast deck has its base below 1 km. For the cases the satellite can see:
 
-| Labels | POD | FAR | CSI (95 % interval) |
-|---|---|---|---|
-| `dynamic`, peak + 1.5 K, fallback 5.0 K (before) | 0.27 | 0.19 | 0.26 (0.20–0.32) |
-| `fixed`, 4.0 K (now the default) | 0.50 | 0.28 | 0.42 (0.37–0.47) |
+| Labels | Season | POD | FAR | CSI (95 % interval) |
+|---|---|---|---|---|
+| `dynamic`, peak + 1.5 K, fallback 5.0 K (before) | 2023-24 (training) | 0.27 | 0.19 | 0.26 (0.20–0.32) |
+| `fixed`, 4.0 K (now the default) | 2023-24 (training) | 0.50 | 0.28 | 0.42 (0.37–0.47) |
+| `fixed`, 4.0 K | 2024-25 (test, scored once) | 0.70 | 0.19 | 0.60 (0.55–0.64) |
 
 The threshold was chosen on the Heidke and Peirce skill scores. CSI alone peaks at 3.5 K (0.44), but at 3.5 K far more
-clear ground is labelled fog. The test-season scores are in the note.
+clear ground is labelled fog. The test season scores higher because it had more widespread low stratus and less fog
+under high cloud, not because the labels changed; the details are in the note.
 
 ### Limitations
 
