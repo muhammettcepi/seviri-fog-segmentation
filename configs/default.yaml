@@ -33,11 +33,13 @@ time:
 # Fog / low-stratus labels (0 not fog, 1 fog, 255 ignore).
 # Thresholds measured on the 2023-24 training season; evidence and reasons in docs/notes/btd_exploration.md.
 labels:
-  mode: dynamic   # fixed | dynamic; dynamic chosen on the check scenes, see docs/notes/label_check.md
+  # fixed | dynamic; fixed 4.0 K scores best against the 2023-24 stations (Heidke and Peirce skill),
+  # see docs/notes/station_validation.md
+  mode: fixed
   output_dir: "/mnt/d/fogseg-data/processed"
   figures_dir: "/mnt/d/fogseg-data/figures/inspect"
   night_min_sza: 95.0
-  btd_fixed: 5.0
+  btd_fixed: 4.0
   warm_min_bt108: 255.0
   cirrus_max_split: 1.5
   smooth_max_std: 1.5
@@ -53,3 +55,26 @@ labels:
     offset: 1.5
     min_pixels: 2000
     clamp: [3.5, 6.0]
+
+# Station observations that check and tune the labels; design in docs/superpowers/specs/2026-10-28-station-validation-design.md
+stations:
+  data_dir: "/mnt/d/fogseg-data/stations"
+  iem_networks: [AT__ASOS, BA__ASOS, BE__ASOS, BY__ASOS, CH__ASOS, CZ__ASOS, DE__ASOS, DK__ASOS, FR__ASOS, HR__ASOS,
+                 HU__ASOS, IT__ASOS, LT__ASOS, LU__ASOS, NL__ASOS, PL__ASOS, RO__ASOS, RS__ASOS, SE__ASOS, SI__ASOS,
+                 SK__ASOS, UA__ASOS]
+  wmo_blocks: ["02", "06", "07", "10", "11", "12", "13", "14", "15", "16", "26", "33"]
+  isd_history_url: "https://www.ncei.noaa.gov/pub/data/noaa/isd-history.csv"
+  iem_pause_s: 5
+  ogimet_pause_s: 22   # Ogimet allows one slow query per remote IP every 20 s (HTTP 501 otherwise)
+  max_tries: 3
+  max_distance_km: 5.0
+  max_elevation_m: 1000.0
+  truth_limit_m: 1000.0
+  scan_delay_min: 12
+  time_tolerance_min: 30
+  lat_bands: [43, 47, 51, 56]
+  tune_season: "2023-24"
+  offset_grid: [0.0, 3.0, 0.25]      # start, stop (included), step in K
+  btd_fixed_grid: [3.0, 7.0, 0.25]
+  bootstrap_samples: 1000
+  seed: 0

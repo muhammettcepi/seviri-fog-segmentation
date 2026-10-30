@@ -9,8 +9,12 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fogseg.config import load_config, scene_filename, scene_times
+
+if TYPE_CHECKING:
+    from fogseg.tuning import Decision
 
 log = logging.getLogger("fogseg")
 
@@ -115,6 +119,176 @@ def cmd_label(args: argparse.Namespace) -> None:
     source_counts, mean_fog_fraction = summarize_store(out_path)
     log.info("Threshold sources: %s", source_counts)
     log.info("Mean fog fraction over scenes with decided pixels: %.4f", mean_fog_fraction)
+
+
+def cmd_stations(args: argparse.Namespace) -> None:
+    import xarray as xr
+
+    from fogseg.observations import collect_observations
+
+    cfg = load_config(args.config)
+    data_dir = Path(cfg["stations"]["data_dir"])
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        lon, lat = data["lon"].values, data["lat"].values
+
+    for source in [args.source] if args.source else ["metar", "synop"]:
+        observations = collect_observations(source, cfg, lon, lat)
+        out_path = data_dir / f"observations_{source}.csv"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        observations.to_csv(out_path, index=False)
+        log.info(
+            "Wrote %d %s observations of %d stations to %s",
+            len(observations),
+            source,
+            observations["station"].nunique(),
+            out_path,
+        )
+
+
+def cmd_validate(args: argparse.Namespace) -> None:
+    import xarray as xr
+
+    from fogseg.dynamic_threshold import DynamicParams
+    from fogseg.label_store import label_store_path, stored_params
+    from fogseg.validation import (
+        check_season_allowed,
+        observation_paths,
+        read_observations,
+        score_table,
+        season_cases,
+    )
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    mode = args.labels or labels_cfg["mode"]
+    check_season_allowed(cfg, args.season, args.final)
+
+    data_dir = Path(stations_cfg["data_dir"])
+    observations = read_observations(data_dir)
+
+    store_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
+    with (
+        xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
+        xr.open_zarr(store_path, consolidated=False) as labels,
+    ):
+        # The hidden test must use the thresholds the labels were made with, even after a config edit.
+        params, _ = stored_params(labels.attrs, DynamicParams.from_config(labels_cfg["dynamic"]))
+        cases = season_cases(data, labels, observations, cfg, args.season, params)
+
+    if cases.empty:
+        log.warning(
+            "No station observation matches a scene of season %s; check %s",
+            args.season,
+            ", ".join(str(path) for path in observation_paths(data_dir)),
+        )
+
+    scores = score_table(
+        cases, stations_cfg["lat_bands"], stations_cfg["bootstrap_samples"], stations_cfg["seed"]
+    )
+    cases_path = data_dir / f"cases_{mode}_{args.season}.csv"
+    scores_path = data_dir / f"scores_{mode}_{args.season}.csv"
+    cases.to_csv(cases_path, index=False)
+    scores.to_csv(scores_path, index=False)
+
+    main = scores[scores["view"] == "main"].iloc[0]
+    log.info(
+        "Season %s, %s labels, %d cases: POD %.3f, FAR %.3f, CSI %.3f, bias %.3f",
+        args.season,
+        mode,
+        main["n_cases"],
+        main["pod"],
+        main["far"],
+        main["csi"],
+        main["bias"],
+    )
+    log.info("Wrote %s and %s", cases_path, scores_path)
+
+
+def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:
+    """Log the best value of a tuned parameter; a `report_only` grid does not decide the config value."""
+    if report_only:
+        verdict = "report only"
+    elif decision.changed:
+        verdict = "changed"
+    else:
+        verdict = "kept"
+    log.info(
+        "Tune %s: current %g, best %g, CSI %.3f -> %.3f, difference %+.3f to %+.3f, ignored %d -> %d, %s",
+        name,
+        decision.current,
+        decision.best,
+        decision.csi_current,
+        decision.csi_best,
+        decision.difference_low,
+        decision.difference_high,
+        decision.ignored_current,
+        decision.ignored_best,
+        verdict,
+    )
+
+
+def cmd_tune(args: argparse.Namespace) -> None:
+    import dataclasses
+
+    import xarray as xr
+
+    from fogseg.dynamic_threshold import DynamicParams
+    from fogseg.label_store import label_store_path
+    from fogseg.labels import LabelParams
+    from fogseg.tuning import tune_parameter
+    from fogseg.validation import (
+        TRUTH_NO,
+        TRUTH_YES,
+        deduplicate,
+        observation_paths,
+        read_observations,
+        season_cases,
+    )
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = stations_cfg["tune_season"]
+    params = LabelParams.from_config(labels_cfg)
+    dynamic = DynamicParams.from_config(labels_cfg["dynamic"])
+
+    data_dir = Path(stations_cfg["data_dir"])
+    observations = read_observations(data_dir)
+
+    store_path = label_store_path(Path(labels_cfg["output_dir"]), "dynamic")
+    with (
+        xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
+        xr.open_zarr(store_path, consolidated=False) as labels,
+    ):
+        cases = deduplicate(season_cases(data, labels, observations, cfg, season, params))
+        cases = cases[cases["truth_fls"].isin([TRUTH_NO, TRUTH_YES]) & ~cases["hidden"]]
+        if cases.empty:
+            log.warning(
+                "No station observation with a known truth matches a scene of season %s; check %s",
+                season,
+                ", ".join(str(path) for path in observation_paths(data_dir)),
+            )
+            return
+
+        table, offset = tune_parameter(
+            data, cases, params, dynamic, "offset", "dynamic", dynamic.offset, stations_cfg
+        )
+        table.to_csv(data_dir / "tuning_offset.csv", index=False)
+        log_decision("offset", offset)
+
+        # The fallback is tuned with the offset that was just decided
+        chosen = dataclasses.replace(dynamic, offset=offset.best if offset.changed else dynamic.offset)
+        table, fallback = tune_parameter(
+            data, cases, params, chosen, "btd_fixed", "dynamic", params.btd_fixed, stations_cfg
+        )
+        table.to_csv(data_dir / "tuning_btd_fixed.csv", index=False)
+        log_decision("btd_fixed", fallback)
+
+        # Fixed mode is scored for comparison only: the fallback above decides the config value
+        table, fixed = tune_parameter(
+            data, cases, params, chosen, "btd_fixed", "fixed", params.btd_fixed, stations_cfg
+        )
+        table.to_csv(data_dir / "tuning_btd_fixed_fixed_mode.csv", index=False)
+        log_decision("btd_fixed (fixed mode)", fixed, report_only=True)
 
 
 def cmd_inspect(args: argparse.Namespace) -> None:
@@ -282,6 +456,28 @@ def main() -> None:
     label.add_argument("--mode", choices=["fixed", "dynamic"], help="default: labels.mode of the config")
     label.add_argument("--overwrite", action="store_true", help="replace the label store if it exists")
     label.set_defaults(func=cmd_label)
+
+    stations = sub.add_parser(
+        "stations", help="download METAR and SYNOP observations of the dataset nights (resumable)"
+    )
+    stations.add_argument("--config", default="configs/default.yaml")
+    stations.add_argument("--source", choices=["metar", "synop"], help="default: both")
+    stations.set_defaults(func=cmd_stations)
+
+    validate = sub.add_parser("validate", help="score the label store against station observations")
+    validate.add_argument("--config", default="configs/default.yaml")
+    validate.add_argument("--labels", choices=["fixed", "dynamic"], help="default: labels.mode of the config")
+    validate.add_argument("--season", required=True, help="season name from the config, e.g. 2023-24")
+    validate.add_argument(
+        "--final", action="store_true", help="allow the test season, which is scored once at the end"
+    )
+    validate.set_defaults(func=cmd_validate)
+
+    tune = sub.add_parser(
+        "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"
+    )
+    tune.add_argument("--config", default="configs/default.yaml")
+    tune.set_defaults(func=cmd_tune)
 
     inspect_cmd = sub.add_parser(
         "inspect", help="write a check figure of one scene (RGB, labels, histogram, sza)"
