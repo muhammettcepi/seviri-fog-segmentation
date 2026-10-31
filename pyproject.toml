@@ -20,6 +20,7 @@ dependencies = [
     "pandas",
     "pyyaml",
     "scipy",
+    "rasterio",
     "matplotlib",
     "zarr>=3",
 ]

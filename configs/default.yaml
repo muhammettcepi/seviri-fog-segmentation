@@ -56,6 +56,11 @@ labels:
     min_pixels: 2000
     clamp: [3.5, 6.0]
 
+# Copernicus GLO-90 elevation averaged onto the SEVIRI grid (`fogseg dem`)
+dem:
+  raw_dir: "/mnt/d/fogseg-data/raw/dem"
+  out_path: "/mnt/d/fogseg-data/processed/dem_ceu.zarr"
+
 # Station observations that check and tune the labels; design in docs/superpowers/specs/2026-10-28-station-validation-design.md
 stations:
   data_dir: "/mnt/d/fogseg-data/stations"

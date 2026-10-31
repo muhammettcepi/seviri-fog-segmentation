@@ -121,6 +121,22 @@ def cmd_label(args: argparse.Namespace) -> None:
     log.info("Mean fog fraction over scenes with decided pixels: %.4f", mean_fog_fraction)
 
 
+def cmd_dem(args: argparse.Namespace) -> None:
+    import xarray as xr
+
+    from fogseg.dem import build_dem_store, http_fetch
+
+    cfg = load_config(args.config)
+    out_path = Path(cfg["dem"]["out_path"])
+    if out_path.exists() and not args.overwrite:
+        raise FileExistsError(f"{out_path} exists; use --overwrite to rebuild it")
+
+    started = time.time()
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        build_dem_store(data, Path(cfg["dem"]["raw_dir"]), out_path, http_fetch)
+    log.info("Wrote the DEM to %s in %.0f s", out_path, time.time() - started)
+
+
 def cmd_stations(args: argparse.Namespace) -> None:
     import xarray as xr
 
@@ -485,6 +501,11 @@ def main() -> None:
     label.add_argument("--mode", choices=["fixed", "dynamic"], help="default: labels.mode of the config")
     label.add_argument("--overwrite", action="store_true", help="replace the label store if it exists")
     label.set_defaults(func=cmd_label)
+
+    dem_cmd = sub.add_parser("dem", help="average the Copernicus DEM onto the SEVIRI grid (resumable)")
+    dem_cmd.add_argument("--config", default="configs/default.yaml")
+    dem_cmd.add_argument("--overwrite", action="store_true", help="replace the DEM store if it exists")
+    dem_cmd.set_defaults(func=cmd_dem)
 
     stations = sub.add_parser(
         "stations", help="download METAR and SYNOP observations of the dataset nights (resumable)"
