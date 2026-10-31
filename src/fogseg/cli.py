@@ -204,6 +204,35 @@ def cmd_validate(args: argparse.Namespace) -> None:
     log.info("Wrote %s and %s", cases_path, scores_path)
 
 
+def cmd_split(args: argparse.Namespace) -> None:
+    import numpy as np
+
+    from fogseg.splits import make_splits, splits_path
+
+    cfg = load_config(args.config)
+    stations_cfg = cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    if season != stations_cfg["tune_season"]:
+        raise PermissionError(
+            f"Season {season} is not the tuning season {stations_cfg['tune_season']}; only that season is split"
+        )
+
+    out_path = splits_path(Path(stations_cfg["data_dir"]), season)
+    if out_path.exists() and not args.overwrite:
+        raise FileExistsError(f"{out_path} exists and fixes the folds; use --overwrite to redraw them")
+
+    entry = next(entry for entry in cfg["time"]["seasons"] if entry["name"] == season)
+    splits = make_splits(
+        np.datetime64(entry["start"], "D"),
+        np.datetime64(entry["end"], "D"),
+        cfg["region"]["bbox"],
+        stations_cfg,
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    splits.to_csv(out_path, index=False)
+    log.info("Wrote %d night blocks and station cells to %s", len(splits), out_path)
+
+
 def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:
     """Log the best value of a tuned parameter; a `report_only` grid does not decide the config value."""
     if report_only:
@@ -472,6 +501,14 @@ def main() -> None:
         "--final", action="store_true", help="allow the test season, which is scored once at the end"
     )
     validate.set_defaults(func=cmd_validate)
+
+    split = sub.add_parser(
+        "split", help="draw the night blocks and station cells of the tuning season into the folds"
+    )
+    split.add_argument("--config", default="configs/default.yaml")
+    split.add_argument("--season", help="default: stations.tune_season of the config")
+    split.add_argument("--overwrite", action="store_true", help="redraw the folds if the file exists")
+    split.set_defaults(func=cmd_split)
 
     tune = sub.add_parser(
         "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"
