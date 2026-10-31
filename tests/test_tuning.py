@@ -244,6 +244,7 @@ def test_decide_table_columns_and_ignored_cases():
         "csi_low",
         "csi_high",
         "bias",
+        "hss",
         "n_ignored",
     ]
     assert table["n_cases"].tolist() == [0, 4]

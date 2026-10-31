@@ -12,7 +12,7 @@ from fogseg.build import CHUNK_TIME
 from fogseg.dynamic_threshold import DynamicParams, scene_threshold, usable_peak
 from fogseg.label_store import LABEL_CHANNELS
 from fogseg.labels import IGNORE, LabelParams, histogram_pixels, label_scene
-from fogseg.scores import counts_by_night, paired_csi_difference, score_summary
+from fogseg.scores import counts_by_night, paired_difference, score_summary
 
 GRID_COLUMNS = ["value", "night", "label", "truth_fls"]
 GRIDS = {("dynamic", "offset"), ("dynamic", "btd_fixed"), ("fixed", "btd_fixed")}
@@ -174,8 +174,8 @@ def decide(
     csi = table["csi"].fillna(-1.0).to_numpy()
     distance_to_current = np.abs(values - values[current_row])
     best_row = int(np.lexsort((distance_to_current, -csi))[0])
-    difference_low, difference_high = paired_csi_difference(
-        night_counts[best_row], night_counts[current_row], n_samples, seed
+    difference_low, difference_high = paired_difference(
+        night_counts[best_row], night_counts[current_row], "csi", n_samples, seed
     )
     decision = Decision(
         parameter=parameter,
