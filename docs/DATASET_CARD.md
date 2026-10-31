@@ -226,10 +226,10 @@ under high cloud, not because the labels changed; the details are in the note.
 
 - **Weak labels are not ground truth.** They come from a rule on satellite data. Against stations they
   find half of the visible fog and low stratus (POD 0.50), and 28 % of what they call fog is not (FAR).
-- **Fog under higher cloud gets `0`**, not `255`. 51 % of the fog or low-stratus reports in the training
-  season lie under a pixel that fails the high-cloud tests. The satellite sees only the top, so a model
-  trained on these labels learns that fog is absent under thick cloud; that is a property of the
-  data, not of the weather.
+- **Fog under higher cloud is labelled `2` (obscured)**, neither fog nor clear. 51 % of the fog or
+  low-stratus reports in the training season lie under a pixel that fails the high-cloud tests. The
+  satellite sees only the top, so an IR-only label cannot see fog under thick cloud; it can only mark
+  that the view is blocked.
 - **Fog and low stratus cannot be told apart** from space. `1` means a low water-cloud deck that may or may not
   touch the ground.
 - **Snow-covered ground** can look like low cloud in some of the tests. The check scenes were

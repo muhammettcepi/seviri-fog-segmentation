@@ -111,7 +111,7 @@ def label_scene(
     btd_threshold: float,
     params: LabelParams,
 ) -> np.ndarray:
-    """Label one scene: 0 not fog, 1 fog, 2 obscured, 255 where the pixel is untrusted or the call is too uncertain.
+    """Label one scene: 0 not fog, 1 fog, 2 obscured, 255 untrusted or too uncertain to call.
 
     A trusted pixel that is not warm or shows thin cirrus is obscured: fog may hide under that cloud.
     Among the others, a pixel that passes the smooth-top test is uncertain when its BTD lies within
