@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from fogseg.config import scene_times
-from fogseg.metar import ceiling_m, prevailing_visibility_m
+from fogseg.metar import ceiling_amount, ceiling_m, has_shallow_fog, is_auto, prevailing_visibility_m
 from fogseg.synop import decode_synop
 from fogseg.validation import STATION_COLUMNS, night_of, select_stations
 
@@ -26,7 +26,16 @@ log = logging.getLogger("fogseg")
 IEM_NETWORK_URL = "https://mesonet.agron.iastate.edu/geojson/network/{network}.geojson"
 IEM_REQUEST_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
 OGIMET_URL = "https://www.ogimet.com/cgi-bin/getsynop"
-OBSERVATION_COLUMNS = ["source", "station", "time", "visibility_m", "ceiling_m"]
+OBSERVATION_COLUMNS = [
+    "source",
+    "station",
+    "time",
+    "visibility_m",
+    "ceiling_m",
+    "auto",
+    "ceiling_amount",
+    "shallow_fog",
+]
 NIGHT_START = dt.timedelta(hours=20)
 NIGHT_LENGTH = dt.timedelta(hours=10)
 INVALID_ANSWER_PAUSE_FACTOR = 6
@@ -139,7 +148,16 @@ def _answer(url: str) -> str:
 def observation_table(rows: list[tuple], skipped_lines: int) -> pd.DataFrame:
     """The observation table of `rows`; `attrs["skipped_lines"]` holds the number of malformed lines."""
     table = pd.DataFrame(rows, columns=OBSERVATION_COLUMNS)
-    table = table.astype({"time": "datetime64[ns]", "visibility_m": float, "ceiling_m": float})
+    table = table.astype(
+        {
+            "time": "datetime64[ns]",
+            "visibility_m": float,
+            "ceiling_m": float,
+            "auto": "boolean",
+            "ceiling_amount": str,
+            "shallow_fog": "boolean",
+        }
+    )
     table.attrs["skipped_lines"] = skipped_lines
     return table
 
@@ -165,7 +183,18 @@ def parse_metar_csv(text: str) -> pd.DataFrame:
         except ValueError:
             skipped_lines += 1
             continue
-        rows.append(("metar", station, time_utc, prevailing_visibility_m(metar), ceiling_m(metar)))
+        rows.append(
+            (
+                "metar",
+                station,
+                time_utc,
+                prevailing_visibility_m(metar),
+                ceiling_m(metar),
+                is_auto(metar),
+                ceiling_amount(metar),
+                has_shallow_fog(metar),
+            )
+        )
     return observation_table(rows, skipped_lines)
 
 
@@ -190,7 +219,7 @@ def parse_synop_text(text: str) -> pd.DataFrame:
             continue
         synop = decode_synop(message)
         if synop is not None:
-            rows.append(("synop", station, time_utc, synop.visibility_m, synop.ceiling_m))
+            rows.append(("synop", station, time_utc, synop.visibility_m, synop.ceiling_m, pd.NA, "", pd.NA))
     return observation_table(rows, skipped_lines)
 
 

@@ -1,4 +1,4 @@
-"""Decode prevailing visibility and cloud ceiling from raw METAR messages."""
+"""Decode prevailing visibility, cloud ceiling, AUTO and shallow fog from raw METAR messages."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ CLOUD_LAYER = re.compile(r"(?P<amount>FEW|SCT|BKN|OVC)(?P<height>\d{3}|///)(CB|T
 VERTICAL_VISIBILITY = re.compile(r"(?P<amount>VV)(?P<height>\d{3}|///)")
 UNKNOWN_LAYER = re.compile(r"/{6}(CB|TCU|///)?")
 CEILING_AMOUNTS = {"BKN", "OVC", "VV"}
+SHALLOW_FOG = re.compile(r"(\+|-|VC)?(MIFG|BCFG)")
 
 
 def main_body(metar: str) -> list[str]:
@@ -54,24 +55,43 @@ def ceiling_m(metar: str) -> float:
     unknown amount (`//////`) is reported and no known BKN, OVC or VV layer comes first, or when the body
     has no cloud information.
     """
-    has_cloud_information = False
-    has_unknown_layer = False
-    for token in main_body(metar):
-        if token in NO_CLOUD_TOKENS:
-            has_cloud_information = True
-            continue
-        if UNKNOWN_LAYER.fullmatch(token):
-            has_unknown_layer = True
-            continue
-        layer = CLOUD_LAYER.fullmatch(token) or VERTICAL_VISIBILITY.fullmatch(token)
-        if layer is None:
-            continue
-        has_cloud_information = True
-        if layer["amount"] in CEILING_AMOUNTS:
-            return _base_m(layer["height"])
-    if has_unknown_layer:
+    layer = _ceiling_layer(metar)
+    if layer is not None:
+        return _base_m(layer["height"])
+
+    body = main_body(metar)
+    if any(UNKNOWN_LAYER.fullmatch(token) for token in body):
         return math.nan
+    has_cloud_information = any(token in NO_CLOUD_TOKENS or _layer(token) for token in body)
     return math.inf if has_cloud_information else math.nan
+
+
+def ceiling_amount(metar: str) -> str:
+    """Amount (`BKN`, `OVC` or `VV`) of the layer `ceiling_m` takes its base from; empty when there is none."""
+    layer = _ceiling_layer(metar)
+    return "" if layer is None else layer["amount"]
+
+
+def is_auto(metar: str) -> bool:
+    """Whether the main body marks the report as fully automated."""
+    return "AUTO" in main_body(metar)
+
+
+def has_shallow_fog(metar: str) -> bool:
+    """Whether the main body reports shallow (`MIFG`) or patchy (`BCFG`) fog."""
+    return any(SHALLOW_FOG.fullmatch(token) for token in main_body(metar))
+
+
+def _layer(token: str) -> re.Match | None:
+    return CLOUD_LAYER.fullmatch(token) or VERTICAL_VISIBILITY.fullmatch(token)
+
+
+def _ceiling_layer(metar: str) -> re.Match | None:
+    for token in main_body(metar):
+        layer = _layer(token)
+        if layer is not None and layer["amount"] in CEILING_AMOUNTS:
+            return layer
+    return None
 
 
 def _base_m(height_hundreds_of_feet: str) -> float:
