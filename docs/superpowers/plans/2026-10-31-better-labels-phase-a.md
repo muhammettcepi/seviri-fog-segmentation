@@ -61,20 +61,24 @@ def test_contingency_counts_obscured_as_no():
     truth = np.array([1, 1, 0, 0])
     assert contingency(label, truth).tolist() == [1, 1, 0, 2]
 
+
 def test_contingency_full_count_counts_ignored_as_no():
     label = np.array([1, 255, 255, 0])
     truth = np.array([1, 1, 0, -1])
     assert contingency(label, truth).tolist() == [1, 0, 0, 0]
     assert contingency(label, truth, full_count=True).tolist() == [1, 1, 0, 1]
 
+
 def test_skill_hss_matches_hand_value():
     # a=hits 50, c=misses 10, b=false alarms 20, d=correct negatives 120
     hss = skill(np.array([50, 10, 20, 120]))["hss"]
     assert hss == pytest.approx(2 * (50 * 120 - 20 * 10) / ((50 + 10) * (10 + 120) + (50 + 20) * (20 + 120)))
 
+
 def test_paired_difference_is_zero_for_identical_counts():
     counts = np.array([[5, 2, 1, 10], [3, 3, 2, 8], [6, 1, 0, 9]])
     assert paired_difference(counts, counts, "pod", 200, 0) == (0.0, 0.0)
+
 
 def test_paired_difference_sign_follows_order():
     better = np.array([[8, 2, 1, 10], [7, 3, 2, 8]])
@@ -132,11 +136,13 @@ git commit -m "Score the full count and HSS, and pair any score in the bootstrap
 STATIONS_CFG = {"night_block_days": 14, "station_cell_deg": 2.0, "n_folds": 5, "seed": 0}
 BBOX = [2, 43, 20, 55]
 
+
 def test_night_blocks_are_dealt_in_turn():
     splits = make_splits(np.datetime64("2023-10-01"), np.datetime64("2024-02-29"), BBOX, STATIONS_CFG)
     blocks = splits[splits["kind"] == "night_block"].sort_values("key")
     assert blocks["key"].iloc[0] == "2023-10-01"
     assert blocks["fold"].tolist()[:6] == [1, 2, 3, 4, 5, 1]
+
 
 def test_station_cells_cover_the_bbox_and_are_balanced():
     cells = make_splits(np.datetime64("2023-10-01"), np.datetime64("2024-02-29"), BBOX, STATIONS_CFG)
@@ -144,8 +150,10 @@ def test_station_cells_cover_the_bbox_and_are_balanced():
     assert len(cells) == 9 * 6
     assert cells["fold"].value_counts().max() - cells["fold"].value_counts().min() <= 1
 
+
 def test_station_just_outside_the_bbox_gets_the_edge_cell():
     assert station_cell(np.array([1.95]), np.array([43.1]), BBOX, 2.0).tolist() == ["c0_0"]
+
 
 def test_held_out_and_selection_are_disjoint_and_cv_never_trains_on_test():
     cases = pd.DataFrame({"night_fold": [1, 2, 5, 3, 1], "station_fold": [1, 5, 2, 3, 2]})
@@ -155,6 +163,7 @@ def test_held_out_and_selection_are_disjoint_and_cv_never_trains_on_test():
         assert not (train & test).any()
         assert not (train & held_out(cases, 5)).any()
         assert ((cases["night_fold"] == k) | (cases["station_fold"] == k))[test].all()
+
 
 def test_assign_folds_names_a_missing_cell():
     splits = pd.DataFrame({"kind": ["night_block"], "key": ["2023-10-01"], "fold": [1]})
@@ -208,15 +217,18 @@ def test_is_auto():
     assert is_auto("EDDF 202050Z AUTO 24005KT 0300 FG VV001 04/04 Q1020")
     assert not is_auto("EDDF 202050Z 24005KT 9999 FEW040 04/02 Q1020 RMK AUTO")
 
+
 def test_ceiling_amount_is_the_layer_of_the_ceiling():
     assert ceiling_amount("LOWW 202050Z 0800 BR SCT002 BKN004 OVC010 03/03 Q1025") == "BKN"
     assert ceiling_amount("LOWW 202050Z 0100 FG VV001 03/03 Q1025") == "VV"
     assert ceiling_amount("LOWW 202050Z CAVOK 03/01 Q1025") == ""
 
+
 def test_shallow_fog():
     assert has_shallow_fog("EBBR 202050Z 4000 MIFG SKC 01/01 Q1030")
     assert has_shallow_fog("EBBR 202050Z 3000 BCFG FEW003 01/01 Q1030")
     assert not has_shallow_fog("EBBR 202050Z 0200 FG VV001 01/01 Q1030")
+
 
 def test_parse_metar_csv_adds_the_new_columns():
     text = "station,valid,metar\nEDDF,2023-11-20 20:50,EDDF 202050Z AUTO 0800 MIFG BKN003 04/04 Q1020\n"
@@ -268,15 +280,16 @@ def test_shift_points_away_from_the_subsatellite_point():
     lon, lat = apparent_position(np.array([0.0]), np.array([50.0]), np.array([1000.0]))
     assert lat[0] > 50.0 and lon[0] == pytest.approx(0.0, abs=1e-9)
 
+
 def test_shift_size_at_50_north_for_one_kilometre():
     _, lat = apparent_position(np.array([0.0]), np.array([50.0]), np.array([1000.0]))
     shift_km = (lat[0] - 50.0) * np.pi / 180 * 6371
     assert shift_km == pytest.approx(1.6, abs=0.15)
 
+
 def test_zero_height_is_no_shift():
     lon, lat = apparent_position(np.array([10.0]), np.array([45.0]), np.array([0.0]))
     assert (lon[0], lat[0]) == pytest.approx((10.0, 45.0))
-
 ```
 
 Add `test_station_without_elevation_is_shifted_for_the_cloud_top_alone` in `tests/test_validation.py`: a synthetic
@@ -333,9 +346,11 @@ def test_cold_or_cirrus_trusted_pixel_is_obscured():
     labels = label_scene(ir039, ir108, ir120, sza, 4.0, PARAMS)
     assert labels.tolist() == [[OBSCURED, OBSCURED, NO_FOG]]
 
+
 def test_untrusted_cold_pixel_stays_ignored():
     labels = label_scene(ir039, ir108, ir120, np.full_like(ir108, 80.0), 4.0, PARAMS)
     assert labels[0, 0] == IGNORE
+
 
 def test_label_fractions_report_obscured_separately():
     fog, ignored, obscured = label_fractions(np.array([1, 0, 2, 2, 255], dtype=np.uint8))
@@ -391,14 +406,18 @@ git commit -m "Label pixels under high or cirrus cloud as obscured instead of no
 def test_tile_name_for_negative_longitude():
     assert tile_name(43, -1) == "Copernicus_DSM_COG_30_N43_00_W001_00_DEM"
 
+
 def test_missing_tile_is_marked_sea_and_not_fetched_again(tmp_path):
     calls = []
+
     def fetch(url, path):
         calls.append(url)
         return False
+
     assert fetch_tile(54, 2, tmp_path, fetch) is None
     assert fetch_tile(54, 2, tmp_path, fetch) is None
     assert len(calls) == 1
+
 
 def test_grid_statistics_mean_std_and_sea():
     lon, lat = np.meshgrid([5.0, 6.0], [45.0])
@@ -460,18 +479,22 @@ def test_month_requests_group_scene_days_and_hours():
     november = requests[0][1]
     assert november["day"] == ["20", "21"] and november["time"] == ["03:00", "21:00"]
 
+
 def test_regrid_is_bilinear_for_descending_latitudes():
     field = xr.DataArray([[2.0, 2.0], [0.0, 0.0]], coords={"latitude": [46.0, 45.0], "longitude": [5.0, 6.0]})
     assert regrid(field, np.array([[5.5]]), np.array([[45.5]]))[0, 0] == pytest.approx(1.0)
+
 
 def test_scene_without_era5_file_is_nan(tmp_path):
     # one month file written by the test for 2023-11; a scene in 2023-12 has no file
     ...
     assert np.isnan(store["t2m"].sel(time="2023-12-01T00:00")).all()
 
+
 def test_failed_month_is_reported_and_not_written(tmp_path):
     def retrieve(request, path):
         raise RuntimeError("queue full")
+
     assert download_months([("2023-11", {})], tmp_path, retrieve) == ["2023-11"]
     assert not list(tmp_path.glob("*.nc"))
 ```
@@ -523,14 +546,17 @@ def test_full_count_columns_count_ignored_fls_as_misses():
     assert (row["pod"], row["pod_full"]) == (pytest.approx(1 / 2), pytest.approx(1 / 3))
     assert row["far_full"] == pytest.approx(1 / 2)
 
+
 def test_old_observation_table_gives_empty_metar_columns():
     # observations without auto / ceiling_amount / shallow_fog columns
     cases = station_cases(data, labels, old_observations, STATIONS_CFG, PARAMS)
     assert cases["ceiling_amount"].eq("").all() and cases["auto"].isna().all()
 
+
 def test_elevation_diff_uses_the_dem_at_the_case_pixel():
     ...
     assert cases["elevation_diff_m"].tolist() == [station_elevation - 120.0]
+
 
 def test_split_view_groups():
     table = score_table(cases_with_folds, STATIONS_CFG, 50, 0)
@@ -584,25 +610,42 @@ git commit -m "Score the full count, held-out folds and the new station strata"
 
 ```python
 def test_first_cause_order():
-    cases = pd.DataFrame({
-        "sza": [90, 100, 100, 100, 100, 100],
-        "btd": [5.0, np.nan, 2.0, 4.2, 5.0, 5.0],
-        "ir108_std3": [0.1, 0.1, 0.1, 0.1, 2.0, 0.1],
-    })
+    cases = pd.DataFrame(
+        {
+            "sza": [90, 100, 100, 100, 100, 100],
+            "btd": [5.0, np.nan, 2.0, 4.2, 5.0, 5.0],
+            "ir108_std3": [0.1, 0.1, 0.1, 0.1, 2.0, 0.1],
+        }
+    )
     assert first_cause(cases, PARAMS).tolist() == [
-        "twilight", "no_data", "low_btd", "band", "texture", "small_blob_or_other"
+        "twilight",
+        "no_data",
+        "low_btd",
+        "band",
+        "texture",
+        "small_blob_or_other",
     ]
+
 
 def test_low_btd_section_compares_missed_fls_with_no_fls():
     table = diagnosis_table(cases_fixture(), PARAMS)
-    row = table[(table["section"] == "low_btd") & (table["variable"] == "ceiling_amount")
-                & (table["statistic"] == "share:OVC")].iloc[0]
+    row = table[
+        (table["section"] == "low_btd")
+        & (table["variable"] == "ceiling_amount")
+        & (table["statistic"] == "share:OVC")
+    ].iloc[0]
     assert (row["fls_missed"], row["no_fls"]) == (pytest.approx(0.5), pytest.approx(0.0))
+
 
 def test_fog_other_slot_looks_only_inside_the_night():
     # one pixel: fog at 21:00 of night A, not fog at 03:00 of night A, fog at 21:00 of night B (not fog at its 03:00)
     features = case_features(data, labels, None, cases_at_both_slots_of_both_nights)
-    assert features["fog_other_slot"].tolist() == [False, True, False, True]  # A 21:00, A 03:00, B 21:00, B 03:00
+    assert features["fog_other_slot"].tolist() == [
+        False,
+        True,
+        False,
+        True,
+    ]  # A 21:00, A 03:00, B 21:00, B 03:00
 ```
 
 Plus a CLI test: `diagnose --season 2024-25` raises `PermissionError`; without a split file raises `FileNotFoundError` mentioning `fogseg split`.
