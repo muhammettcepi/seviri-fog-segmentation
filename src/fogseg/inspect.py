@@ -19,7 +19,7 @@ from matplotlib.patches import Patch
 
 from fogseg.dynamic_threshold import DynamicParams
 from fogseg.label_store import check_labels_match
-from fogseg.labels import FOG, IGNORE, LabelParams, histogram_pixels
+from fogseg.labels import FOG, IGNORE, OBSCURED, LabelParams, histogram_pixels
 
 # Set after the imports on purpose: figures are only written to files, never shown, so no GUI
 # toolkit may be needed (the command also runs on a machine without a display).
@@ -35,8 +35,10 @@ BLUE_RANGE = (243.0, 293.0)  # IR_108
 NEAREST_TIMES_LISTED = 3
 FOG_COLOUR = (0.0, 1.0, 1.0)
 IGNORE_COLOUR = (0.5, 0.5, 0.5)
+OBSCURED_COLOUR = (1.0, 0.6, 0.0)
 FOG_ALPHA = 0.6
 IGNORE_ALPHA = 0.5
+OBSCURED_ALPHA = 0.35
 IGNORE_HATCH = "///"
 TIME_FORMAT = "%Y-%m-%d %H:%M"
 FILE_TIME_FORMAT = "%Y%m%dT%H%M"
@@ -110,6 +112,8 @@ def draw_labels_panel(ax: Axes, rgb: np.ndarray, labels: np.ndarray) -> None:
     ax.imshow(rgb, interpolation="nearest")
     is_fog = labels == FOG
     is_ignored = labels == IGNORE
+    is_obscured = labels == OBSCURED
+    ax.imshow(class_overlay(is_obscured, OBSCURED_COLOUR, OBSCURED_ALPHA), interpolation="nearest")
     ax.imshow(class_overlay(is_ignored, IGNORE_COLOUR, IGNORE_ALPHA), interpolation="nearest")
     ax.imshow(class_overlay(is_fog, FOG_COLOUR, FOG_ALPHA), interpolation="nearest")
     with plt.rc_context({"hatch.color": "white", "hatch.linewidth": 0.8}):
@@ -117,6 +121,7 @@ def draw_labels_panel(ax: Axes, rgb: np.ndarray, labels: np.ndarray) -> None:
 
     legend_items = [
         Patch(facecolor=FOG_COLOUR, alpha=FOG_ALPHA, label="fog (1)"),
+        Patch(facecolor=OBSCURED_COLOUR, alpha=OBSCURED_ALPHA, label="obscured (2)"),
         Patch(facecolor=IGNORE_COLOUR, edgecolor="white", hatch=IGNORE_HATCH, label="ignore (255)"),
     ]
     ax.legend(handles=legend_items, loc="lower left", fontsize=8, framealpha=0.9)

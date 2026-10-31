@@ -14,6 +14,7 @@ from helpers import COLD_PIXEL, GRID_LAT0, GRID_LON0, TEST_PARAMS, make_station_
 from fogseg.cli import cmd_validate
 from fogseg.config import load_config
 from fogseg.label_store import label_dataset, label_store_path
+from fogseg.labels import OBSCURED
 from fogseg.parallax import apparent_position
 from fogseg.validation import (
     CASE_COLUMNS,
@@ -207,7 +208,7 @@ def test_station_cases_reads_labels_and_flags_hidden(tmp_path):
         "hidden",
         "threshold_source",
     ]
-    assert cases.loc[["FOG", "CLEAR", "COLD"], "label"].tolist() == [1, 0, 0]
+    assert cases.loc[["FOG", "CLEAR", "COLD"], "label"].tolist() == [1, 0, OBSCURED]
     assert cases.loc[["FOG", "CLEAR", "COLD"], "hidden"].tolist() == [False, False, True]
     assert cases.loc[["FOG", "CLEAR", "COLD"], "truth_fls"].tolist() == [1, 0, 1]
     assert cases.loc[["FOG", "CLEAR", "COLD"], "truth_fog"].tolist() == [1, 0, 0]

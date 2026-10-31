@@ -10,6 +10,7 @@ from fogseg.labels import (
     FOG,
     IGNORE,
     NO_FOG,
+    OBSCURED,
     LabelParams,
     histogram_pixels,
     label_scene,
@@ -80,12 +81,12 @@ def test_warm_high_btd_pixel_is_fog():
     assert scene(btd=4.0)[2, 2] == FOG
 
 
-def test_cold_top_is_not_fog():
-    assert scene(btd=4.0, ir108=230.0)[2, 2] == NO_FOG
+def test_cold_top_is_obscured():
+    assert scene(btd=4.0, ir108=230.0)[2, 2] == OBSCURED
 
 
-def test_thin_cirrus_is_not_fog():
-    assert scene(btd=4.0, split=3.0)[2, 2] == NO_FOG
+def test_thin_cirrus_is_obscured():
+    assert scene(btd=4.0, split=3.0)[2, 2] == OBSCURED
 
 
 def test_low_btd_pixel_is_not_fog():
@@ -104,12 +105,12 @@ def test_btd_clearly_below_the_threshold_is_not_fog():
     assert scene(btd=2.5 - 0.7, btd_threshold=2.5)[2, 2] == NO_FOG
 
 
-def test_borderline_btd_below_the_threshold_of_a_cold_top_is_not_fog():
-    assert scene(btd=2.5 - 0.3, ir108=230.0, btd_threshold=2.5)[2, 2] == NO_FOG
+def test_borderline_btd_below_the_threshold_of_a_cold_top_is_obscured():
+    assert scene(btd=2.5 - 0.3, ir108=230.0, btd_threshold=2.5)[2, 2] == OBSCURED
 
 
-def test_borderline_btd_below_the_threshold_of_thin_cirrus_is_not_fog():
-    assert scene(btd=2.5 - 0.3, split=3.0, btd_threshold=2.5)[2, 2] == NO_FOG
+def test_borderline_btd_below_the_threshold_of_thin_cirrus_is_obscured():
+    assert scene(btd=2.5 - 0.3, split=3.0, btd_threshold=2.5)[2, 2] == OBSCURED
 
 
 def test_borderline_btd_below_the_threshold_of_a_rough_top_is_not_fog():
@@ -119,6 +120,22 @@ def test_borderline_btd_below_the_threshold_of_a_rough_top_is_not_fog():
 def test_rough_top_is_not_fog():
     labels = scene(btd=4.0, checkerboard_amplitude=3.0)
     assert labels[2, 2] == NO_FOG
+
+
+def test_cold_or_cirrus_trusted_pixel_is_obscured_and_warm_ground_is_not():
+    # pixel 0: cold top (IR_108 250 K); pixel 1: cirrus split 3 K; pixel 2: clear warm ground
+    ir108 = np.array([[250.0, 270.0, 270.0]])
+    ir039 = ir108 - 1.0
+    ir120 = ir108 - np.array([[0.5, 3.0, 0.5]])
+    sza = np.full_like(ir108, 120.0)
+    labels = label_scene(ir039, ir108, ir120, sza, 4.0, TEST_PARAMS)
+    assert labels.tolist() == [[OBSCURED, OBSCURED, NO_FOG]]
+
+
+def test_untrusted_cold_pixel_stays_ignored():
+    ir108 = np.full((1, 1), 250.0)
+    labels = label_scene(ir108 - 1.0, ir108, ir108 - 0.5, np.full_like(ir108, 80.0), 4.0, TEST_PARAMS)
+    assert labels[0, 0] == IGNORE
 
 
 def test_labels_are_uint8():

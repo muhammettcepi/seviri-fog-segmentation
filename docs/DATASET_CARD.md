@@ -105,15 +105,17 @@ is `fixed`.
 |---|---|
 | `1` | fog or low stratus, visible from space |
 | `0` | not fog / low stratus |
+| `2` | obscured: a higher or thin cirrus cloud hides what is below; neither fog nor clear |
 | `255` | ignore: data not trustworthy (twilight, missing values) or too uncertain to call; the loss skips it |
 
 | Variable | Dimensions | Content |
 |---|---|---|
-| `label` | time, y, x | `uint8`: `0`, `1` or `255` |
+| `label` | time, y, x | `uint8`: `0`, `1`, `2` or `255` |
 | `btd_threshold` | time | BTD threshold used for the scene (K) |
 | `threshold_source` | time | `fixed`, `dynamic` or `fallback` |
-| `fog_fraction` | time | share of the **decided** pixels (label 0 or 1, not 255) that are `1`; NaN if a scene has none |
+| `fog_fraction` | time | share of the **decided** pixels (label 0 or 1; not 2 and not 255) that are `1`; NaN if a scene has none |
 | `ignore_fraction` | time | share of **all** pixels that are `255` |
+| `obscured_fraction` | time | share of **all** pixels that are `2` |
 
 The store attributes hold the mode, every threshold used, the `fogseg` version and the source
 dataset, so a store explains itself.
@@ -124,9 +126,11 @@ dataset, so a store explains itself.
 flowchart TD
     px["one pixel"] --> trust{"night and valid?<br/>sza above 95°, no missing value"}
     trust -- no --> ignore1["255 ignore"]
-    trust -- yes --> other{"warm top, no cirrus, smooth?"}
-    other -- no --> zero["0 not fog"]
-    other -- yes --> band{"BTD within 0.5 K of the threshold,<br/>above or below?"}
+    trust -- yes --> warm{"warm top, no thin cirrus?"}
+    warm -- no --> obscured["2 obscured"]
+    warm -- yes --> smooth{"smooth top?"}
+    smooth -- no --> zero["0 not fog"]
+    smooth -- yes --> band{"BTD within 0.5 K of the threshold,<br/>above or below?"}
     band -- yes --> ignore2["255 ignore"]
     band -- no --> high{"BTD above the threshold?"}
     high -- no --> zero
@@ -137,14 +141,16 @@ flowchart TD
 
 1. **Trust.** A pixel is `255` if the solar zenith angle is 95° or less (reflected sunlight in
    IR_039) or if IR_039, IR_108 or IR_120 is missing.
-2. **Three tests besides the BTD.** A trusted pixel can only be fog if it passes all of them; a pixel
-   that fails one becomes `0`:
+2. **Three tests besides the BTD.** A trusted pixel can only be fog if it passes all of them:
 
-   | Test | Rule |
-   |---|---|
-   | Low cloud | `IR_108` at least 255 K |
-   | Not thin cirrus | `IR_108 − IR_120` below 1.5 K |
-   | Smooth top | standard deviation of `IR_108` in a 3 × 3 window below 1.5 K |
+   | Test | Rule | If it fails |
+   |---|---|---|
+   | Low cloud | `IR_108` at least 255 K | `2` obscured |
+   | Not thin cirrus | `IR_108 − IR_120` below 1.5 K | `2` obscured |
+   | Smooth top | standard deviation of `IR_108` in a 3 × 3 window below 1.5 K | `0` |
+
+   A cold top or thin cirrus may hide fog underneath, so the pixel is neither fog nor clear: it is `2`,
+   obscured. A rough top over warm ground is `0`.
 
 3. **BTD against the threshold** (water droplets), for the pixels that passed step 2. If `IR_108 − IR_039`
    is within 0.5 K of the BTD threshold, **on either side**, the pixel is too uncertain and becomes `255`.

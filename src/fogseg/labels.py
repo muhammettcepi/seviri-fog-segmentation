@@ -10,6 +10,7 @@ from scipy import ndimage
 
 NO_FOG = 0
 FOG = 1
+OBSCURED = 2
 IGNORE = 255
 
 
@@ -110,12 +111,15 @@ def label_scene(
     btd_threshold: float,
     params: LabelParams,
 ) -> np.ndarray:
-    """Label one scene: 0 not fog, 1 fog, 255 where the pixel is untrusted or the call is too uncertain.
+    """Label one scene: 0 not fog, 1 fog, 2 obscured, 255 where the pixel is untrusted or the call is too uncertain.
 
-    A pixel that passes the other fog tests is uncertain when its BTD lies within `uncertainty_band`
-    of the threshold on either side; small fog blobs are then found among the remaining fog pixels.
+    A trusted pixel that is not warm or shows thin cirrus is obscured: fog may hide under that cloud.
+    Among the others, a pixel that passes the smooth-top test is uncertain when its BTD lies within
+    `uncertainty_band` of the threshold on either side; small fog blobs are then found among the
+    remaining fog pixels.
     """
     trusted = trusted_mask(ir039, ir108, ir120, sza, params.night_min_sza)
+    is_obscured = trusted & ~warm_and_not_cirrus(ir108, ir120, params)
     fog_like = trusted & passes_other_tests(ir108, ir120, params)
 
     btd = ir108 - ir039
@@ -124,6 +128,7 @@ def label_scene(
 
     labels = np.full(ir108.shape, IGNORE, dtype=np.uint8)
     labels[trusted] = NO_FOG
+    labels[is_obscured] = OBSCURED
     labels[is_fog] = FOG
     labels[is_uncertain] = IGNORE
 
