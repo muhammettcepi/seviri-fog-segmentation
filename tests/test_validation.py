@@ -14,6 +14,7 @@ from helpers import COLD_PIXEL, GRID_LAT0, GRID_LON0, TEST_PARAMS, make_station_
 from fogseg.cli import cmd_validate
 from fogseg.config import load_config
 from fogseg.label_store import label_dataset, label_store_path
+from fogseg.parallax import apparent_position
 from fogseg.validation import (
     CASE_COLUMNS,
     check_season_allowed,
@@ -23,6 +24,7 @@ from fogseg.validation import (
     match_observations,
     nearest_pixels,
     night_of,
+    on_grid_stations,
     read_observations,
     score_table,
     season_bounds,
@@ -36,6 +38,7 @@ STATIONS_CFG = {
     "truth_limit_m": 1000,
     "scan_delay_min": 12,
     "time_tolerance_min": 30,
+    "parallax_cloud_top_m": 500.0,
 }
 
 
@@ -108,6 +111,24 @@ def test_select_stations_drops_far_and_high():
     selected = select_stations(stations, lon, lat, max_distance_km=5, max_elevation_m=1000)
     assert selected["station"].tolist() == ["NEAR", "NOELEV"]
     assert selected[["iy", "ix"]].values.tolist() == [[1, 1], [2, 2]]
+
+
+def test_station_without_elevation_is_shifted_for_the_cloud_top_alone():
+    km_in_degrees = 180 / np.pi / 6371
+    row_lat = 50.0 + 0.5 * km_in_degrees * np.arange(-5, 6)
+    lon, lat = np.meshgrid([10.0, 10.1], row_lat)
+    data = xr.Dataset(coords={"lon": (("y", "x"), lon), "lat": (("y", "x"), lat)})
+    observations = observation_frame([("NOELEV", "metar", "2023-11-21T00:00")]).assign(elevation_m=np.nan)
+
+    _, apparent_lat = apparent_position(np.array([10.0]), np.array([50.0]), np.array([500.0]))
+    expected_row = int(np.argmin(np.abs(row_lat - apparent_lat[0])))
+    true_row = int(np.argmin(np.abs(row_lat - 50.0)))
+
+    selected = on_grid_stations(data, observations, STATIONS_CFG)
+
+    assert expected_row > true_row
+    assert selected[["iy", "ix"]].values.tolist() == [[expected_row, 0]]
+    assert selected["lat"].tolist() == [50.0]
 
 
 def test_match_takes_closest_observation_after_scan_delay():

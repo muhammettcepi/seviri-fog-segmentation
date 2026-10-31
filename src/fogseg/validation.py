@@ -13,6 +13,7 @@ import xarray as xr
 
 from fogseg.label_store import check_labels_match
 from fogseg.labels import IGNORE, LabelParams
+from fogseg.parallax import apparent_position
 from fogseg.scores import counts_by_night, score_summary
 
 log = logging.getLogger("fogseg")
@@ -151,14 +152,27 @@ def deduplicate(cases: pd.DataFrame) -> pd.DataFrame:
 
 
 def on_grid_stations(data: xr.Dataset, observations: pd.DataFrame, stations_cfg: dict) -> pd.DataFrame:
-    """The stations of the table that are close to a pixel centre and low enough, with that pixel."""
-    stations = observations[STATION_COLUMNS].drop_duplicates(["station", "source"])
-    return select_stations(
-        stations,
+    """The stations of the table that are close to a pixel centre and low enough, with that pixel.
+
+    The pixel is the one where a low cloud over the station appears from the satellite; `lat` and
+    `lon` stay the true position of the station.
+    """
+    stations = observations[STATION_COLUMNS].drop_duplicates(["station", "source"]).reset_index(drop=True)
+    cloud_top_m = stations["elevation_m"].fillna(0) + stations_cfg["parallax_cloud_top_m"]
+    apparent_lon, apparent_lat = apparent_position(
+        stations["lon"].values, stations["lat"].values, cloud_top_m.values
+    )
+    selected = select_stations(
+        stations.assign(lon=apparent_lon, lat=apparent_lat),
         data["lon"].values,
         data["lat"].values,
         stations_cfg["max_distance_km"],
         stations_cfg["max_elevation_m"],
+    )
+    true_position = stations.set_index(["station", "source"])[["lat", "lon"]]
+    keys = pd.MultiIndex.from_frame(selected[["station", "source"]])
+    return selected.assign(
+        lat=true_position.loc[keys, "lat"].values, lon=true_position.loc[keys, "lon"].values
     )
 
 
