@@ -287,6 +287,14 @@ def cmd_validate(args: argparse.Namespace) -> None:
     log.info("Wrote %s and %s", cases_path, scores_path)
 
 
+def require_tune_season(stations_cfg: dict, season: str, verb: str) -> None:
+    """Refuse every season but the tuning season, so the test season stays unseen."""
+    if season != stations_cfg["tune_season"]:
+        raise PermissionError(
+            f"Season {season} is not the tuning season {stations_cfg['tune_season']}; only that season is {verb}"
+        )
+
+
 def cmd_split(args: argparse.Namespace) -> None:
     import numpy as np
 
@@ -295,10 +303,7 @@ def cmd_split(args: argparse.Namespace) -> None:
     cfg = load_config(args.config)
     stations_cfg = cfg["stations"]
     season = args.season or stations_cfg["tune_season"]
-    if season != stations_cfg["tune_season"]:
-        raise PermissionError(
-            f"Season {season} is not the tuning season {stations_cfg['tune_season']}; only that season is split"
-        )
+    require_tune_season(stations_cfg, season, "split")
 
     out_path = splits_path(Path(stations_cfg["data_dir"]), season)
     if out_path.exists() and not args.overwrite:
@@ -314,6 +319,61 @@ def cmd_split(args: argparse.Namespace) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     splits.to_csv(out_path, index=False)
     log.info("Wrote %d night blocks and station cells to %s", len(splits), out_path)
+
+
+def cmd_diagnose(args: argparse.Namespace) -> None:
+    from contextlib import ExitStack
+
+    import xarray as xr
+
+    from fogseg.diagnosis import case_features, diagnosis_table, read_selection_cases
+    from fogseg.label_store import check_labels_match, label_store_path
+    from fogseg.labels import LabelParams
+    from fogseg.splits import splits_path
+    from fogseg.validation import season_bounds
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "diagnosed")
+
+    mode = labels_cfg["mode"]
+    data_dir = Path(stations_cfg["data_dir"])
+    cases = read_selection_cases(
+        data_dir / f"cases_{mode}_{season}.csv",
+        splits_path(data_dir, season),
+        season_bounds(cfg, season)[0].astype("datetime64[D]"),
+        cfg["region"]["bbox"],
+        stations_cfg,
+    )
+
+    era5_path = Path(cfg["era5"]["out_path"])
+    if not era5_path.exists():
+        log.warning("%s is missing; the ERA5 columns stay empty", era5_path)
+    with ExitStack() as stack:
+        data = stack.enter_context(xr.open_zarr(cfg["data"]["processed_path"], consolidated=False))
+        labels = stack.enter_context(
+            xr.open_zarr(label_store_path(Path(labels_cfg["output_dir"]), mode), consolidated=False)
+        )
+        era5 = (
+            stack.enter_context(xr.open_zarr(era5_path, consolidated=False)) if era5_path.exists() else None
+        )
+        check_labels_match(data, labels)
+        cases = case_features(data, labels, era5, cases)
+        params = LabelParams.from_config(labels.attrs)
+
+    table = diagnosis_table(cases, params)
+    out_path = data_dir / f"diagnosis_{season}.csv"
+    table.to_csv(out_path, index=False)
+
+    shares = table[(table["section"] == "first_cause") & (table["statistic"] == "share")]
+    log.info(
+        "Season %s, %d selection cases; first cause of the visible FLS misses: %s",
+        season,
+        len(cases),
+        ", ".join(f"{row.variable} {row.fls_missed:.1%}" for row in shares.itertuples()),
+    )
+    log.info("Wrote %s", out_path)
 
 
 def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:
@@ -605,6 +665,13 @@ def main() -> None:
     split.add_argument("--season", help="default: stations.tune_season of the config")
     split.add_argument("--overwrite", action="store_true", help="redraw the folds if the file exists")
     split.set_defaults(func=cmd_split)
+
+    diagnose = sub.add_parser(
+        "diagnose", help="find why visible station fog is missed, on the selection cases of the tuning season"
+    )
+    diagnose.add_argument("--config", default="configs/default.yaml")
+    diagnose.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
+    diagnose.set_defaults(func=cmd_diagnose)
 
     tune = sub.add_parser(
         "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"
