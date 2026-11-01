@@ -425,3 +425,32 @@ def test_neighbours_are_the_stored_scenes():
     night = night_arrays(btd=[5.0, 3.7], ir108=[270.0, 270.0])  # e.g. 21:00 and 03:00, 00:00 missing
     labels = label_night(*night, np.full(2, 4.0), relaxed(0.5))
     assert labels[1, 4, 4] == FOG
+
+
+def test_hysteresis_also_looks_at_the_later_scene():
+    night = night_arrays(btd=[3.3, 5.0], ir108=[270.0, 270.0])
+    labels = label_night(*night, np.full(2, 4.0), relaxed(1.0))
+    assert labels[0, 4, 4] == FOG
+
+
+def test_rough_near_miss_next_to_fog_stays_not_fog():
+    ir039, ir108, ir120, sza = night_arrays(btd=[5.0, 3.3], ir108=[270.0, 270.0])
+    rows, cols = np.indices((3, 3))
+    bumps = 1.8 * np.where((rows + cols) % 2 == 0, 1.0, -1.0)  # rough, but still a steady top
+    for field in (ir039, ir108, ir120):
+        field[1, 3:6, 3:6] += bumps
+    labels = label_night(ir039, ir108, ir120, sza, np.full(2, 4.0), relaxed(1.0))
+    assert labels[1, 4, 4] == NO_FOG
+
+
+def test_btd_farther_below_the_threshold_than_the_relax_stays_not_fog():
+    night = night_arrays(btd=[5.0, 2.5], ir108=[270.0, 270.0])
+    labels = label_night(*night, np.full(2, 4.0), relaxed(1.0))
+    assert labels[1, 4, 4] == NO_FOG
+
+
+def test_untrusted_pixel_next_to_fog_stays_ignored():
+    ir039, ir108, ir120, sza = night_arrays(btd=[5.0, 3.3], ir108=[270.0, 270.0])
+    sza[1] = 80.0
+    labels = label_night(ir039, ir108, ir120, sza, np.full(2, 4.0), relaxed(1.0))
+    assert labels[1, 4, 4] == IGNORE

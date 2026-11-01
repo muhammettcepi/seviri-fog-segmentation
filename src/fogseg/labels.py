@@ -240,8 +240,9 @@ def label_night(
 ) -> np.ndarray:
     """Label the stored scenes of one night, shape (n_scenes, y, x), in time order.
 
-    Each scene gets its `label_scene` labels. With `params.temporal_relax` above zero, a not-fog pixel whose
-    BTD misses the threshold by less than `temporal_relax` K becomes fog, once and without iterating, when
+    Each scene gets its `label_scene` labels. With `params.temporal_relax` above zero, a not-fog or ignored
+    pixel that passes the smooth-top test and whose BTD is above the threshold or within `temporal_relax` K
+    below it (ignored pixels above the threshold count too) becomes fog, once and without iterating, when
     the same pixel is fog in the previous or next stored scene and its IR_108 changed by less than
     `params.temporal_max_dt108`. Obscured and untrusted pixels never change.
     """
@@ -268,5 +269,5 @@ def label_night(
                 steady_top = np.abs(ir108[s] - ir108[neighbour]) < params.temporal_max_dt108
                 next_to_fog |= (strict[neighbour] == FOG) & steady_top
 
-        labels[s][near_miss & next_to_fog & np.isin(strict[s], (NO_FOG, IGNORE))] = FOG
+        labels[s, near_miss & next_to_fog & np.isin(strict[s], (NO_FOG, IGNORE))] = FOG
     return labels
