@@ -130,6 +130,9 @@ flowchart LR
     folds --> diagnose
     era5store --> diagnose
     diagnose --> diagnosis["diagnosis_2023-24.csv"]
+    folds --> experiment["fogseg experiment --phase B"]
+    data --> experiment
+    experiment --> expB["experiment_B.csv, experiment_B_held_out.csv"]
 ```
 
 ## What exists so far
@@ -152,6 +155,7 @@ flowchart LR
 | Pixel-mean terrain height from Copernicus GLO-90 | `fogseg dem` ([`dem.py`](src/fogseg/dem.py)) |
 | ERA5 2 m temperature, skin temperature, dewpoint and snow depth at each scene, on the grid | `fogseg era5` ([`era5.py`](src/fogseg/era5.py)) |
 | Why visible station fog is missed, on the selection cases | `fogseg diagnose` ([`diagnosis.py`](src/fogseg/diagnosis.py)) |
+| Label-rule variants cross-validated at matched FAR, then the winner against the configured rule on the held-out cases, once | `fogseg experiment --phase B` ([`experiment.py`](src/fogseg/experiment.py)) |
 | The protocol, the re-scored baseline and the miss diagnosis | [`docs/notes/better_labels.md`](docs/notes/better_labels.md) |
 | The station check, the tuning decisions and where the labels fail | [`docs/notes/station_validation.md`](docs/notes/station_validation.md) |
 | All settings (region, channels, seasons, night slots, label thresholds, paths) | [`configs/default.yaml`](configs/default.yaml) |
@@ -187,6 +191,7 @@ fogseg era5                           # ERA5 fields per scene; needs a CDS key i
 fogseg split                          # held-out nights and stations, written once
 fogseg validate --season 2023-24      # score labels.mode against the stations
 fogseg diagnose                       # why visible fog is missed, selection cases only
+fogseg experiment --phase B           # label variants on the selection cases; add --held-out once for the winner
 fogseg tune                           # tuning grids on the selection cases of the training season
 
 pip install -e ".[dev]" && pytest     # run the tests

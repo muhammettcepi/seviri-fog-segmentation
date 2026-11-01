@@ -101,7 +101,8 @@ stations:
   station_cell_deg: 2.0
   n_folds: 5
   matched_far: 0.28
-  emissivity_grid: [0.80, 1.00, 0.01]   # start, stop (included), step
+  # start, stop (included), step; 0.70 is a BTD of about 7 K on a 268 K top, the strict end of btd_fixed_grid
+  emissivity_grid: [0.70, 1.00, 0.01]
   temporal_relax_grid: [0.5, 1.0, 1.5]
   parallax_cloud_top_m: 500.0
   elevation_diff_bins: [-100.0, 100.0]
