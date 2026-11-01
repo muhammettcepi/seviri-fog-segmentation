@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import logging
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -373,10 +374,24 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     log.info("Wrote %s", out_path)
 
 
+def held_out_paths(data_dir: Path) -> list[Path]:
+    """The table and the decision record of the held-out run: either one closes the held-out set."""
+    return [data_dir / "experiment_B_held_out.csv", data_dir / "experiment_B_held_out.json"]
+
+
+def write_atomically(path: Path, text: str) -> None:
+    """Write `text` to a `.part` file and move it into place, so a crash never leaves a partial `path`."""
+    part = path.with_name(f"{path.name}.part")
+    part.write_text(text, encoding="utf-8", newline="")
+    os.replace(part, path)
+
+
 def cmd_experiment(args: argparse.Namespace) -> None:
     if args.held_out:
         cmd_held_out(args)
         return
+
+    import json
 
     import pandas as pd
     import xarray as xr
@@ -384,14 +399,13 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     from fogseg.experiment import (
         PHASE_B_VARIANTS,
         combined_variants,
+        config_record,
+        experiment_cases,
         pooled_scores,
         run_variants,
-        scored_cases,
         winner,
     )
     from fogseg.labels import LabelParams
-    from fogseg.splits import read_splits, selection_cases, splits_path
-    from fogseg.validation import read_case_table, season_start
 
     cfg = load_config(args.config)
     labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
@@ -399,16 +413,10 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     require_tune_season(stations_cfg, season, "experimented on")
 
     data_dir = Path(stations_cfg["data_dir"])
-    splits = read_splits(splits_path(data_dir, season))
-    cases = scored_cases(
-        selection_cases(
-            read_case_table(data_dir / f"cases_{labels_cfg['mode']}_{season}.csv"),
-            splits,
-            season_start(cfg, season),
-            cfg["region"]["bbox"],
-            stations_cfg,
-        )
-    )
+    for path in held_out_paths(data_dir):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; a rerun would overwrite the record of the held-out result")
+    cases, _ = experiment_cases(cfg, season)
 
     params = LabelParams.from_config(labels_cfg)
     with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
@@ -422,6 +430,8 @@ def cmd_experiment(args: argparse.Namespace) -> None:
 
     out_path = data_dir / "experiment_B.csv"
     table.to_csv(out_path, index=False)
+    record = config_record(season, labels_cfg["mode"], params, stations_cfg)
+    write_atomically(data_dir / "experiment_B_config.json", json.dumps(record, indent=2))
 
     pooled = pooled_scores(table)
     best = winner(table)
@@ -442,10 +452,16 @@ def cmd_held_out(args: argparse.Namespace) -> None:
     import pandas as pd
     import xarray as xr
 
-    from fogseg.experiment import config_changes, held_out_comparison, scored_cases, winner
+    from fogseg.experiment import (
+        check_same_config,
+        config_record,
+        decision_record,
+        experiment_cases,
+        held_out_comparison,
+        winner,
+    )
     from fogseg.labels import LabelParams
-    from fogseg.splits import assign_folds, held_out_part, read_splits, selection_cases, splits_path
-    from fogseg.validation import read_case_table, season_start
+    from fogseg.validation import season_start
 
     cfg = load_config(args.config)
     labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
@@ -453,31 +469,30 @@ def cmd_held_out(args: argparse.Namespace) -> None:
     require_tune_season(stations_cfg, season, "experimented on")
 
     data_dir = Path(stations_cfg["data_dir"])
-    out_path = data_dir / "experiment_B_held_out.csv"
-    if out_path.exists():
-        raise FileExistsError(f"{out_path} exists; the held-out set is opened once per phase")
-    cv_path = data_dir / "experiment_B.csv"
-    if not cv_path.exists():
-        raise FileNotFoundError(f"{cv_path} not found; run `fogseg experiment --phase B` first")
+    table_path, record_path = held_out_paths(data_dir)
+    for path in (table_path, record_path):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; the held-out set is opened once per phase")
+    cv_path, config_path = data_dir / "experiment_B.csv", data_dir / "experiment_B_config.json"
+    for path in (cv_path, config_path):
+        if not path.exists():
+            raise FileNotFoundError(f"{path} not found; run `fogseg experiment --phase B` first")
+
+    params = LabelParams.from_config(labels_cfg)
+    recorded = json.loads(config_path.read_text(encoding="utf-8"))
+    check_same_config(recorded, config_record(season, labels_cfg["mode"], params, stations_cfg))
     cv_table = pd.read_csv(cv_path)
     best = winner(cv_table)
     options = json.loads(cv_table.loc[cv_table["variant"] == best, "options"].iloc[0])
 
-    case_table = read_case_table(data_dir / f"cases_{labels_cfg['mode']}_{season}.csv")
-    splits = read_splits(splits_path(data_dir, season))
-    start, bbox = season_start(cfg, season), cfg["region"]["bbox"]
-    selection = scored_cases(selection_cases(case_table, splits, start, bbox, stations_cfg))
-    with_folds = assign_folds(case_table, splits, start, bbox, stations_cfg)
-    is_held_out = held_out_part(with_folds, stations_cfg["n_folds"]) != "selection"
-    held_out = scored_cases(with_folds[is_held_out])
-
-    params = LabelParams.from_config(labels_cfg)
+    selection, held_out = experiment_cases(cfg, season)
     with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
         table, decision = held_out_comparison(
-            data, selection, held_out, params, (best, options), stations_cfg, start
+            data, selection, held_out, params, (best, options), stations_cfg, season_start(cfg, season)
         )
-    table.to_csv(out_path, index=False)
+    record = decision_record(decision, params, options)
 
+    log.info("Held-out baseline: %s at %g", params.fog_index, record["baseline_threshold"])
     log.info(
         "Held-out, winner %s at %g: POD gain %+.3f (95%% interval %+.3f to %+.3f); "
         "FAR %.3f against %.3f (difference %+.3f to %+.3f)",
@@ -491,14 +506,15 @@ def cmd_held_out(args: argparse.Namespace) -> None:
         decision.far_difference_low,
         decision.far_difference_high,
     )
-    if decision.keep:
-        changes = config_changes(params, options, decision.value)
-        log.info(
-            "Keep %s: set %s", decision.winner, ", ".join(f"{key}: {value}" for key, value in changes.items())
-        )
+    if record["keep"]:
+        changes = ", ".join(f"{key}: {value}" for key, value in record["config_changes"].items())
+        log.info("Keep %s: set %s", decision.winner, changes)
     else:
         log.info("Do not keep %s: the labels stay as configured", decision.winner)
-    log.info("Wrote %s", out_path)
+
+    write_atomically(table_path, table.to_csv(index=False))
+    write_atomically(record_path, json.dumps(record, indent=2))
+    log.info("Wrote %s and %s", table_path, record_path)
 
 
 def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:

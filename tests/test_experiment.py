@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -24,6 +25,7 @@ from fogseg.experiment import (
     combined_variants,
     config_changes,
     cross_validate,
+    experiment_cases,
     held_out_comparison,
     matched_value,
     run_variants,
@@ -36,8 +38,8 @@ from fogseg.experiment import (
 from fogseg.label_store import LABEL_CHANNELS
 from fogseg.labels import FOG, IGNORE, label_night, label_scene
 from fogseg.scores import paired_difference
-from fogseg.splits import assign_folds, held_out_part, read_splits, selection_cases, splits_path
-from fogseg.validation import night_of, read_case_table, season_start
+from fogseg.splits import held_out_part, splits_path
+from fogseg.validation import night_of, read_case_table
 
 SEASON_START = np.datetime64("2023-10-01")
 FIRST_SLOT = np.datetime64("2023-11-20T21:00", "ns")
@@ -404,9 +406,9 @@ START = np.datetime64("2023-11-20")
 def experiment_config(tmp_path: Path) -> dict:
     """A tiny season on disk: dataset, case table and split file, the folds meeting in no selection case.
 
-    Each night is a night block: nights 2023-11-20 and 2023-11-21 are in folds 1 and 2, night 2023-11-22 in the
-    held-out fold 5. The station cells c1_1 and c3_3 are in folds 3 and 4, so every training part of the four
-    folds has fog, false alarms and clear cases; the station cell c2_2 is in the held-out fold.
+    Each night is a night block: nights 2023-11-20 and 2023-11-21 are in folds 1 and 2, night 2023-11-22 in
+    the held-out fold 5. The station cells c1_1 and c3_3 are in folds 3 and 4, so every training part of the
+    four folds has fog, false alarms and clear cases; the station cell c2_2 is in the held-out fold.
     """
     data, _ = tiny_season(tmp_path, ir120=KMA_CLEAR_IR120, n_nights=3)
     scenes = data["time"].values
@@ -450,30 +452,13 @@ def experiment_config(tmp_path: Path) -> dict:
 
 def experiment_data(cfg: dict) -> tuple[xr.Dataset, pd.DataFrame]:
     """The dataset and the scored selection cases of `experiment_config`."""
-    stations_cfg = cfg["stations"]
-    data_dir = Path(stations_cfg["data_dir"])
-    cases = selection_cases(
-        read_case_table(data_dir / "cases_fixed_2023-24.csv"),
-        read_splits(splits_path(data_dir, "2023-24")),
-        season_start(cfg, "2023-24"),
-        cfg["region"]["bbox"],
-        stations_cfg,
-    )
-    return xr.open_zarr(cfg["data"]["processed_path"], consolidated=False), scored_cases(cases)
+    selection, _ = experiment_cases(cfg, "2023-24")
+    return xr.open_zarr(cfg["data"]["processed_path"], consolidated=False), selection
 
 
 def held_out_cases(cfg: dict) -> pd.DataFrame:
     """The scored cases of `experiment_config` that are in the held-out fold by night or by station."""
-    stations_cfg = cfg["stations"]
-    data_dir = Path(stations_cfg["data_dir"])
-    with_folds = assign_folds(
-        read_case_table(data_dir / "cases_fixed_2023-24.csv"),
-        read_splits(splits_path(data_dir, "2023-24")),
-        season_start(cfg, "2023-24"),
-        cfg["region"]["bbox"],
-        stations_cfg,
-    )
-    return scored_cases(with_folds[held_out_part(with_folds, stations_cfg["n_folds"]) != "selection"])
+    return experiment_cases(cfg, "2023-24")[1]
 
 
 def split_season(tmp_path: Path) -> tuple[xr.Dataset, pd.DataFrame, pd.DataFrame]:
@@ -688,6 +673,7 @@ def test_held_out_writes_the_comparison_and_logs_the_decision(tmp_path, caplog):
     assert table[["rule", "part"]].values.tolist() == [
         [rule, part] for rule in ("baseline", "winner") for part in HELD_OUT_PARTS
     ]
+    assert table.loc[table["rule"] == "winner", "n_cases"].tolist() == [36, 12, 16, 8]
     assert "1 baseline" in caplog.text and "POD gain" in caplog.text
 
 
@@ -748,3 +734,113 @@ def test_held_out_cases_do_not_change_the_cross_validation(tmp_path):
     cmd_experiment(experiment_args(cfg))
 
     assert path.read_text(encoding="utf-8") == before
+
+
+def held_out_files(tmp_path) -> list[str]:
+    return sorted(path.name for path in (tmp_path / "stations").glob("experiment_B_held_out*"))
+
+
+def test_held_out_leaves_the_table_and_the_decision_record(tmp_path):
+    run_held_out(tmp_path)
+    stations = tmp_path / "stations"
+    record = json.loads((stations / "experiment_B_held_out.json").read_text(encoding="utf-8"))
+    table = pd.read_csv(stations / "experiment_B.csv")
+    best = winner(table)
+    assert record["winner"] == best
+    assert record["options"] == json.loads(table.loc[table["variant"] == best, "options"].iloc[0])
+    assert record["baseline_fog_index"] == "btd" and record["baseline_threshold"] == TEST_PARAMS.btd_fixed
+    assert set(record) >= {field.name for field in dataclasses.fields(KeepDecision)}
+    assert isinstance(record["keep"], bool) and "config_changes" in record
+    assert held_out_files(tmp_path) == ["experiment_B_held_out.csv", "experiment_B_held_out.json"]
+
+
+def test_a_crash_while_writing_leaves_no_held_out_file_and_the_decision_is_logged(
+    tmp_path, monkeypatch, caplog
+):
+    cfg = experiment_config(tmp_path)
+    cmd_experiment(experiment_args(cfg))
+
+    def crash(*args):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patched, caplog.at_level(logging.INFO, logger="fogseg"):
+        patched.setattr("fogseg.cli.os.replace", crash)
+        with pytest.raises(OSError, match="disk full"):
+            cmd_experiment(experiment_args(cfg, held_out=True))
+    assert "POD gain" in caplog.text and "Held-out baseline" in caplog.text
+    assert not [name for name in held_out_files(tmp_path) if not name.endswith(".part")]
+
+
+@pytest.mark.parametrize("name", ["experiment_B_held_out.csv", "experiment_B_held_out.json"])
+def test_either_held_out_file_closes_the_held_out_set(tmp_path, name):
+    cfg = experiment_config(tmp_path)
+    cmd_experiment(experiment_args(cfg))
+    shutil.rmtree(cfg["data"]["processed_path"])
+    (tmp_path / "stations" / name).write_text("{}", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="once"):
+        cmd_experiment(experiment_args(cfg, held_out=True))
+
+
+@pytest.mark.parametrize("name", ["experiment_B_held_out.csv", "experiment_B_held_out.json"])
+def test_the_cross_validation_does_not_overwrite_a_held_out_record(tmp_path, name):
+    cfg = experiment_config(tmp_path)
+    (tmp_path / "stations" / name).write_text("{}", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="held-out"):
+        cmd_experiment(experiment_args(cfg))
+    assert not (tmp_path / "stations" / "experiment_B.csv").exists()
+
+
+def test_the_cross_validation_records_its_configuration(tmp_path):
+    cfg = experiment_config(tmp_path)
+    cmd_experiment(experiment_args(cfg))
+    record = json.loads((tmp_path / "stations" / "experiment_B_config.json").read_text(encoding="utf-8"))
+    assert record["season"] == "2023-24"
+    assert record["labels"] == dataclasses.asdict(TEST_PARAMS)
+    assert set(record["stations"]) == {
+        "matched_far",
+        "n_folds",
+        "seed",
+        "bootstrap_samples",
+        "night_block_days",
+        "station_cell_deg",
+        "btd_fixed_grid",
+        "emissivity_grid",
+        "temporal_relax_grid",
+    }
+    assert record["stations"]["matched_far"] == 0.28
+
+
+def test_held_out_refuses_a_configuration_that_differs_from_the_cross_validation(tmp_path):
+    cfg = experiment_config(tmp_path)
+    cmd_experiment(experiment_args(cfg))
+    shutil.rmtree(cfg["data"]["processed_path"])
+    cfg["stations"]["matched_far"] = 0.3
+    cfg["labels"]["btd_fixed"] = 4.0
+    with pytest.raises(ValueError, match=r"(?s)labels\.btd_fixed.*stations\.matched_far"):
+        cmd_experiment(experiment_args(cfg, held_out=True))
+    assert held_out_files(tmp_path) == []
+
+
+def test_held_out_needs_the_configuration_of_the_cross_validation(tmp_path):
+    cfg = experiment_config(tmp_path)
+    cmd_experiment(experiment_args(cfg))
+    (tmp_path / "stations" / "experiment_B_config.json").unlink()
+    with pytest.raises(FileNotFoundError, match="experiment --phase B"):
+        cmd_experiment(experiment_args(cfg, held_out=True))
+
+
+def test_the_held_out_and_selection_tables_cannot_be_swapped(tmp_path):
+    data, selection, held_out = split_season(tmp_path)
+    args = (RULE_AT_4_K, WINNER, STATIONS_CFG, START)
+    with pytest.raises(ValueError, match="held-out.*selection"):
+        held_out_comparison(data, selection, selection, *args)
+    with pytest.raises(ValueError, match="selection.*held-out"):
+        held_out_comparison(data, held_out, held_out, *args)
+
+
+def test_experiment_cases_split_the_scored_cases_by_the_frozen_folds(tmp_path):
+    selection, held_out = experiment_cases(experiment_config(tmp_path), "2023-24")
+    assert (len(selection), len(held_out)) == (24, 36)
+    assert selection["case"].tolist() == list(range(24)) and held_out["case"].tolist() == list(range(36))
+    assert (held_out_part(selection, 5) == "selection").all()
+    assert (held_out_part(held_out, 5) != "selection").all()

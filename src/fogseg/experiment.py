@@ -6,6 +6,7 @@ import dataclasses
 import json
 import logging
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -14,9 +15,9 @@ import xarray as xr
 from fogseg.label_store import LABEL_CHANNELS
 from fogseg.labels import LabelParams, label_night
 from fogseg.scores import COUNT_NAMES, contingency, counts_by_night, paired_difference, skill
-from fogseg.splits import cv_folds, held_out_part, night_block_start
+from fogseg.splits import assign_folds, cv_folds, held_out_part, night_block_start, read_splits, splits_path
 from fogseg.tuning import grid_values
-from fogseg.validation import TRUTH_NO, TRUTH_YES, night_of
+from fogseg.validation import TRUTH_NO, TRUTH_YES, night_of, read_case_table, season_start
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +37,17 @@ PHASE_B_VARIANTS: list[tuple[str, dict]] = [
 ]
 TEXTURE_VARIANTS = [name for name, _ in PHASE_B_VARIANTS[:5]]
 FOG_INDEX_VARIANTS = ["1 baseline", "7 emissivity"]
+RECORDED_STATIONS_KEYS = [
+    "matched_far",
+    "n_folds",
+    "seed",
+    "bootstrap_samples",
+    "night_block_days",
+    "station_cell_deg",
+    "btd_fixed_grid",
+    "emissivity_grid",
+    "temporal_relax_grid",
+]
 
 
 def scored_cases(cases: pd.DataFrame) -> pd.DataFrame:
@@ -43,6 +55,17 @@ def scored_cases(cases: pd.DataFrame) -> pd.DataFrame:
     is_scored = ~cases["hidden"] & cases["truth_fls"].isin((TRUTH_NO, TRUTH_YES))
     scored = cases[is_scored].reset_index(drop=True)
     return scored.assign(case=np.arange(len(scored)))
+
+
+def experiment_cases(cfg: dict, season: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The scored selection cases and the scored held-out cases of a season, split by its frozen folds."""
+    stations_cfg = cfg["stations"]
+    data_dir = Path(stations_cfg["data_dir"])
+    splits = read_splits(splits_path(data_dir, season))
+    cases = read_case_table(data_dir / f"cases_{cfg['labels']['mode']}_{season}.csv")
+    with_folds = assign_folds(cases, splits, season_start(cfg, season), cfg["region"]["bbox"], stations_cfg)
+    is_selection = held_out_part(with_folds, stations_cfg["n_folds"]) == "selection"
+    return scored_cases(with_folds[is_selection]), scored_cases(with_folds[~is_selection])
 
 
 def value_grid(params: LabelParams, stations_cfg: dict) -> np.ndarray:
@@ -251,7 +274,7 @@ def run_variants(
 
 @dataclasses.dataclass(frozen=True)
 class KeepDecision:
-    """The held-out verdict on the winner: its POD gain over the baseline and both FARs, with 95 % intervals."""
+    """The held-out verdict on the winner: its POD gain over the baseline and both FARs, with 95 % CIs."""
 
     winner: str
     value: float
@@ -275,9 +298,59 @@ def threshold_name(fog_index: str) -> str:
 
 
 def config_changes(params: LabelParams, options: dict, value: float) -> dict:
-    """The `labels:` keys that make a variant the config's rule: its options and the threshold of its fog index."""
+    """The `labels:` keys that make a variant the config's rule: its options and its fog index's threshold."""
     threshold = threshold_name(options.get("fog_index", params.fog_index))
     return {**{f"labels.{key}": option for key, option in options.items()}, f"labels.{threshold}": value}
+
+
+def baseline_threshold(params: LabelParams) -> float:
+    """The threshold of the config's rule, which the held-out comparison takes as the baseline."""
+    name = threshold_name(params.fog_index)
+    threshold = getattr(params, name)
+    if threshold is None:
+        raise ValueError(f"labels.{name} is not set, so the baseline has no threshold")
+    return threshold
+
+
+def decision_record(decision: KeepDecision, params: LabelParams, options: dict) -> dict:
+    """The held-out verdict as written down: the decision, the baseline it was held against, the changes."""
+    return {
+        **dataclasses.asdict(decision),
+        "options": options,
+        "baseline_fog_index": params.fog_index,
+        "baseline_threshold": baseline_threshold(params),
+        "keep": bool(decision.keep),
+        "config_changes": config_changes(params, options, decision.value),
+    }
+
+
+def config_record(season: str, mode: str, params: LabelParams, stations_cfg: dict) -> dict:
+    """The configuration a cross-validation ran with, written next to its table."""
+    return {
+        "season": season,
+        "mode": mode,
+        "labels": dataclasses.asdict(params),
+        "stations": {key: stations_cfg[key] for key in RECORDED_STATIONS_KEYS},
+    }
+
+
+def flat_record(record: dict) -> dict:
+    """A configuration record with one key per setting, like `labels.btd_fixed`."""
+    settings = {
+        f"{section}.{key}": value
+        for section in ("labels", "stations")
+        for key, value in record[section].items()
+    }
+    return {"season": record["season"], "mode": record["mode"], **settings}
+
+
+def check_same_config(recorded: dict, current: dict) -> None:
+    """Refuse a held-out run whose configuration is not the cross-validation's, naming every difference."""
+    before, now = flat_record(recorded), flat_record(current)
+    changed = sorted(key for key in before.keys() | now.keys() if before.get(key) != now.get(key))
+    if changed:
+        differences = ", ".join(f"{key} ({before.get(key)!r} then, {now.get(key)!r} now)" for key in changed)
+        raise ValueError(f"The configuration is not the one the cross-validation ran with: {differences}")
 
 
 def held_out_comparison(
@@ -285,25 +358,26 @@ def held_out_comparison(
     selection: pd.DataFrame,
     held_out: pd.DataFrame,
     params: LabelParams,
-    winner: tuple[str, dict],
+    chosen: tuple[str, dict],
     stations_cfg: dict,
     season_start: np.datetime64,
 ) -> tuple[pd.DataFrame, KeepDecision]:
     """Score the winner against the config's rule on the held-out cases, and decide whether to keep it.
 
-    Both tables hold scored cases numbered from 0. The winner's threshold is matched to `matched_far` on all
-    selection cases; the baseline keeps the threshold of `params`. The intervals are paired bootstraps over
-    the night blocks of the held-out cases.
+    Both tables hold scored cases numbered from 0, `selection` the selection cases and `held_out` the held-out
+    ones. The winner's threshold is matched to `matched_far` on all selection cases; the baseline keeps the
+    threshold of `params`. The intervals are paired bootstraps over the night blocks of the held-out cases.
     """
     if held_out.empty:
         raise ValueError("The held-out set has no scored cases")
-    baseline_value = getattr(params, threshold_name(params.fog_index))
-    if baseline_value is None:
-        raise ValueError(
-            f"labels.{threshold_name(params.fog_index)} is not set, so the baseline has no threshold"
-        )
+    n_folds = stations_cfg["n_folds"]
+    if (held_out_part(held_out, n_folds) == "selection").any():
+        raise ValueError("The held-out cases include selection cases")
+    if (held_out_part(selection, n_folds) != "selection").any():
+        raise ValueError("The selection cases include held-out cases")
+    baseline_value = baseline_threshold(params)
 
-    name, options = winner
+    name, options = chosen
     winner_params = dataclasses.replace(params, **options)
     winner_values = value_grid(winner_params, stations_cfg)
     selection_scores = value_scores(
@@ -325,7 +399,7 @@ def held_out_comparison(
         rule: variant_grid(data, held_out, rule_params, np.array([rule_value]))
         for rule, (rule_params, rule_value) in rules.items()
     }
-    where = held_out_part(held_out, stations_cfg["n_folds"])
+    where = held_out_part(held_out, n_folds)
     masks = {"held_out": pd.Series(True, index=held_out.index)}
     masks |= {part: where == part for part in ("nights", "stations", "both")}
     rows = [
