@@ -12,11 +12,14 @@ from fogseg.labels import (
     NO_FOG,
     OBSCURED,
     LabelParams,
+    emissivity_39,
+    emissivity_btd_threshold,
     histogram_pixels,
     label_scene,
     local_std,
     small_blobs,
     trusted_mask,
+    warm_and_not_cirrus,
 )
 
 
@@ -192,3 +195,97 @@ def test_small_fog_island_in_a_scene_is_ignored():
     sza = np.full((8, 8), 120.0)
     labels = label_scene(ir039, ir108, ir120, sza, 2.5, TEST_PARAMS)
     assert labels[1, 2] == IGNORE and labels[5, 3] == FOG and labels[3, 3] == NO_FOG
+
+
+def scene_arrays() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """An 8 x 12 night scene with every label value: a fog deck, a borderline strip, an island and more."""
+    ir108 = np.full((8, 12), 270.0)
+    ir039 = ir108 - 0.5
+    ir120 = ir108 - 0.5
+    sza = np.full((8, 12), 120.0)
+
+    ir039[2:5, 0:5] = ir108[2:5, 0:5] - 5.0  # fog deck of 15 pixels
+    ir039[7, 0:3] = ir108[7, 0:3] - 4.2  # BTD within the uncertainty band of 4.0 K
+    ir039[0, 8:10] = ir108[0, 8:10] - 5.0  # fog island of 2 pixels
+    ir108[0:3, 11] = 230.0  # cold top
+    ir039[0:3, 11] = ir108[0:3, 11] - 0.5
+    ir120[5, 8:10] = ir108[5, 8:10] - 3.0  # thin cirrus
+    ir108[6:8, 4:7] += np.array([[3.0, -3.0, 3.0], [-3.0, 3.0, -3.0]])  # rough top
+    ir039[6:8, 4:7] = ir108[6:8, 4:7] - 5.0
+    ir120[6:8, 4:7] = ir108[6:8, 4:7] - 0.5
+    ir039[6, 6] = np.nan  # missing channel
+    sza[7, 10:12] = 80.0  # daytime
+    return ir039, ir108, ir120, sza
+
+
+EXPECTED_LABELS = np.array(
+    [
+        [0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 2],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+        [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 2],
+        [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0],
+        [0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0],
+        [255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 255, 255],
+    ],
+    dtype=np.uint8,
+)
+
+BASE_FIELDS = (
+    "night_min_sza",
+    "btd_fixed",
+    "warm_min_bt108",
+    "cirrus_max_split",
+    "smooth_max_std",
+    "uncertainty_band",
+    "min_blob_pixels",
+)
+
+
+def uniform_top_scene(ir108: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """A smooth 6 x 6 night scene with one IR_108 value and BTDs of 6.0, 2.0 and 4.3 K in column pairs."""
+    btd = np.tile(np.repeat([6.0, 2.0, 4.3], 2), (6, 1))
+    ir108_field = np.full((6, 6), ir108)
+    return ir108_field - btd, ir108_field, ir108_field - 0.5, np.full((6, 6), 120.0)
+
+
+def test_defaults_reproduce_the_labels():
+    ir039, ir108, ir120, sza = scene_arrays()
+    old_style = LabelParams(**{name: getattr(TEST_PARAMS, name) for name in BASE_FIELDS})
+    assert np.array_equal(label_scene(ir039, ir108, ir120, sza, 4.0, old_style), EXPECTED_LABELS)
+
+
+def test_from_config_without_the_new_keys_takes_the_defaults():
+    params = LabelParams.from_config({name: getattr(TEST_PARAMS, name) for name in BASE_FIELDS})
+    assert (params.texture, params.fog_index, params.emissivity_max) == ("ir108_std3", "btd", None)
+    assert (params.split_window, params.temporal_relax, params.temporal_max_dt108) == ("fixed", 0.0, 2.0)
+
+
+def test_unknown_option_names_the_allowed_values():
+    with pytest.raises(ValueError, match="ir108_mad5"):
+        dataclasses.replace(TEST_PARAMS, texture="sobel")
+
+
+def test_kma_split_window_follows_the_temperature():
+    ir108 = np.array([280.0, 280.0])
+    ir120 = ir108 - np.array([0.9, -0.2])  # expected split at 280 K is -0.268 K
+    fixed = warm_and_not_cirrus(ir108, ir120, TEST_PARAMS)
+    kma = warm_and_not_cirrus(ir108, ir120, dataclasses.replace(TEST_PARAMS, split_window="kma"))
+    assert fixed.tolist() == [True, True] and kma.tolist() == [False, True]
+
+
+def test_emissivity_threshold_is_the_btd_with_that_emissivity():
+    ir108 = np.array([270.0, 285.0])
+    emissivity = emissivity_39(ir108 - 4.0, ir108)
+    assert emissivity_btd_threshold(ir108, float(emissivity[0]))[0] == pytest.approx(4.0, abs=1e-6)
+    assert emissivity[1] > emissivity[0]  # the same BTD is a weaker signal on a warmer top
+
+
+def test_emissivity_index_labels_like_the_btd_on_a_uniform_top():
+    ir039, ir108, ir120, sza = uniform_top_scene(ir108=280.0)
+    threshold = float(emissivity_39(np.array([276.0]), np.array([280.0]))[0])
+    params = dataclasses.replace(TEST_PARAMS, fog_index="emissivity")
+    emissivity_labels = label_scene(ir039, ir108, ir120, sza, threshold, params)
+    assert np.array_equal(emissivity_labels, label_scene(ir039, ir108, ir120, sza, 4.0, TEST_PARAMS))
+    assert set(emissivity_labels.ravel()) == {FOG, NO_FOG, IGNORE}
