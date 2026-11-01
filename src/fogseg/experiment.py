@@ -13,8 +13,8 @@ import xarray as xr
 
 from fogseg.label_store import LABEL_CHANNELS
 from fogseg.labels import LabelParams, label_night
-from fogseg.scores import COUNT_NAMES, contingency, counts_by_night, skill
-from fogseg.splits import cv_folds, night_block_start
+from fogseg.scores import COUNT_NAMES, contingency, counts_by_night, paired_difference, skill
+from fogseg.splits import cv_folds, held_out_part, night_block_start
 from fogseg.tuning import grid_values
 from fogseg.validation import TRUTH_NO, TRUTH_YES, night_of
 
@@ -237,7 +237,7 @@ def run_variants(
         variant_params = dataclasses.replace(params, **options)
         grid = variant_grid(data, cases, variant_params, value_grid(variant_params, stations_cfg))
         table = cross_validate(grid, cases, stations_cfg["n_folds"], stations_cfg["matched_far"], name)
-        pooled = table.iloc[-1]
+        pooled = pooled_scores(table.assign(variant=name)).loc[name]
         log.info(
             "Variant %s: pooled POD %.3f, FAR %.3f, %.0f s",
             name,
@@ -247,3 +247,118 @@ def run_variants(
         )
         tables.append(table.assign(variant=name, options=json.dumps(options)))
     return pd.concat(tables, ignore_index=True)[["variant", "options", *CV_COLUMNS]]
+
+
+@dataclasses.dataclass(frozen=True)
+class KeepDecision:
+    """The held-out verdict on the winner: its POD gain over the baseline and both FARs, with 95 % intervals."""
+
+    winner: str
+    value: float
+    pod_gain: float
+    pod_gain_low: float
+    pod_gain_high: float
+    far_winner: float
+    far_baseline: float
+    far_difference_low: float
+    far_difference_high: float
+
+    @property
+    def keep(self) -> bool:
+        """The POD gain is above zero in the whole interval and the FAR is no higher than the baseline's."""
+        return self.pod_gain_low > 0 and self.far_winner <= self.far_baseline
+
+
+def threshold_name(fog_index: str) -> str:
+    """The `labels:` key of the threshold of a fog index."""
+    return "emissivity_max" if fog_index == "emissivity" else "btd_fixed"
+
+
+def config_changes(params: LabelParams, options: dict, value: float) -> dict:
+    """The `labels:` keys that make a variant the config's rule: its options and the threshold of its fog index."""
+    threshold = threshold_name(options.get("fog_index", params.fog_index))
+    return {**{f"labels.{key}": option for key, option in options.items()}, f"labels.{threshold}": value}
+
+
+def held_out_comparison(
+    data: xr.Dataset,
+    selection: pd.DataFrame,
+    held_out: pd.DataFrame,
+    params: LabelParams,
+    winner: tuple[str, dict],
+    stations_cfg: dict,
+    season_start: np.datetime64,
+) -> tuple[pd.DataFrame, KeepDecision]:
+    """Score the winner against the config's rule on the held-out cases, and decide whether to keep it.
+
+    Both tables hold scored cases numbered from 0. The winner's threshold is matched to `matched_far` on all
+    selection cases; the baseline keeps the threshold of `params`. The intervals are paired bootstraps over
+    the night blocks of the held-out cases.
+    """
+    if held_out.empty:
+        raise ValueError("The held-out set has no scored cases")
+    baseline_value = getattr(params, threshold_name(params.fog_index))
+    if baseline_value is None:
+        raise ValueError(
+            f"labels.{threshold_name(params.fog_index)} is not set, so the baseline has no threshold"
+        )
+
+    name, options = winner
+    winner_params = dataclasses.replace(params, **options)
+    winner_values = value_grid(winner_params, stations_cfg)
+    selection_scores = value_scores(
+        variant_grid(data, selection, winner_params, winner_values),
+        selection,
+        pd.Series(True, index=selection.index),
+    )
+    value, matched = matched_value(selection_scores, stations_cfg["matched_far"])
+    if not matched:
+        log.warning(
+            "Winner %s: no value reaches a FAR of %.3f on the selection cases; using %g",
+            name,
+            stations_cfg["matched_far"],
+            value,
+        )
+
+    rules = {"baseline": (params, baseline_value), "winner": (winner_params, value)}
+    grids = {
+        rule: variant_grid(data, held_out, rule_params, np.array([rule_value]))
+        for rule, (rule_params, rule_value) in rules.items()
+    }
+    where = held_out_part(held_out, stations_cfg["n_folds"])
+    masks = {"held_out": pd.Series(True, index=held_out.index)}
+    masks |= {part: where == part for part in ("nights", "stations", "both")}
+    rows = [
+        {"rule": rule, "part": part, **value_scores(grids[rule], held_out, mask).to_dict("records")[0]}
+        for rule in rules
+        for part, mask in masks.items()
+    ]
+    table = pd.DataFrame(rows)
+
+    counts = {
+        rule: block_counts(
+            grids[rule],
+            held_out,
+            rule_value,
+            masks["held_out"],
+            season_start,
+            stations_cfg["night_block_days"],
+        )
+        for rule, (_, rule_value) in rules.items()
+    }
+    samples, seed = stations_cfg["bootstrap_samples"], stations_cfg["seed"]
+    pod_low, pod_high = paired_difference(counts["winner"], counts["baseline"], "pod", samples, seed)
+    far_low, far_high = paired_difference(counts["winner"], counts["baseline"], "far", samples, seed)
+    whole = table[table["part"] == "held_out"].set_index("rule")
+    decision = KeepDecision(
+        winner=name,
+        value=value,
+        pod_gain=float(whole.loc["winner", "pod"] - whole.loc["baseline", "pod"]),
+        pod_gain_low=pod_low,
+        pod_gain_high=pod_high,
+        far_winner=float(whole.loc["winner", "far"]),
+        far_baseline=float(whole.loc["baseline", "far"]),
+        far_difference_low=far_low,
+        far_difference_high=far_high,
+    )
+    return table, decision

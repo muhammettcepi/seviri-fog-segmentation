@@ -374,6 +374,10 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
 
 
 def cmd_experiment(args: argparse.Namespace) -> None:
+    if args.held_out:
+        cmd_held_out(args)
+        return
+
     import pandas as pd
     import xarray as xr
 
@@ -429,6 +433,71 @@ def cmd_experiment(args: argparse.Namespace) -> None:
         pooled.loc["1 baseline", "pod"],
         pooled.loc["1 baseline", "far"],
     )
+    log.info("Wrote %s", out_path)
+
+
+def cmd_held_out(args: argparse.Namespace) -> None:
+    import json
+
+    import pandas as pd
+    import xarray as xr
+
+    from fogseg.experiment import config_changes, held_out_comparison, scored_cases, winner
+    from fogseg.labels import LabelParams
+    from fogseg.splits import assign_folds, held_out_part, read_splits, selection_cases, splits_path
+    from fogseg.validation import read_case_table, season_start
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "experimented on")
+
+    data_dir = Path(stations_cfg["data_dir"])
+    out_path = data_dir / "experiment_B_held_out.csv"
+    if out_path.exists():
+        raise FileExistsError(f"{out_path} exists; the held-out set is opened once per phase")
+    cv_path = data_dir / "experiment_B.csv"
+    if not cv_path.exists():
+        raise FileNotFoundError(f"{cv_path} not found; run `fogseg experiment --phase B` first")
+    cv_table = pd.read_csv(cv_path)
+    best = winner(cv_table)
+    options = json.loads(cv_table.loc[cv_table["variant"] == best, "options"].iloc[0])
+
+    case_table = read_case_table(data_dir / f"cases_{labels_cfg['mode']}_{season}.csv")
+    splits = read_splits(splits_path(data_dir, season))
+    start, bbox = season_start(cfg, season), cfg["region"]["bbox"]
+    selection = scored_cases(selection_cases(case_table, splits, start, bbox, stations_cfg))
+    with_folds = assign_folds(case_table, splits, start, bbox, stations_cfg)
+    is_held_out = held_out_part(with_folds, stations_cfg["n_folds"]) != "selection"
+    held_out = scored_cases(with_folds[is_held_out])
+
+    params = LabelParams.from_config(labels_cfg)
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        table, decision = held_out_comparison(
+            data, selection, held_out, params, (best, options), stations_cfg, start
+        )
+    table.to_csv(out_path, index=False)
+
+    log.info(
+        "Held-out, winner %s at %g: POD gain %+.3f (95%% interval %+.3f to %+.3f); "
+        "FAR %.3f against %.3f (difference %+.3f to %+.3f)",
+        decision.winner,
+        decision.value,
+        decision.pod_gain,
+        decision.pod_gain_low,
+        decision.pod_gain_high,
+        decision.far_winner,
+        decision.far_baseline,
+        decision.far_difference_low,
+        decision.far_difference_high,
+    )
+    if decision.keep:
+        changes = config_changes(params, options, decision.value)
+        log.info(
+            "Keep %s: set %s", decision.winner, ", ".join(f"{key}: {value}" for key, value in changes.items())
+        )
+    else:
+        log.info("Do not keep %s: the labels stay as configured", decision.winner)
     log.info("Wrote %s", out_path)
 
 
@@ -747,6 +816,11 @@ def main() -> None:
     experiment.add_argument("--config", default="configs/default.yaml")
     experiment.add_argument("--phase", required=True, choices=["B"], help="the set of variants to compare")
     experiment.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
+    experiment.add_argument(
+        "--held-out",
+        action="store_true",
+        help="score the winner of experiment_B.csv against the configured rule on the held-out cases, once",
+    )
     experiment.set_defaults(func=cmd_experiment)
 
     tune = sub.add_parser(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import logging
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -18,9 +19,12 @@ from fogseg.config import load_config
 from fogseg.experiment import (
     GRID_COLUMNS,
     PHASE_B_VARIANTS,
+    KeepDecision,
     block_counts,
     combined_variants,
+    config_changes,
     cross_validate,
+    held_out_comparison,
     matched_value,
     run_variants,
     scored_cases,
@@ -31,7 +35,8 @@ from fogseg.experiment import (
 )
 from fogseg.label_store import LABEL_CHANNELS
 from fogseg.labels import FOG, IGNORE, label_night, label_scene
-from fogseg.splits import read_splits, selection_cases, splits_path
+from fogseg.scores import paired_difference
+from fogseg.splits import assign_folds, held_out_part, read_splits, selection_cases, splits_path
 from fogseg.validation import night_of, read_case_table, season_start
 
 SEASON_START = np.datetime64("2023-10-01")
@@ -187,15 +192,15 @@ def test_block_counts_has_one_row_per_night_block_in_order():
     assert without_first.tolist() == [[0, 0, 1, 0], [0, 1, 0, 1]]
 
 
-def tiny_season(tmp_path, ir120: float = 269.5) -> tuple[xr.Dataset, pd.DataFrame]:
-    """Two nights of two scenes (21:00 and 00:00) and three cases, with IR_120 flat at `ir120` K.
+def tiny_season(tmp_path, ir120: float = 269.5, n_nights: int = 2) -> tuple[xr.Dataset, pd.DataFrame]:
+    """`n_nights` nights of two scenes (21:00 and 00:00) and three cases, with IR_120 flat at `ir120` K.
 
     The fog patch of the last scene is a near miss at a threshold of 4 K (BTD `NEAR_MISS_BTD`), next to the
     full fog patch of the scene before it.
     """
-    dataset = label_scenes(4, None, background_btd=1.8)
+    dataset = label_scenes(2 * n_nights, None, background_btd=1.8)
     dataset["bt"].loc[{"channel": "IR_120"}] = ir120
-    night_starts = FIRST_SLOT + np.arange(2) * np.timedelta64(1, "D")
+    night_starts = FIRST_SLOT + np.arange(n_nights) * np.timedelta64(1, "D")
     dataset["time"] = (night_starts[:, None] + np.arange(2) * SLOT).ravel()
     dataset["bt"][SCENE_OF_CASE_1, 0, :5, :5] = 270.0 - NEAR_MISS_BTD
     path = tmp_path / "season.zarr"
@@ -366,7 +371,11 @@ def test_a_fold_fallback_names_its_variant(tmp_path, caplog):
     assert "variant 6 band 0.25" in caplog.text
 
 
-CELL_A, CELL_B = (5.0, 45.0), (9.0, 49.0)  # (lon, lat) in the station cells c1_1 and c3_3
+CELL_A, CELL_B, CELL_C = (
+    (5.0, 45.0),
+    (9.0, 49.0),
+    (7.0, 47.0),
+)  # (lon, lat) in the station cells c1_1, c3_3, c2_2
 PIXEL_CASES = [  # (iy, ix, truth, cell): the fog patch is the 5 x 5 corner of the scene
     (1, 1, 1, CELL_A),
     (3, 3, 1, CELL_B),
@@ -374,16 +383,32 @@ PIXEL_CASES = [  # (iy, ix, truth, cell): the fog patch is the 5 x 5 corner of t
     (4, 0, 0, CELL_B),
     (7, 9, 0, CELL_A),
     (6, 8, 0, CELL_B),
+    (2, 2, 1, CELL_C),
+    (4, 4, 1, CELL_C),
+    (1, 3, 0, CELL_C),
+    (7, 7, 0, CELL_C),
 ]
+STATIONS_CFG = {
+    "btd_fixed_grid": [3.0, 5.0, 0.5],
+    "emissivity_grid": [0.8, 1.0, 0.1],
+    "temporal_relax_grid": [0.5, 1.0],
+    "night_block_days": 1,
+    "n_folds": 5,
+    "matched_far": 0.28,
+    "bootstrap_samples": 200,
+    "seed": 0,
+}
+START = np.datetime64("2023-11-20")
 
 
 def experiment_config(tmp_path: Path) -> dict:
     """A tiny season on disk: dataset, case table and split file, the folds meeting in no selection case.
 
-    Each night is a night block: night 2023-11-20 is in fold 1, night 2023-11-21 in fold 2. The two station
-    cells are in folds 3 and 4, so every training part of the four folds has fog, false alarms and clear cases.
+    Each night is a night block: nights 2023-11-20 and 2023-11-21 are in folds 1 and 2, night 2023-11-22 in the
+    held-out fold 5. The station cells c1_1 and c3_3 are in folds 3 and 4, so every training part of the four
+    folds has fog, false alarms and clear cases; the station cell c2_2 is in the held-out fold.
     """
-    data, _ = tiny_season(tmp_path, ir120=KMA_CLEAR_IR120)
+    data, _ = tiny_season(tmp_path, ir120=KMA_CLEAR_IR120, n_nights=3)
     scenes = data["time"].values
     cases = pd.DataFrame(
         [
@@ -408,9 +433,9 @@ def experiment_config(tmp_path: Path) -> dict:
     cases.to_csv(data_dir / "cases_fixed_2023-24.csv", index=False)
     splits = pd.DataFrame(
         {
-            "kind": ["night_block", "night_block", "station_cell", "station_cell"],
-            "key": ["2023-11-20", "2023-11-21", "c1_1", "c3_3"],
-            "fold": [1, 2, 3, 4],
+            "kind": ["night_block"] * 3 + ["station_cell"] * 3,
+            "key": ["2023-11-20", "2023-11-21", "2023-11-22", "c1_1", "c3_3", "c2_2"],
+            "fold": [1, 2, 5, 3, 4, 5],
         }
     )
     splits.to_csv(splits_path(data_dir, "2023-24"), index=False)
@@ -418,14 +443,8 @@ def experiment_config(tmp_path: Path) -> dict:
     cfg = load_config("configs/default.yaml")
     cfg["data"] |= {"processed_path": str(tmp_path / "season.zarr"), "log_dir": str(tmp_path / "logs")}
     cfg["labels"] |= dataclasses.asdict(TEST_PARAMS)
-    cfg["time"]["seasons"][0] |= {"start": "2023-11-20", "end": "2023-11-21"}
-    cfg["stations"] |= {
-        "data_dir": str(data_dir),
-        "btd_fixed_grid": [3.0, 5.0, 0.5],
-        "emissivity_grid": [0.8, 1.0, 0.1],
-        "temporal_relax_grid": [0.5, 1.0],
-        "night_block_days": 1,
-    }
+    cfg["time"]["seasons"][0] |= {"start": "2023-11-20", "end": "2023-11-22"}
+    cfg["stations"] |= {**STATIONS_CFG, "data_dir": str(data_dir)}
     return cfg
 
 
@@ -441,6 +460,36 @@ def experiment_data(cfg: dict) -> tuple[xr.Dataset, pd.DataFrame]:
         stations_cfg,
     )
     return xr.open_zarr(cfg["data"]["processed_path"], consolidated=False), scored_cases(cases)
+
+
+def held_out_cases(cfg: dict) -> pd.DataFrame:
+    """The scored cases of `experiment_config` that are in the held-out fold by night or by station."""
+    stations_cfg = cfg["stations"]
+    data_dir = Path(stations_cfg["data_dir"])
+    with_folds = assign_folds(
+        read_case_table(data_dir / "cases_fixed_2023-24.csv"),
+        read_splits(splits_path(data_dir, "2023-24")),
+        season_start(cfg, "2023-24"),
+        cfg["region"]["bbox"],
+        stations_cfg,
+    )
+    return scored_cases(with_folds[held_out_part(with_folds, stations_cfg["n_folds"]) != "selection"])
+
+
+def split_season(tmp_path: Path) -> tuple[xr.Dataset, pd.DataFrame, pd.DataFrame]:
+    """The dataset of `experiment_config` with its scored selection cases and its scored held-out cases."""
+    cfg = experiment_config(tmp_path)
+    data, selection = experiment_data(cfg)
+    return data, selection, held_out_cases(cfg)
+
+
+def selection_grid(
+    data: xr.Dataset, selection: pd.DataFrame, options: dict
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+    """The grid, cases and all-true mask of a variant on the selection cases."""
+    params = dataclasses.replace(TEST_PARAMS, **options)
+    grid = variant_grid(data, selection, params, value_grid(params, STATIONS_CFG))
+    return grid, selection, pd.Series(True, index=selection.index)
 
 
 def experiment_args(cfg: dict, season: str | None = None, held_out: bool = False) -> argparse.Namespace:
@@ -473,3 +522,229 @@ def test_experiment_needs_the_split_file(tmp_path):
 
 def test_the_variant_list_numbers_variants_one_to_eight_in_order():
     assert [name.split()[0] for name, _ in PHASE_B_VARIANTS] == [str(n) for n in range(1, 9)]
+
+
+WINNER = ("6 band 0.25", {"uncertainty_band": 0.25})
+RULE_AT_4_K = dataclasses.replace(TEST_PARAMS, btd_fixed=4.0)
+HELD_OUT_PARTS = ["held_out", "nights", "stations", "both"]
+
+
+def compare(tmp_path, params=RULE_AT_4_K, winner=WINNER) -> tuple[pd.DataFrame, KeepDecision]:
+    data, selection, held_out = split_season(tmp_path)
+    return held_out_comparison(data, selection, held_out, params, winner, STATIONS_CFG, START)
+
+
+def test_keep_needs_a_pod_gain_above_zero_and_no_higher_far():
+    assert KeepDecision("9 combined", 4.0, 0.05, 0.01, 0.09, 0.24, 0.25, -0.03, 0.01).keep
+    assert not KeepDecision("9 combined", 4.0, 0.05, -0.01, 0.11, 0.24, 0.25, -0.03, 0.01).keep
+    assert not KeepDecision("9 combined", 4.0, 0.05, 0.01, 0.09, 0.26, 0.25, -0.01, 0.03).keep
+
+
+def test_a_fog_free_baseline_is_never_kept():
+    assert not KeepDecision("9 combined", 4.0, 0.05, 0.01, 0.09, 0.24, np.nan, np.nan, np.nan).keep
+
+
+def test_winner_threshold_is_chosen_on_selection_cases_only(tmp_path):
+    data, selection, held_out = split_season(tmp_path)
+    winner = ("5 texture none", {"texture": "none"})
+    _, decision = held_out_comparison(data, selection, held_out, TEST_PARAMS, winner, STATIONS_CFG, START)
+    expected, _ = matched_value(value_scores(*selection_grid(data, selection, {"texture": "none"})), 0.28)
+    assert decision.winner == "5 texture none"
+    assert decision.value == expected
+
+
+def test_held_out_cases_do_not_move_the_winner_threshold(tmp_path):
+    data, selection, held_out = split_season(tmp_path)
+    args = (data, selection, held_out, RULE_AT_4_K, WINNER, STATIONS_CFG, START)
+    _, decision = held_out_comparison(*args)
+    held_out["truth_fls"] = 1 - held_out["truth_fls"]
+    _, flipped = held_out_comparison(*args)
+    assert flipped.value == decision.value
+
+
+def test_the_baseline_is_the_configured_rule_at_its_threshold(tmp_path):
+    data, selection, held_out = split_season(tmp_path)
+    table, _ = held_out_comparison(data, selection, held_out, RULE_AT_4_K, WINNER, STATIONS_CFG, START)
+    baseline = table[(table["rule"] == "baseline") & (table["part"] == "held_out")].iloc[0]
+    grid = variant_grid(data, held_out, RULE_AT_4_K, np.array([4.0]))
+    expected = value_scores(grid, held_out, pd.Series(True, index=held_out.index)).iloc[0]
+    assert baseline[expected.index].tolist() == expected.tolist()
+
+
+def test_an_emissivity_baseline_is_scored_at_its_emissivity_threshold(tmp_path):
+    emissivity = dataclasses.replace(TEST_PARAMS, fog_index="emissivity", emissivity_max=0.9)
+    table, _ = compare(tmp_path, params=emissivity, winner=("7 emissivity", {}))
+    assert table.loc[table["rule"] == "baseline", "value"].unique().tolist() == [0.9]
+
+
+def test_an_emissivity_baseline_needs_its_threshold(tmp_path):
+    emissivity = dataclasses.replace(TEST_PARAMS, fog_index="emissivity")
+    with pytest.raises(ValueError, match="labels.emissivity_max"):
+        compare(tmp_path, params=emissivity)
+
+
+def test_the_table_scores_both_rules_on_every_part_of_the_held_out_set(tmp_path):
+    table, _ = compare(tmp_path)
+    assert table.columns[:2].tolist() == ["rule", "part"]
+    assert table[["rule", "part"]].values.tolist() == [
+        [rule, part] for rule in ("baseline", "winner") for part in HELD_OUT_PARTS
+    ]
+    for _, scores in table.groupby("rule"):
+        n_cases = scores.set_index("part")["n_cases"]
+        assert n_cases["held_out"] == n_cases[["nights", "stations", "both"]].sum() == 36
+        assert (n_cases > 0).all()
+
+
+def test_pod_gain_is_the_winner_minus_the_baseline_on_the_whole_held_out_set(tmp_path):
+    table, decision = compare(tmp_path)
+    whole = table[table["part"] == "held_out"].set_index("rule")
+    assert decision.pod_gain == pytest.approx(whole.loc["winner", "pod"] - whole.loc["baseline", "pod"])
+    assert decision.pod_gain > 0
+    assert decision.pod_gain_low <= decision.pod_gain <= decision.pod_gain_high
+    assert decision.far_winner == whole.loc["winner", "far"]
+    assert decision.far_baseline == whole.loc["baseline", "far"]
+
+
+def test_intervals_come_from_a_paired_bootstrap_over_the_held_out_night_blocks(tmp_path):
+    data, selection, held_out = split_season(tmp_path)
+    _, decision = held_out_comparison(data, selection, held_out, RULE_AT_4_K, WINNER, STATIONS_CFG, START)
+    everything = pd.Series(True, index=held_out.index)
+    winner_params = dataclasses.replace(RULE_AT_4_K, uncertainty_band=0.25)
+    winner_grid = variant_grid(data, held_out, winner_params, np.array([decision.value]))
+    baseline_grid = variant_grid(data, held_out, RULE_AT_4_K, np.array([4.0]))
+    winner = block_counts(winner_grid, held_out, decision.value, everything, START, 1)
+    baseline = block_counts(baseline_grid, held_out, 4.0, everything, START, 1)
+    assert len(winner) == 3
+    samples, seed = STATIONS_CFG["bootstrap_samples"], STATIONS_CFG["seed"]
+    assert (decision.pod_gain_low, decision.pod_gain_high) == paired_difference(
+        winner, baseline, "pod", samples, seed
+    )
+    assert (decision.far_difference_low, decision.far_difference_high) == paired_difference(
+        winner, baseline, "far", samples, seed
+    )
+
+
+def test_an_unreachable_far_on_the_selection_cases_is_logged(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger="fogseg"):
+        compare(tmp_path, winner=("5 texture none", {"texture": "none"}))
+    assert "5 texture none" in caplog.text and "selection" in caplog.text
+
+
+def test_an_empty_held_out_set_is_an_error(tmp_path):
+    data, selection, held_out = split_season(tmp_path)
+    with pytest.raises(ValueError, match="held-out"):
+        held_out_comparison(data, selection, held_out.iloc[:0], RULE_AT_4_K, WINNER, STATIONS_CFG, START)
+
+
+def test_the_config_changes_name_the_options_and_the_threshold_key():
+    assert config_changes(TEST_PARAMS, {"texture": "none"}, 4.5) == {
+        "labels.texture": "none",
+        "labels.btd_fixed": 4.5,
+    }
+    assert config_changes(TEST_PARAMS, {"fog_index": "emissivity"}, 0.9) == {
+        "labels.fog_index": "emissivity",
+        "labels.emissivity_max": 0.9,
+    }
+    emissivity = dataclasses.replace(TEST_PARAMS, fog_index="emissivity")
+    assert config_changes(emissivity, {}, 0.9) == {"labels.emissivity_max": 0.9}
+
+
+def run_held_out(tmp_path) -> dict:
+    cfg = experiment_config(tmp_path)
+    cmd_experiment(experiment_args(cfg))
+    cmd_experiment(experiment_args(cfg, held_out=True))
+    return cfg
+
+
+def test_held_out_runs_once(tmp_path):
+    cfg = run_held_out(tmp_path)
+    with pytest.raises(FileExistsError, match="once"):
+        cmd_experiment(experiment_args(cfg, held_out=True))
+
+
+def test_held_out_needs_the_cross_validation_first(tmp_path):
+    with pytest.raises(FileNotFoundError, match="experiment --phase B"):
+        cmd_experiment(experiment_args(experiment_config(tmp_path), held_out=True))
+
+
+def test_held_out_refuses_the_test_season(tmp_path):
+    with pytest.raises(PermissionError):
+        cmd_experiment(experiment_args(experiment_config(tmp_path), season="2024-25", held_out=True))
+
+
+def test_the_second_opening_is_refused_before_any_labelling(tmp_path):
+    cfg = run_held_out(tmp_path)
+    shutil.rmtree(cfg["data"]["processed_path"])
+    with pytest.raises(FileExistsError, match="once"):
+        cmd_experiment(experiment_args(cfg, held_out=True))
+
+
+def test_held_out_writes_the_comparison_and_logs_the_decision(tmp_path, caplog):
+    cfg = experiment_config(tmp_path)
+    cmd_experiment(experiment_args(cfg))
+    with caplog.at_level(logging.INFO, logger="fogseg"):
+        cmd_experiment(experiment_args(cfg, held_out=True))
+    table = pd.read_csv(tmp_path / "stations" / "experiment_B_held_out.csv")
+    assert table[["rule", "part"]].values.tolist() == [
+        [rule, part] for rule in ("baseline", "winner") for part in HELD_OUT_PARTS
+    ]
+    assert "1 baseline" in caplog.text and "POD gain" in caplog.text
+
+
+def test_the_winner_and_its_options_come_from_the_cross_validation_table(tmp_path, monkeypatch):
+    cfg = experiment_config(tmp_path)
+    cmd_experiment(experiment_args(cfg))
+    path = tmp_path / "stations" / "experiment_B.csv"
+    table = pd.read_csv(path)
+    table.loc[(table["variant"] == "5 texture none") & (table["fold"] == "pooled"), "pod"] = 2.0
+    table.to_csv(path, index=False)
+    chosen = []
+
+    def comparison(*args):
+        chosen.append(args[4])
+        raise StopIteration
+
+    monkeypatch.setattr("fogseg.experiment.held_out_comparison", comparison)
+    with pytest.raises(StopIteration):
+        cmd_experiment(experiment_args(cfg, held_out=True))
+    assert chosen == [("5 texture none", {"texture": "none"})]
+
+
+def test_a_kept_winner_logs_the_config_keys_to_set(tmp_path, caplog, monkeypatch):
+    cfg = experiment_config(tmp_path)
+    cmd_experiment(experiment_args(cfg))
+    kept = KeepDecision("1 baseline", 4.5, 0.1, 0.05, 0.15, 0.2, 0.3, -0.2, 0.0)
+    monkeypatch.setattr("fogseg.experiment.held_out_comparison", lambda *args: (pd.DataFrame(), kept))
+    with caplog.at_level(logging.INFO, logger="fogseg"):
+        cmd_experiment(experiment_args(cfg, held_out=True))
+    assert "labels.btd_fixed" in caplog.text and "4.5" in caplog.text
+
+
+def test_a_failed_comparison_does_not_open_the_held_out_set(tmp_path, monkeypatch):
+    cfg = experiment_config(tmp_path)
+    cmd_experiment(experiment_args(cfg))
+
+    def fail(*args):
+        raise ValueError("no fog")
+
+    with monkeypatch.context() as patched:
+        patched.setattr("fogseg.experiment.held_out_comparison", fail)
+        with pytest.raises(ValueError, match="no fog"):
+            cmd_experiment(experiment_args(cfg, held_out=True))
+    assert not (tmp_path / "stations" / "experiment_B_held_out.csv").exists()
+
+
+def test_held_out_cases_do_not_change_the_cross_validation(tmp_path):
+    cfg = experiment_config(tmp_path)
+    cmd_experiment(experiment_args(cfg))
+    path = tmp_path / "stations" / "experiment_B.csv"
+    before = path.read_text(encoding="utf-8")
+
+    case_path = tmp_path / "stations" / "cases_fixed_2023-24.csv"
+    cases = pd.read_csv(case_path)
+    held_out_rows = (cases["night"] == "2023-11-22") | (cases["lon"] == CELL_C[0])
+    cases.loc[held_out_rows, "truth_fls"] = 1 - cases.loc[held_out_rows, "truth_fls"]
+    cases.to_csv(case_path, index=False)
+    cmd_experiment(experiment_args(cfg))
+
+    assert path.read_text(encoding="utf-8") == before
