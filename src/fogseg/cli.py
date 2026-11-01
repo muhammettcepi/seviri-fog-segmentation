@@ -211,15 +211,19 @@ def cmd_stations(args: argparse.Namespace) -> None:
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
+    import pandas as pd
     import xarray as xr
 
+    from fogseg.dem import read_dem
     from fogseg.dynamic_threshold import DynamicParams
     from fogseg.label_store import label_store_path, stored_params
+    from fogseg.splits import assign_folds, splits_path
     from fogseg.validation import (
         check_season_allowed,
         observation_paths,
         read_observations,
         score_table,
+        season_bounds,
         season_cases,
     )
 
@@ -230,6 +234,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
 
     data_dir = Path(stations_cfg["data_dir"])
     observations = read_observations(data_dir)
+    dem = read_dem(Path(cfg["dem"]["out_path"]))
 
     store_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
     with (
@@ -238,7 +243,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
     ):
         # The hidden test must use the thresholds the labels were made with, even after a config edit.
         params, _ = stored_params(labels.attrs, DynamicParams.from_config(labels_cfg["dynamic"]))
-        cases = season_cases(data, labels, observations, cfg, args.season, params)
+        cases = season_cases(data, labels, observations, cfg, args.season, params, dem)
 
     if cases.empty:
         log.warning(
@@ -247,9 +252,14 @@ def cmd_validate(args: argparse.Namespace) -> None:
             ", ".join(str(path) for path in observation_paths(data_dir)),
         )
 
-    scores = score_table(
-        cases, stations_cfg["lat_bands"], stations_cfg["bootstrap_samples"], stations_cfg["seed"]
-    )
+    split_path = splits_path(data_dir, args.season)
+    if args.season == stations_cfg["tune_season"] and split_path.exists():
+        season_start = season_bounds(cfg, args.season)[0].astype("datetime64[D]")
+        cases = assign_folds(
+            cases, pd.read_csv(split_path), season_start, cfg["region"]["bbox"], stations_cfg
+        )
+
+    scores = score_table(cases, stations_cfg, stations_cfg["bootstrap_samples"], stations_cfg["seed"])
     cases_path = data_dir / f"cases_{mode}_{args.season}.csv"
     scores_path = data_dir / f"scores_{mode}_{args.season}.csv"
     cases.to_csv(cases_path, index=False)
@@ -266,6 +276,14 @@ def cmd_validate(args: argparse.Namespace) -> None:
         main["csi"],
         main["bias"],
     )
+    log.info("Full count, all cases: POD %.3f, FAR %.3f", main["pod_full"], main["far_full"])
+    held_out = scores[(scores["view"] == "split") & (scores["group"] == "held_out")]
+    if not held_out.empty:
+        log.info(
+            "Full count, held-out cases: POD %.3f, FAR %.3f",
+            held_out["pod_full"].iloc[0],
+            held_out["far_full"].iloc[0],
+        )
     log.info("Wrote %s and %s", cases_path, scores_path)
 
 
