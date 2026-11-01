@@ -229,6 +229,12 @@ held-out set of nights and stations, and with the **full count**, in which an ig
 miss. By that count the fixed 4.0 K labels have POD 0.43 and FAR 0.25 on the held-out cases (0.40 and 0.28 on all
 cases).
 
+The `labels` section also has options for other versions of the rule: `texture` (the smoothness test, or none),
+`fog_index` (the BTD or the 3.9 µm emissivity index), `split_window` (`fixed` or the KMA line) and `temporal_relax`
+(a near miss next to fog in the slot before or after becomes fog). Their defaults give the rule above. The best
+combination (no smoothness test, the emissivity index at 0.80, a 0.5 K relax) gained 0.04 POD at a lower FAR on the
+held-out cases, but the 95 % interval of the gain reached below zero, so it did not replace the default.
+
 ### Limitations
 
 - **Weak labels are not ground truth.** They come from a rule on satellite data. Against stations they
@@ -294,4 +300,5 @@ fogseg era5                  # era5_ceu.zarr (needs ~/.cdsapirc)
 fogseg split                 # held-out nights and stations of the training season, once
 fogseg validate --season 2023-24
 fogseg diagnose              # why visible fog is missed, selection cases only
+fogseg experiment --phase B  # label variants, cross-validated on the selection cases
 ```

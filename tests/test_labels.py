@@ -3,7 +3,7 @@ import warnings
 
 import numpy as np
 import pytest
-from helpers import TEST_PARAMS
+from helpers import BASE_FIELDS, TEST_PARAMS
 
 from fogseg.config import load_config
 from fogseg.labels import (
@@ -11,12 +11,19 @@ from fogseg.labels import (
     IGNORE,
     NO_FOG,
     OBSCURED,
+    TEXTURES,
     LabelParams,
+    emissivity_39,
+    emissivity_btd_threshold,
     histogram_pixels,
+    label_night,
     label_scene,
+    local_mad,
     local_std,
     small_blobs,
+    texture_ok,
     trusted_mask,
+    warm_and_not_cirrus,
 )
 
 
@@ -192,3 +199,248 @@ def test_small_fog_island_in_a_scene_is_ignored():
     sza = np.full((8, 8), 120.0)
     labels = label_scene(ir039, ir108, ir120, sza, 2.5, TEST_PARAMS)
     assert labels[1, 2] == IGNORE and labels[5, 3] == FOG and labels[3, 3] == NO_FOG
+
+
+def scene_arrays() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """An 8 x 12 night scene with every label value: a fog deck, a borderline strip, an island and more."""
+    ir108 = np.full((8, 12), 270.0)
+    ir039 = ir108 - 0.5
+    ir120 = ir108 - 0.5
+    sza = np.full((8, 12), 120.0)
+
+    ir039[2:5, 0:5] = ir108[2:5, 0:5] - 5.0  # fog deck of 15 pixels
+    ir039[7, 0:3] = ir108[7, 0:3] - 4.2  # BTD within the uncertainty band of 4.0 K
+    ir039[0, 8:10] = ir108[0, 8:10] - 5.0  # fog island of 2 pixels
+    ir108[0:3, 11] = 230.0  # cold top
+    ir039[0:3, 11] = ir108[0:3, 11] - 0.5
+    ir120[5, 8:10] = ir108[5, 8:10] - 3.0  # thin cirrus
+    ir108[6:8, 4:7] += np.array([[3.0, -3.0, 3.0], [-3.0, 3.0, -3.0]])  # rough top
+    ir039[6:8, 4:7] = ir108[6:8, 4:7] - 5.0
+    ir120[6:8, 4:7] = ir108[6:8, 4:7] - 0.5
+    ir039[6, 6] = np.nan  # missing channel
+    sza[7, 10:12] = 80.0  # daytime
+    return ir039, ir108, ir120, sza
+
+
+EXPECTED_LABELS = np.array(
+    [
+        [0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 2],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+        [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 2],
+        [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0],
+        [0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0],
+        [255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 255, 255],
+    ],
+    dtype=np.uint8,
+)
+
+
+def uniform_top_scene(ir108: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """A smooth 6 x 6 night scene with one IR_108 value and BTDs of 6.0, 2.0 and 4.3 K in column pairs."""
+    btd = np.tile(np.repeat([6.0, 2.0, 4.3], 2), (6, 1))
+    ir108_field = np.full((6, 6), ir108)
+    return ir108_field - btd, ir108_field, ir108_field - 0.5, np.full((6, 6), 120.0)
+
+
+def test_defaults_reproduce_the_labels():
+    ir039, ir108, ir120, sza = scene_arrays()
+    old_style = LabelParams(**{name: getattr(TEST_PARAMS, name) for name in BASE_FIELDS})
+    assert np.array_equal(label_scene(ir039, ir108, ir120, sza, 4.0, old_style), EXPECTED_LABELS)
+
+
+def test_from_config_without_the_new_keys_takes_the_defaults():
+    params = LabelParams.from_config({name: getattr(TEST_PARAMS, name) for name in BASE_FIELDS})
+    assert (params.texture, params.fog_index, params.emissivity_max) == ("ir108_std3", "btd", None)
+    assert (params.split_window, params.temporal_relax, params.temporal_max_dt108) == ("fixed", 0.0, 2.0)
+
+
+def test_unknown_option_names_the_allowed_values():
+    with pytest.raises(ValueError, match="ir108_mad5"):
+        dataclasses.replace(TEST_PARAMS, texture="sobel")
+
+
+def test_kma_split_window_follows_the_temperature():
+    ir108 = np.array([280.0, 280.0])
+    ir120 = ir108 - np.array([0.9, -0.2])  # expected split at 280 K is -0.268 K
+    fixed = warm_and_not_cirrus(ir108, ir120, TEST_PARAMS)
+    kma = warm_and_not_cirrus(ir108, ir120, dataclasses.replace(TEST_PARAMS, split_window="kma"))
+    assert fixed.tolist() == [True, True] and kma.tolist() == [False, True]
+
+
+def test_emissivity_threshold_is_the_btd_with_that_emissivity():
+    ir108 = np.array([270.0, 285.0])
+    emissivity = emissivity_39(ir108 - 4.0, ir108)
+    assert emissivity_btd_threshold(ir108, float(emissivity[0]))[0] == pytest.approx(4.0, abs=1e-6)
+    assert emissivity[1] > emissivity[0]  # the same BTD is a weaker signal on a warmer top
+
+
+def rough_field() -> np.ndarray:
+    """A 6 x 6 IR_108 checkerboard whose 3 x 3 standard deviation is about 3 K everywhere."""
+    rows, cols = np.indices((6, 6))
+    return 270.0 + 3.0 * np.where((rows + cols) % 2 == 0, 1.0, -1.0)
+
+
+LEFT_BLOB = (slice(2, 5), slice(1, 5))
+RIGHT_BLOB = (slice(2, 5), slice(8, 12))
+
+
+def two_blobs() -> tuple[np.ndarray, np.ndarray]:
+    """An IR_108 field and a region of two groups: a smooth one with a hot edge pixel and a rough one."""
+    rows, cols = np.indices((8, 14))
+    ir108 = np.full((8, 14), 270.0)
+    ir108[RIGHT_BLOB] = 270.0 + 3.0 * np.where((rows + cols) % 2 == 0, 1.0, -1.0)[RIGHT_BLOB]
+    ir108[2, 1] = 280.0
+    region = np.zeros((8, 14), dtype=bool)
+    region[LEFT_BLOB] = True
+    region[RIGHT_BLOB] = True
+    return ir108, region
+
+
+def test_mad5_ignores_one_hot_pixel_that_fails_std3():
+    ir108 = np.full((7, 7), 270.0)
+    ir108[3, 3] = 276.0
+    btd = np.full((7, 7), 5.0)
+    region = np.ones((7, 7), dtype=bool)
+    std3 = texture_ok(ir108, btd, region, TEST_PARAMS)
+    mad5 = texture_ok(ir108, btd, region, dataclasses.replace(TEST_PARAMS, texture="ir108_mad5"))
+    assert not std3[3, 3] and mad5.all()
+
+
+def test_btd_std3_looks_at_the_btd_not_ir108():
+    ir108 = rough_field()
+    btd = np.full(ir108.shape, 5.0)
+    params = dataclasses.replace(TEST_PARAMS, texture="btd_std3")
+    assert texture_ok(ir108, btd, np.ones(ir108.shape, dtype=bool), params).all()
+
+
+def test_blob_judges_each_group_by_its_median_spread():
+    ir108, region = two_blobs()
+    params = dataclasses.replace(TEST_PARAMS, texture="blob")
+    passed = texture_ok(ir108, np.zeros_like(ir108), region, params)
+    assert passed[LEFT_BLOB].all() and not passed[RIGHT_BLOB].any() and not passed[~region].any()
+
+
+def test_blob_texture_of_an_empty_region_fails_everywhere():
+    ir108 = rough_field()
+    params = dataclasses.replace(TEST_PARAMS, texture="blob")
+    assert not texture_ok(ir108, ir108, np.zeros(ir108.shape, dtype=bool), params).any()
+
+
+def test_no_texture_test_passes_everything():
+    params = dataclasses.replace(TEST_PARAMS, texture="none")
+    assert texture_ok(rough_field(), np.zeros((6, 6)), np.zeros((6, 6), dtype=bool), params).all()
+
+
+def test_local_mad_is_nan_wherever_a_missing_value_reaches_it(recwarn):
+    field = np.full((13, 13), 270.0)
+    field[6, 6] = np.nan
+    mad = local_mad(field)
+    assert np.isnan(mad[2:11, 2:11]).all() and np.isfinite(mad[0, 0]) and np.isfinite(mad[12, 12])
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
+
+
+def test_nan_channel_stays_ignored_under_every_texture(recwarn):
+    ir039, ir108, ir120, sza = scene_arrays()
+    ir108[2, 2] = np.nan
+    for texture in TEXTURES:
+        labels = label_scene(ir039, ir108, ir120, sza, 4.0, dataclasses.replace(TEST_PARAMS, texture=texture))
+        assert labels[2, 2] == IGNORE
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
+
+
+def test_emissivity_index_labels_like_the_btd_on_a_uniform_top():
+    ir039, ir108, ir120, sza = uniform_top_scene(ir108=280.0)
+    threshold = float(emissivity_39(np.array([276.0]), np.array([280.0]))[0])
+    params = dataclasses.replace(TEST_PARAMS, fog_index="emissivity")
+    emissivity_labels = label_scene(ir039, ir108, ir120, sza, threshold, params)
+    assert np.array_equal(emissivity_labels, label_scene(ir039, ir108, ir120, sza, 4.0, TEST_PARAMS))
+    assert set(emissivity_labels.ravel()) == {FOG, NO_FOG, IGNORE}
+
+
+def test_nan_channel_stays_ignored_under_the_emissivity_index(recwarn):
+    ir039, ir108, ir120, sza = scene_arrays()
+    ir108[2, 2] = np.nan
+    ir039[3, 3] = np.nan
+    params = dataclasses.replace(TEST_PARAMS, fog_index="emissivity")
+    labels = label_scene(ir039, ir108, ir120, sza, 0.85, params)
+    assert labels[2, 2] == IGNORE and labels[3, 3] == IGNORE
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
+
+
+def night_arrays(
+    btd: list[float], ir108: list[float]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """A night of 9 x 9 scenes of warm ground, each with a central 3 x 3 block of the given BTD and IR_108."""
+    n_scenes = len(btd)
+    ir108_night = np.full((n_scenes, 9, 9), 270.0)
+    ir039_night = ir108_night - 0.5
+    for s in range(n_scenes):
+        ir108_night[s, 3:6, 3:6] = ir108[s]
+        ir039_night[s, 3:6, 3:6] = ir108[s] - btd[s]
+    return ir039_night, ir108_night, ir108_night - 0.5, np.full((n_scenes, 9, 9), 120.0)
+
+
+def relaxed(temporal_relax: float) -> LabelParams:
+    return dataclasses.replace(TEST_PARAMS, temporal_relax=temporal_relax)
+
+
+def test_hysteresis_turns_a_near_miss_next_to_fog_into_fog():
+    night = night_arrays(btd=[5.0, 3.3, 3.3], ir108=[270.0, 270.5, 270.5])
+    labels = label_night(*night, np.full(3, 4.0), relaxed(1.0))
+    assert labels[:, 4, 4].tolist() == [FOG, FOG, NO_FOG]  # scene 2 only sees the strict label of scene 1
+
+
+def test_hysteresis_needs_a_steady_top():
+    night = night_arrays(btd=[5.0, 3.3], ir108=[270.0, 273.0])
+    labels = label_night(*night, np.full(2, 4.0), relaxed(1.0))
+    assert labels[1, 4, 4] == NO_FOG
+
+
+def test_no_relax_gives_the_scene_labels():
+    night = night_arrays(btd=[5.0, 3.7, 4.2], ir108=[270.0, 270.0, 270.0])
+    labels = label_night(*night, np.full(3, 4.0), TEST_PARAMS)
+    for s in range(3):
+        assert np.array_equal(labels[s], label_scene(*(a[s] for a in night), 4.0, TEST_PARAMS))
+
+
+def test_obscured_pixel_next_to_fog_stays_obscured():
+    night = night_arrays(btd=[5.0, 3.9], ir108=[270.0, 250.0])
+    labels = label_night(*night, np.full(2, 4.0), relaxed(0.5))
+    assert labels[1, 4, 4] == OBSCURED
+
+
+def test_neighbours_are_the_stored_scenes():
+    night = night_arrays(btd=[5.0, 3.7], ir108=[270.0, 270.0])  # e.g. 21:00 and 03:00, 00:00 missing
+    labels = label_night(*night, np.full(2, 4.0), relaxed(0.5))
+    assert labels[1, 4, 4] == FOG
+
+
+def test_hysteresis_also_looks_at_the_later_scene():
+    night = night_arrays(btd=[3.3, 5.0], ir108=[270.0, 270.0])
+    labels = label_night(*night, np.full(2, 4.0), relaxed(1.0))
+    assert labels[0, 4, 4] == FOG
+
+
+def test_rough_near_miss_next_to_fog_stays_not_fog():
+    ir039, ir108, ir120, sza = night_arrays(btd=[5.0, 3.3], ir108=[270.0, 270.0])
+    rows, cols = np.indices((3, 3))
+    bumps = 1.8 * np.where((rows + cols) % 2 == 0, 1.0, -1.0)  # rough, but still a steady top
+    for field in (ir039, ir108, ir120):
+        field[1, 3:6, 3:6] += bumps
+    labels = label_night(ir039, ir108, ir120, sza, np.full(2, 4.0), relaxed(1.0))
+    assert labels[1, 4, 4] == NO_FOG
+
+
+def test_btd_farther_below_the_threshold_than_the_relax_stays_not_fog():
+    night = night_arrays(btd=[5.0, 2.5], ir108=[270.0, 270.0])
+    labels = label_night(*night, np.full(2, 4.0), relaxed(1.0))
+    assert labels[1, 4, 4] == NO_FOG
+
+
+def test_untrusted_pixel_next_to_fog_stays_ignored():
+    ir039, ir108, ir120, sza = night_arrays(btd=[5.0, 3.3], ir108=[270.0, 270.0])
+    sza[1] = 80.0
+    labels = label_night(ir039, ir108, ir120, sza, np.full(2, 4.0), relaxed(1.0))
+    assert labels[1, 4, 4] == IGNORE

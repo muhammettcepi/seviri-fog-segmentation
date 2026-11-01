@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import logging
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -324,7 +325,7 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
 
     from fogseg.diagnosis import case_features, check_fixed_mode, diagnosis_table, read_selection_cases
     from fogseg.label_store import check_labels_match, label_store_path
-    from fogseg.labels import LabelParams
+    from fogseg.labels import LabelParams, check_default_rule
     from fogseg.splits import splits_path
     from fogseg.validation import season_start
 
@@ -356,8 +357,9 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
             stack.enter_context(xr.open_zarr(era5_path, consolidated=False)) if era5_path.exists() else None
         )
         check_labels_match(data, labels)
-        cases = case_features(data, labels, era5, cases)
         params = LabelParams.from_config(labels.attrs)
+        check_default_rule(params, "fogseg diagnose")
+        cases = case_features(data, labels, era5, cases)
 
     table = diagnosis_table(cases, params)
     out_path = data_dir / f"diagnosis_{season}.csv"
@@ -371,6 +373,139 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
         ", ".join(f"{row.variable} {row.fls_missed:.1%}" for row in shares.itertuples()),
     )
     log.info("Wrote %s", out_path)
+
+
+def held_out_paths(data_dir: Path) -> list[Path]:
+    """The table and the decision record of the held-out run: either one closes the held-out set."""
+    return [data_dir / "experiment_B_held_out.csv", data_dir / "experiment_B_held_out.json"]
+
+
+def write_atomically(path: Path, text: str) -> None:
+    """Write `text` to a `.part` file and move it into place, so a crash never leaves a partial `path`."""
+    part = path.with_name(f"{path.name}.part")
+    part.write_text(text, encoding="utf-8", newline="")
+    os.replace(part, path)
+
+
+def cmd_experiment(args: argparse.Namespace) -> None:
+    if args.held_out:
+        cmd_held_out(args)
+        return
+
+    import json
+
+    import pandas as pd
+    import xarray as xr
+
+    from fogseg.experiment import (
+        PHASE_B_VARIANTS,
+        combined_variants,
+        config_record,
+        experiment_cases,
+        log_winner,
+        run_variants,
+    )
+    from fogseg.labels import LabelParams
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "experimented on")
+
+    data_dir = Path(stations_cfg["data_dir"])
+    for path in held_out_paths(data_dir):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; a rerun would overwrite the record of the held-out result")
+    cases, _ = experiment_cases(cfg, season)
+
+    params = LabelParams.from_config(labels_cfg)
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        table = run_variants(data, cases, params, PHASE_B_VARIANTS, stations_cfg)
+        combined = combined_variants(
+            table, stations_cfg["temporal_relax_grid"], params.texture, params.fog_index
+        )
+        table = pd.concat(
+            [table, run_variants(data, cases, params, combined, stations_cfg)], ignore_index=True
+        )
+
+    out_path = data_dir / "experiment_B.csv"
+    table.to_csv(out_path, index=False)
+    record = config_record(season, labels_cfg["mode"], params, stations_cfg)
+    write_atomically(data_dir / "experiment_B_config.json", json.dumps(record, indent=2))
+
+    log_winner(table, stations_cfg["matched_far"])
+    log.info("Wrote %s", out_path)
+
+
+def cmd_held_out(args: argparse.Namespace) -> None:
+    import json
+
+    import pandas as pd
+    import xarray as xr
+
+    from fogseg.experiment import (
+        check_same_config,
+        config_record,
+        decision_record,
+        experiment_cases,
+        held_out_comparison,
+        winner,
+    )
+    from fogseg.labels import LabelParams
+    from fogseg.validation import season_start
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "experimented on")
+
+    data_dir = Path(stations_cfg["data_dir"])
+    table_path, record_path = held_out_paths(data_dir)
+    for path in (table_path, record_path):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; the held-out set is opened once per phase")
+    cv_path, config_path = data_dir / "experiment_B.csv", data_dir / "experiment_B_config.json"
+    for path in (cv_path, config_path):
+        if not path.exists():
+            raise FileNotFoundError(f"{path} not found; run `fogseg experiment --phase B` first")
+
+    params = LabelParams.from_config(labels_cfg)
+    recorded = json.loads(config_path.read_text(encoding="utf-8"))
+    check_same_config(recorded, config_record(season, labels_cfg["mode"], params, stations_cfg))
+    cv_table = pd.read_csv(cv_path)
+    best = winner(cv_table)
+    options = json.loads(cv_table.loc[cv_table["variant"] == best, "options"].iloc[0])
+
+    selection, held_out = experiment_cases(cfg, season)
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        table, decision = held_out_comparison(
+            data, selection, held_out, params, (best, options), stations_cfg, season_start(cfg, season)
+        )
+    record = decision_record(decision, params, options)
+
+    log.info("Held-out baseline: %s at %g", params.fog_index, record["baseline_threshold"])
+    log.info(
+        "Held-out, winner %s at %g: POD gain %+.3f (95%% interval %+.3f to %+.3f); "
+        "FAR %.3f against %.3f (difference %+.3f to %+.3f)",
+        decision.winner,
+        decision.value,
+        decision.pod_gain,
+        decision.pod_gain_low,
+        decision.pod_gain_high,
+        decision.far_winner,
+        decision.far_baseline,
+        decision.far_difference_low,
+        decision.far_difference_high,
+    )
+    if record["keep"]:
+        changes = ", ".join(f"{key}: {value}" for key, value in record["config_changes"].items())
+        log.info("Keep %s: set %s", decision.winner, changes)
+    else:
+        log.info("Do not keep %s: the labels stay as configured", decision.winner)
+
+    write_atomically(table_path, table.to_csv(index=False))
+    write_atomically(record_path, json.dumps(record, indent=2))
+    log.info("Wrote %s and %s", table_path, record_path)
 
 
 def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:
@@ -403,7 +538,7 @@ def cmd_tune(args: argparse.Namespace) -> None:
 
     from fogseg.dynamic_threshold import DynamicParams
     from fogseg.label_store import label_store_path
-    from fogseg.labels import LabelParams
+    from fogseg.labels import LabelParams, check_default_rule
     from fogseg.splits import read_splits, selection_cases, splits_path
     from fogseg.tuning import tune_parameter
     from fogseg.validation import (
@@ -420,6 +555,7 @@ def cmd_tune(args: argparse.Namespace) -> None:
     labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
     season = stations_cfg["tune_season"]
     params = LabelParams.from_config(labels_cfg)
+    check_default_rule(params, "fogseg tune")
     dynamic = DynamicParams.from_config(labels_cfg["dynamic"])
 
     data_dir = Path(stations_cfg["data_dir"])
@@ -681,6 +817,19 @@ def main() -> None:
     diagnose.add_argument("--config", default="configs/default.yaml")
     diagnose.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
     diagnose.set_defaults(func=cmd_diagnose)
+
+    experiment = sub.add_parser(
+        "experiment", help="compare label variants at a matched FAR, cross-validated on the tuning season"
+    )
+    experiment.add_argument("--config", default="configs/default.yaml")
+    experiment.add_argument("--phase", required=True, choices=["B"], help="the set of variants to compare")
+    experiment.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
+    experiment.add_argument(
+        "--held-out",
+        action="store_true",
+        help="score the winner of experiment_B.csv against the configured rule on the held-out cases, once",
+    )
+    experiment.set_defaults(func=cmd_experiment)
 
     tune = sub.add_parser(
         "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"
