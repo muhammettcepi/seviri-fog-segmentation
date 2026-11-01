@@ -443,6 +443,21 @@ def test_tune_warns_and_stops_when_no_case_matches(tmp_path, caplog):
     assert not list(data_dir.glob("tuning_*.csv"))
 
 
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("texture", "blob"), ("fog_index", "emissivity"), ("split_window", "kma"), ("temporal_relax", 0.5)],
+)
+def test_tune_refuses_a_label_rule_other_than_the_default(tmp_path, option, value):
+    args = tune_setup(tmp_path)
+    cfg = load_config(args.config)
+    cfg["labels"][option] = value
+    args.config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=rf"labels\.{option}.*default BTD rule"):
+        cmd_tune(args)
+    assert not list((tmp_path / "stations").glob("tuning_*.csv"))
+
+
 def test_tune_without_a_split_file_names_the_command(tmp_path):
     args = tune_setup(tmp_path)
     splits_path(tmp_path / "stations", "2023-24").unlink()

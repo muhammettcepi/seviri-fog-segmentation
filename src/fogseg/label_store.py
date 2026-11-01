@@ -71,7 +71,7 @@ def choose_threshold(
     params: LabelParams,
     dynamic: DynamicParams | None,
 ) -> ThresholdChoice:
-    """Threshold of one scene: the configured one in fixed mode, the clear-ground BTD peak plus an offset in dynamic mode."""
+    """The scene's threshold: configured (fixed mode) or the clear-ground BTD peak plus offset (dynamic)."""
     if mode == "fixed":
         fixed = params.emissivity_max if params.fog_index == "emissivity" else params.btd_fixed
         return ThresholdChoice(fixed, "fixed")

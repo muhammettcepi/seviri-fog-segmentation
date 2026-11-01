@@ -16,6 +16,7 @@ IGNORE = 255
 TEXTURES = ("ir108_std3", "btd_std3", "ir108_mad5", "blob", "none")
 FOG_INDICES = ("btd", "emissivity")
 SPLIT_WINDOWS = ("fixed", "kma")
+RULE_OPTIONS = ("texture", "fog_index", "split_window", "temporal_relax")
 
 # The IR_108 - IR_120 difference of a clear or low-cloud pixel grows with temperature along this line.
 KMA_INTERCEPT = -37.48
@@ -58,6 +59,15 @@ class LabelParams:
         """
         field_names = [field.name for field in dataclasses.fields(cls)]
         return cls(**{name: labels_cfg[name] for name in field_names if name in labels_cfg})
+
+
+def check_default_rule(params: LabelParams, command: str) -> None:
+    """Refuse labels with another rule than the default: the bands and grids of `command` are set for it."""
+    defaults = {field.name: field.default for field in dataclasses.fields(LabelParams)}
+    changed = [name for name in RULE_OPTIONS if getattr(params, name) != defaults[name]]
+    if changed:
+        options = ", ".join(f"labels.{name} is {getattr(params, name)!r}" for name in changed)
+        raise ValueError(f"{options}, but {command} has bands and grids defined for the default BTD rule")
 
 
 def trusted_mask(

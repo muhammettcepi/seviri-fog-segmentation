@@ -325,7 +325,7 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
 
     from fogseg.diagnosis import case_features, check_fixed_mode, diagnosis_table, read_selection_cases
     from fogseg.label_store import check_labels_match, label_store_path
-    from fogseg.labels import LabelParams
+    from fogseg.labels import LabelParams, check_default_rule
     from fogseg.splits import splits_path
     from fogseg.validation import season_start
 
@@ -357,8 +357,9 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
             stack.enter_context(xr.open_zarr(era5_path, consolidated=False)) if era5_path.exists() else None
         )
         check_labels_match(data, labels)
-        cases = case_features(data, labels, era5, cases)
         params = LabelParams.from_config(labels.attrs)
+        check_default_rule(params, "fogseg diagnose")
+        cases = case_features(data, labels, era5, cases)
 
     table = diagnosis_table(cases, params)
     out_path = data_dir / f"diagnosis_{season}.csv"
@@ -537,7 +538,7 @@ def cmd_tune(args: argparse.Namespace) -> None:
 
     from fogseg.dynamic_threshold import DynamicParams
     from fogseg.label_store import label_store_path
-    from fogseg.labels import LabelParams
+    from fogseg.labels import LabelParams, check_default_rule
     from fogseg.splits import read_splits, selection_cases, splits_path
     from fogseg.tuning import tune_parameter
     from fogseg.validation import (
@@ -554,6 +555,7 @@ def cmd_tune(args: argparse.Namespace) -> None:
     labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
     season = stations_cfg["tune_season"]
     params = LabelParams.from_config(labels_cfg)
+    check_default_rule(params, "fogseg tune")
     dynamic = DynamicParams.from_config(labels_cfg["dynamic"])
 
     data_dir = Path(stations_cfg["data_dir"])
