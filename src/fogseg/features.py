@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
+import xarray as xr
 
-from fogseg.labels import FOG, IGNORE, emissivity_39, local_std
+from fogseg.dem import read_dem
+from fogseg.era5 import ERA5_VARIABLES
+from fogseg.experiment import baseline_threshold
+from fogseg.labels import FOG, IGNORE, LabelParams, emissivity_39, label_night, local_std, trusted_mask
 from fogseg.parallax import EARTH_RADIUS_KM, SATELLITE_RADIUS_KM, unit_vector
+from fogseg.validation import night_of
 
 CHANNELS = ["IR_039", "WV_062", "WV_073", "IR_087", "IR_097", "IR_108", "IR_120", "IR_134"]
 
@@ -131,3 +138,111 @@ def night_feature_stack(
     for position, name in enumerate(names):
         stack[:, position] = features[name]
     return stack
+
+
+@dataclass(frozen=True)
+class NightFeatures:
+    """The features of one night's scenes with what the teacher needs to judge each pixel.
+
+    `has_era5` is False for a scene that the ERA5 store lacks, `trusted` marks the pixels that the rule can
+    label (all channels present, dark enough) and `rule_labels` are the rule's labels at its baseline
+    threshold.
+    """
+
+    stack: np.ndarray
+    has_era5: np.ndarray
+    trusted: np.ndarray
+    rule_labels: np.ndarray
+
+
+def read_static(data: xr.Dataset, dem_path: Path, groups: list[str]) -> StaticFields:
+    """The static fields of the dataset's grid; the DEM store is read only for `terrain`."""
+    lon, lat = data["lon"].values, data["lat"].values
+    elevation_mean = elevation_std = None
+    if "terrain" in groups:
+        dem = read_dem(dem_path)
+        if dem is None:
+            raise FileNotFoundError(f"{dem_path} is missing; run `fogseg dem` first")
+        elevation_mean, elevation_std = dem["elevation_mean"].values, dem["elevation_std"].values
+    return StaticFields(lat, satellite_zenith(lon, lat), elevation_mean, elevation_std)
+
+
+def open_era5(era5_path: Path, groups: list[str]) -> xr.Dataset | None:
+    """The ERA5 store, opened lazily; None if `groups` does not use it."""
+    if "era5" not in groups:
+        return None
+    if not era5_path.exists():
+        raise FileNotFoundError(f"{era5_path} is missing; run `fogseg era5` first")
+    return xr.open_zarr(era5_path, consolidated=False)
+
+
+def era5_fields(store: xr.Dataset, times: np.ndarray, shape: tuple[int, ...]) -> tuple[dict, np.ndarray]:
+    """The ERA5 fields at `times`, NaN for a time the store lacks, and whether the store has each time."""
+    position = pd.Index(store["time"].values).get_indexer(times)
+    has_era5 = position >= 0
+    fields = {name: np.full(shape, np.nan, dtype="float32") for name in ERA5_VARIABLES.values()}
+    if has_era5.any():
+        found = store[list(fields)].isel(time=position[has_era5]).load()
+        for name, values in fields.items():
+            values[has_era5] = found[name].values
+    return fields, has_era5
+
+
+def night_features(
+    data: xr.Dataset,
+    scenes: np.ndarray,
+    static: StaticFields,
+    era5_store: xr.Dataset | None,
+    params: LabelParams,
+    groups: list[str],
+) -> NightFeatures:
+    """Features, trust and rule labels of the dataset scenes `scenes`, which are one night in time order."""
+    night = data[["bt", "sza"]].isel(time=scenes).load()
+    bt = night["bt"].sel(channel=CHANNELS).values
+    sza = night["sza"].values
+    times = night["time"].values
+    ir039, ir108, ir120 = (bt[:, CHANNELS.index(channel)] for channel in ("IR_039", "IR_108", "IR_120"))
+
+    thresholds = np.full(len(scenes), baseline_threshold(params))
+    rule_labels = label_night(ir039, ir108, ir120, sza, thresholds, params)
+    trusted = trusted_mask(ir039, ir108, ir120, sza, params.night_min_sza)
+
+    era5, has_era5 = None, np.ones(len(scenes), dtype=bool)
+    if "era5" in groups:
+        era5, has_era5 = era5_fields(era5_store, times, ir108.shape)
+    stack = night_feature_stack(bt, times, static, era5, rule_labels, groups)
+    return NightFeatures(stack, has_era5, trusted, rule_labels)
+
+
+def case_features(
+    data: xr.Dataset,
+    cases: pd.DataFrame,
+    static: StaticFields,
+    era5_store: xr.Dataset | None,
+    params: LabelParams,
+    groups: list[str],
+) -> pd.DataFrame:
+    """The features at each case's pixel, then `has_era5` and `trusted`; each case night is read once."""
+    times = data["time"].values
+    scene = pd.Index(times).get_indexer(cases["scene_time"])
+    if (scene < 0).any():
+        missing = cases["scene_time"].to_numpy()[scene < 0]
+        raise ValueError(f"{len(missing)} case scenes are not in the dataset, the first is {missing[0]}")
+
+    names = feature_names(groups)
+    values = np.full((len(cases), len(names)), np.nan, dtype="float32")
+    has_era5 = np.zeros(len(cases), dtype=bool)
+    trusted = np.zeros(len(cases), dtype=bool)
+    iy, ix = cases["iy"].to_numpy(), cases["ix"].to_numpy()
+    case_night, dataset_night = night_of(times[scene]), night_of(times)
+    for night in np.unique(case_night):
+        in_night = np.flatnonzero(dataset_night == night)
+        rows = np.flatnonzero(case_night == night)
+        slot = np.searchsorted(in_night, scene[rows])
+        result = night_features(data, in_night, static, era5_store, params, groups)
+        values[rows] = result.stack[slot, :, iy[rows], ix[rows]]
+        has_era5[rows] = result.has_era5[slot]
+        trusted[rows] = result.trusted[slot, iy[rows], ix[rows]]
+
+    table = pd.DataFrame(values, index=cases.index, columns=names)
+    return table.assign(has_era5=has_era5, trusted=trusted)

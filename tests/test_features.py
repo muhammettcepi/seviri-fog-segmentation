@@ -1,16 +1,26 @@
 import numpy as np
+import pandas as pd
 import pytest
+import xarray as xr
+from helpers import TEST_PARAMS, add_station_grid
+from test_experiment import tiny_season
 
 from fogseg.features import (
     CHANNELS,
     FEATURE_GROUPS,
     StaticFields,
+    case_features,
     feature_names,
     hours_after_21,
     night_feature_stack,
+    night_features,
+    open_era5,
+    read_static,
     satellite_zenith,
 )
+from fogseg.label_store import LABEL_CHANNELS
 from fogseg.labels import FOG, IGNORE, emissivity_39
+from fogseg.validation import night_of
 
 ALL_GROUPS = list(FEATURE_GROUPS)
 
@@ -124,3 +134,102 @@ def test_pixel_missing_in_every_scene_has_no_night_maximum_and_no_warning(recwar
     assert np.isnan(stack[:, 1, 1, 2]).all()
     assert not np.isnan(stack[:, 1, 0, 0]).any()
     assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
+
+
+def tiny_teacher_season(tmp_path) -> tuple[xr.Dataset, pd.DataFrame, StaticFields]:
+    """`tiny_season` with all eight channels and a lon / lat grid, and its `read_static` fields."""
+    season, cases = tiny_season(tmp_path)
+    bt = season["bt"].load().reindex(channel=CHANNELS)
+    for index, channel in enumerate(CHANNELS):
+        if channel not in LABEL_CHANNELS:
+            bt.loc[{"channel": channel}] = 265.0 + index
+    data = add_station_grid(xr.Dataset({"bt": bt, "sza": season["sza"].load()}))
+    return data, cases, read_static(data, tmp_path / "no_dem.zarr", ["bt"])
+
+
+def era5_store_without(data: xr.Dataset, time: np.datetime64) -> xr.Dataset:
+    """An ERA5 store with every scene of `data` but the one at `time`."""
+    kept = data.isel(time=data["time"].values != time)
+    shape = (kept.sizes["time"], kept.sizes["y"], kept.sizes["x"])
+    fields = {"t2m": 275.0, "skt": 273.0, "d2m": 272.0, "sd": 0.1}
+    return xr.Dataset(
+        {
+            name: (("time", "y", "x"), np.full(shape, value, dtype="float32"))
+            for name, value in fields.items()
+        },
+        coords={"time": kept["time"].values},
+    )
+
+
+def test_case_features_match_the_night_stack(tmp_path):
+    data, cases, static = tiny_teacher_season(tmp_path)
+    groups = ["bt", "differences", "time", "rule"]
+    table = case_features(data, cases, static, None, TEST_PARAMS, groups)
+    night = np.flatnonzero(night_of(data["time"].values) == cases.loc[1, "night"])
+    stack = night_features(data, night, static, None, TEST_PARAMS, groups).stack
+    slot = list(data["time"].values[night]).index(cases.loc[1, "scene_time"])
+    expected = stack[slot, :, cases.loc[1, "iy"], cases.loc[1, "ix"]]
+    assert table.columns.tolist() == feature_names(groups) + ["has_era5", "trusted"]
+    assert table.index.tolist() == cases.index.tolist()
+    assert np.allclose(table.loc[1, feature_names(groups)].to_numpy(float), expected, equal_nan=True)
+
+
+def test_night_features_carry_trust_and_rule_labels_without_the_rule_group(tmp_path):
+    data, _, static = tiny_teacher_season(tmp_path)
+    night = np.array([0, 1])
+    result = night_features(data, night, static, None, TEST_PARAMS, ["bt"])
+    assert result.stack.shape == (2, len(CHANNELS), 8, 10)
+    assert result.has_era5.tolist() == [True, True]
+    assert result.trusted.shape == result.rule_labels.shape == (2, 8, 10)
+    assert result.trusted.all()
+    assert result.rule_labels[0, 2, 2] == FOG and result.rule_labels[0, 7, 9] != FOG
+
+
+def test_scene_missing_from_era5_gives_nan_and_no_era5(tmp_path):
+    data, cases, static = tiny_teacher_season(tmp_path)
+    era5 = era5_store_without(data, cases.loc[0, "scene_time"])
+    table = case_features(data, cases, static, era5, TEST_PARAMS, ["bt", "era5"])
+    assert not table.loc[0, "has_era5"] and np.isnan(table.loc[0, "t2m_minus_ir108"])
+    assert table.loc[1, "has_era5"] and np.isfinite(table.loc[1, "t2m_minus_ir108"])
+    assert table.loc[2, "has_era5"]
+
+
+def test_case_pixel_without_ir108_is_untrusted_and_has_nan_differences(tmp_path):
+    data, cases, static = tiny_teacher_season(tmp_path)
+    scene = list(data["time"].values).index(cases.loc[0, "scene_time"])
+    data["bt"][scene, CHANNELS.index("IR_108"), cases.loc[0, "iy"], cases.loc[0, "ix"]] = np.nan
+    table = case_features(data, cases, static, None, TEST_PARAMS, ["differences"])
+    assert table["trusted"].tolist() == [False, True, True]
+    assert np.isnan(table.loc[0, "d108_039"]) and np.isfinite(table.loc[1, "d108_039"])
+
+
+def test_read_static_takes_the_grid_geometry_and_the_dem_when_asked(tmp_path):
+    data, _, _ = tiny_teacher_season(tmp_path)
+    elevation = np.arange(80, dtype="float32").reshape(8, 10)
+    dem = xr.Dataset(
+        {"elevation_mean": (("y", "x"), elevation), "elevation_std": (("y", "x"), elevation / 2)}
+    )
+    dem.to_zarr(tmp_path / "dem.zarr", zarr_format=3, consolidated=False)
+    flat = read_static(data, tmp_path / "dem.zarr", ["geometry"])
+    hilly = read_static(data, tmp_path / "dem.zarr", ["terrain"])
+    assert flat.elevation_mean is None and flat.elevation_std is None
+    assert np.array_equal(flat.latitude, data["lat"].values)
+    assert flat.satellite_zenith.shape == (8, 10)
+    assert np.array_equal(hilly.elevation_mean, elevation)
+    assert np.array_equal(hilly.elevation_std, elevation / 2)
+
+
+def test_missing_stores_name_their_command(tmp_path):
+    data, _, _ = tiny_teacher_season(tmp_path)
+    with pytest.raises(FileNotFoundError, match="fogseg dem"):
+        read_static(data, tmp_path / "no_dem.zarr", ["terrain"])
+    with pytest.raises(FileNotFoundError, match="fogseg era5"):
+        open_era5(tmp_path / "no_era5.zarr", ["era5"])
+    assert open_era5(tmp_path / "no_era5.zarr", ["bt"]) is None
+
+
+def test_case_of_a_missing_scene_is_an_error(tmp_path):
+    data, cases, static = tiny_teacher_season(tmp_path)
+    cases.loc[0, "scene_time"] = pd.Timestamp("2030-01-01T21:00")
+    with pytest.raises(ValueError, match="not in the dataset"):
+        case_features(data, cases, static, None, TEST_PARAMS, ["bt"])
