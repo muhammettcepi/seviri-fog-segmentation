@@ -1,22 +1,35 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
+from helpers import TEST_PARAMS, label_scenes
 
+from fogseg.build import variable_length_strings
 from fogseg.experiment import (
     GRID_COLUMNS,
     block_counts,
     cross_validate,
     matched_value,
     scored_cases,
+    value_grid,
     value_scores,
+    variant_grid,
 )
-from fogseg.validation import read_case_table
+from fogseg.label_store import LABEL_CHANNELS
+from fogseg.labels import FOG, IGNORE, label_night, label_scene
+from fogseg.validation import night_of, read_case_table
 
 SEASON_START = np.datetime64("2023-10-01")
+FIRST_SLOT = np.datetime64("2023-11-20T21:00", "ns")
+SLOT = np.timedelta64(3, "h")
+NEAR_MISS_BTD = 3.7
+SCENE_OF_CASE_1 = 3
+SLOT_OF_CASE_1 = 1
 
 
 def small_cases(truth, nights=None, hidden=None) -> pd.DataFrame:
@@ -161,6 +174,83 @@ def test_block_counts_has_one_row_per_night_block_in_order():
 
     assert counts.tolist() == [[1, 0, 1, 0], [0, 1, 0, 1]]
     assert without_first.tolist() == [[0, 0, 1, 0], [0, 1, 0, 1]]
+
+
+def tiny_season(tmp_path) -> tuple[xr.Dataset, pd.DataFrame]:
+    """Two nights of two scenes (21:00 and 00:00) and three cases.
+
+    The fog patch of the last scene is a near miss at a threshold of 4 K (BTD `NEAR_MISS_BTD`), next to the
+    full fog patch of the scene before it.
+    """
+    dataset = label_scenes(4, None, background_btd=1.8)
+    night_starts = FIRST_SLOT + np.arange(2) * np.timedelta64(1, "D")
+    dataset["time"] = (night_starts[:, None] + np.arange(2) * SLOT).ravel()
+    dataset["bt"][SCENE_OF_CASE_1, 0, :5, :5] = 270.0 - NEAR_MISS_BTD
+    path = tmp_path / "season.zarr"
+    variable_length_strings(dataset).to_zarr(path, mode="w", zarr_format=3, consolidated=False)
+
+    scenes = dataset["time"].values[[0, SCENE_OF_CASE_1, 1]]
+    cases = pd.DataFrame(
+        {"scene_time": scenes, "night": night_of(scenes), "iy": [2, 2, 7], "ix": [2, 2, 9], "case": [0, 1, 2]}
+    )
+    return xr.open_zarr(path, consolidated=False), cases
+
+
+def night_inputs(data: xr.Dataset, night: np.datetime64) -> tuple[np.ndarray, ...]:
+    """IR_039, IR_108, IR_120 and sza of the stored scenes of one night."""
+    scenes = data.isel(time=night_of(data["time"].values) == night)
+    bt = scenes["bt"].sel(channel=LABEL_CHANNELS).values
+    return bt[:, 0], bt[:, 1], bt[:, 2], scenes["sza"].values
+
+
+def scene_inputs(data: xr.Dataset, time: np.datetime64) -> tuple[np.ndarray, ...]:
+    """IR_039, IR_108, IR_120 and sza of one stored scene."""
+    scene = data.sel(time=time)
+    bt = scene["bt"].sel(channel=LABEL_CHANNELS).values
+    return bt[0], bt[1], bt[2], scene["sza"].values
+
+
+def test_value_grid_follows_the_fog_index():
+    stations = {"btd_fixed_grid": [3.0, 4.0, 0.5], "emissivity_grid": [0.90, 1.00, 0.05]}
+    emissivity = dataclasses.replace(TEST_PARAMS, fog_index="emissivity", emissivity_max=0.9)
+    assert value_grid(TEST_PARAMS, stations).tolist() == [3.0, 3.5, 4.0]
+    assert value_grid(emissivity, stations).tolist() == [0.9, 0.95, 1.0]
+
+
+def test_variant_grid_without_relax_is_the_scene_label(tmp_path):
+    data, cases = tiny_season(tmp_path)
+    grid = variant_grid(data, cases, TEST_PARAMS, np.array([3.5, 4.5]))
+    assert grid.columns.tolist() == GRID_COLUMNS
+    assert len(grid) == 2 * len(cases)
+    for value in (3.5, 4.5):
+        scene_labels = label_scene(*scene_inputs(data, cases.loc[0, "scene_time"]), value, TEST_PARAMS)
+        row = grid[(grid["case"] == 0) & (grid["value"] == value)]
+        assert row["label"].item() == scene_labels[cases.loc[0, "iy"], cases.loc[0, "ix"]]
+
+
+def test_variant_grid_relabels_whole_nights(tmp_path):
+    data, cases = tiny_season(tmp_path)
+    params = dataclasses.replace(TEST_PARAMS, temporal_relax=0.5)
+    grid = variant_grid(data, cases, params, np.array([4.0]))
+    iy, ix = cases.loc[1, "iy"], cases.loc[1, "ix"]
+    night = label_night(*night_inputs(data, cases.loc[1, "night"]), np.full(2, 4.0), params)
+    scene = label_scene(*scene_inputs(data, cases.loc[1, "scene_time"]), 4.0, params)
+    assert scene[iy, ix] == IGNORE and night[SLOT_OF_CASE_1, iy, ix] == FOG
+    assert grid.loc[grid["case"] == 1, "label"].item() == FOG
+
+
+def test_variant_grid_keeps_the_case_numbers_of_its_input(tmp_path):
+    data, cases = tiny_season(tmp_path)
+    cases["case"] = [7, 5, 6]
+    grid = variant_grid(data, cases, TEST_PARAMS, np.array([4.0]))
+    assert sorted(grid["case"]) == [5, 6, 7]
+
+
+def test_case_of_a_missing_scene_is_an_error(tmp_path):
+    data, cases = tiny_season(tmp_path)
+    cases.loc[0, "scene_time"] = pd.Timestamp("2030-01-01T21:00")
+    with pytest.raises(ValueError, match="not in the dataset"):
+        variant_grid(data, cases, TEST_PARAMS, np.array([4.0]))
 
 
 def test_read_case_table_names_the_command_that_writes_it(tmp_path):

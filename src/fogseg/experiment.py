@@ -6,10 +6,14 @@ import logging
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 
+from fogseg.label_store import LABEL_CHANNELS
+from fogseg.labels import LabelParams, label_night
 from fogseg.scores import COUNT_NAMES, contingency, counts_by_night, skill
 from fogseg.splits import cv_folds, night_block_start
-from fogseg.validation import TRUTH_NO, TRUTH_YES
+from fogseg.tuning import grid_values
+from fogseg.validation import TRUTH_NO, TRUTH_YES, night_of
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +27,47 @@ def scored_cases(cases: pd.DataFrame) -> pd.DataFrame:
     is_scored = ~cases["hidden"] & cases["truth_fls"].isin((TRUTH_NO, TRUTH_YES))
     scored = cases[is_scored].reset_index(drop=True)
     return scored.assign(case=np.arange(len(scored)))
+
+
+def value_grid(params: LabelParams, stations_cfg: dict) -> np.ndarray:
+    """The thresholds a variant is tried at: the BTD grid, or the emissivity grid for the emissivity index."""
+    name = "emissivity_grid" if params.fog_index == "emissivity" else "btd_fixed_grid"
+    return grid_values(stations_cfg[name])
+
+
+def variant_grid(
+    data: xr.Dataset,
+    cases: pd.DataFrame,
+    params: LabelParams,
+    values: np.ndarray,
+) -> pd.DataFrame:
+    """The label of every case at every value, from labelling the whole night of the case with that value.
+
+    Each night with a case is read once. All its stored scenes get the same threshold, so that the
+    temporal relaxation sees the neighbouring scenes as the label store does.
+    """
+    times = data["time"].values
+    scene = pd.Index(times).get_indexer(cases["scene_time"])
+    if (scene < 0).any():
+        missing = cases["scene_time"].to_numpy()[scene < 0]
+        raise ValueError(f"{len(missing)} case scenes are not in the dataset, the first is {missing[0]}")
+
+    case_night = night_of(times[scene])
+    dataset_night = night_of(times)
+    parts = []
+    for night in np.unique(case_night):
+        in_night = np.flatnonzero(dataset_night == night)
+        scenes = data.isel(time=in_night)
+        ir039, ir108, ir120 = np.moveaxis(scenes["bt"].sel(channel=LABEL_CHANNELS).values, 1, 0)
+        sza = scenes["sza"].values
+
+        of_night = cases[case_night == night]
+        slot = np.searchsorted(in_night, scene[case_night == night])
+        for value in values:
+            labels = label_night(ir039, ir108, ir120, sza, np.full(len(in_night), value), params)
+            picked = labels[slot, of_night["iy"].to_numpy(), of_night["ix"].to_numpy()]
+            parts.append(pd.DataFrame({"value": value, "case": of_night["case"].to_numpy(), "label": picked}))
+    return pd.concat(parts, ignore_index=True).sort_values(["value", "case"], ignore_index=True)[GRID_COLUMNS]
 
 
 def score_columns(counts: np.ndarray) -> dict:
