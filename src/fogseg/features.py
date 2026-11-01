@@ -177,14 +177,21 @@ def open_era5(era5_path: Path, groups: list[str]) -> xr.Dataset | None:
 
 
 def era5_fields(store: xr.Dataset, times: np.ndarray, shape: tuple[int, ...]) -> tuple[dict, np.ndarray]:
-    """The ERA5 fields at `times`, NaN for a time the store lacks, and whether the store has each time."""
+    """The ERA5 fields at `times` and whether each scene has them.
+
+    A scene has ERA5 if its time is in the store and every variable has a finite value in it; the store
+    writes NaN fields for a scene whose month file or hour is missing. Other scenes get NaN fields.
+    """
     position = pd.Index(store["time"].values).get_indexer(times)
-    has_era5 = position >= 0
+    in_store = position >= 0
     fields = {name: np.full(shape, np.nan, dtype="float32") for name in ERA5_VARIABLES.values()}
-    if has_era5.any():
-        found = store[list(fields)].isel(time=position[has_era5]).load()
+    has_era5 = np.zeros(len(times), dtype=bool)
+    if in_store.any():
+        found = store[list(fields)].isel(time=position[in_store]).load()
+        has_data = [np.isfinite(found[name].values).any(axis=(1, 2)) for name in fields]
+        has_era5[in_store] = np.all(has_data, axis=0)
         for name, values in fields.items():
-            values[has_era5] = found[name].values
+            values[has_era5] = found[name].values[has_era5[in_store]]
     return fields, has_era5
 
 

@@ -23,6 +23,8 @@ from fogseg.labels import FOG, IGNORE, emissivity_39
 from fogseg.validation import night_of
 
 ALL_GROUPS = list(FEATURE_GROUPS)
+SCENE_OF_CASE_1, SCENE_OF_CASE_2 = 3, 1
+IR_108 = 270.0  # the flat IR_108 of the scenes of `tiny_season`
 
 
 def night_inputs():
@@ -147,17 +149,26 @@ def tiny_teacher_season(tmp_path) -> tuple[xr.Dataset, pd.DataFrame, StaticField
     return data, cases, read_static(data, tmp_path / "no_dem.zarr", ["bt"])
 
 
-def era5_store_without(data: xr.Dataset, time: np.datetime64) -> xr.Dataset:
-    """An ERA5 store with every scene of `data` but the one at `time`."""
-    kept = data.isel(time=data["time"].values != time)
-    shape = (kept.sizes["time"], kept.sizes["y"], kept.sizes["x"])
+def era5_store(
+    data: xr.Dataset, without: np.datetime64 | None = None, nan_at: np.datetime64 | None = None
+) -> xr.Dataset:
+    """An ERA5 store with every scene of `data` but `without`, all NaN at `nan_at` like a missing hour.
+
+    Every field is flat within a scene and grows with the scene's position in `data`.
+    """
+    times = data["time"].values
+    kept = np.flatnonzero(times != without)
+    shape = (len(kept), data.sizes["y"], data.sizes["x"])
     fields = {"t2m": 275.0, "skt": 273.0, "d2m": 272.0, "sd": 0.1}
+    values = {
+        name: np.broadcast_to((base + kept)[:, None, None], shape).astype("float32")
+        for name, base in fields.items()
+    }
+    for field in values.values():
+        field[times[kept] == nan_at] = np.nan
     return xr.Dataset(
-        {
-            name: (("time", "y", "x"), np.full(shape, value, dtype="float32"))
-            for name, value in fields.items()
-        },
-        coords={"time": kept["time"].values},
+        {name: (("time", "y", "x"), field) for name, field in values.items()},
+        coords={"time": times[kept]},
     )
 
 
@@ -187,11 +198,33 @@ def test_night_features_carry_trust_and_rule_labels_without_the_rule_group(tmp_p
 
 def test_scene_missing_from_era5_gives_nan_and_no_era5(tmp_path):
     data, cases, static = tiny_teacher_season(tmp_path)
-    era5 = era5_store_without(data, cases.loc[0, "scene_time"])
+    era5 = era5_store(data, without=cases.loc[0, "scene_time"])
     table = case_features(data, cases, static, era5, TEST_PARAMS, ["bt", "era5"])
     assert not table.loc[0, "has_era5"] and np.isnan(table.loc[0, "t2m_minus_ir108"])
-    assert table.loc[1, "has_era5"] and np.isfinite(table.loc[1, "t2m_minus_ir108"])
-    assert table.loc[2, "has_era5"]
+    assert table.loc[1, "has_era5"] and table.loc[2, "has_era5"]
+    assert table.loc[1, "t2m_minus_ir108"] == pytest.approx(275.0 + SCENE_OF_CASE_1 - IR_108)
+    assert table.loc[2, "t2m_minus_ir108"] == pytest.approx(275.0 + SCENE_OF_CASE_2 - IR_108)
+    assert table.loc[1, "snow_depth"] == pytest.approx(0.1 + SCENE_OF_CASE_1)
+
+
+def test_scene_with_nan_filled_era5_fields_has_no_era5(tmp_path):
+    data, cases, static = tiny_teacher_season(tmp_path)
+    era5 = era5_store(data, nan_at=cases.loc[0, "scene_time"])
+    table = case_features(data, cases, static, era5, TEST_PARAMS, ["bt", "era5"])
+    era5_columns = FEATURE_GROUPS["era5"]
+    assert table["has_era5"].tolist() == [False, True, True]
+    assert table.loc[0, era5_columns].isna().all()
+    assert table.loc[2, "t2m_minus_ir108"] == pytest.approx(275.0 + SCENE_OF_CASE_2 - IR_108)
+    assert table.loc[2, "t2m_minus_d2m"] == pytest.approx(3.0)
+
+
+def test_scene_with_one_empty_era5_variable_has_no_era5(tmp_path):
+    data, cases, static = tiny_teacher_season(tmp_path)
+    era5 = era5_store(data)
+    era5["sd"].loc[{"time": cases.loc[0, "scene_time"]}] = np.nan
+    table = case_features(data, cases, static, era5, TEST_PARAMS, ["era5"])
+    assert table["has_era5"].tolist() == [False, True, True]
+    assert table.loc[0, FEATURE_GROUPS["era5"]].isna().all()
 
 
 def test_case_pixel_without_ir108_is_untrusted_and_has_nan_differences(tmp_path):
