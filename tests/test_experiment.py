@@ -114,6 +114,7 @@ def test_each_fold_chooses_on_its_training_part():
     assert table.loc[1, "value"] == 3.0 and table.loc[2, "value"] == 4.0
     folds = table.drop(index="pooled")
     assert table.loc["pooled", "hits"] == folds["hits"].sum()
+    assert folds["hits"].dtype.kind == "i" and folds["n_cases"].dtype.kind == "i"
 
 
 def test_the_pooled_row_scores_the_summed_test_counts():
@@ -127,12 +128,14 @@ def test_the_pooled_row_scores_the_summed_test_counts():
     assert pooled["matched"]
 
 
-def test_held_out_cases_never_enter_the_cross_validation():
+@pytest.mark.parametrize("fold_column", ["night_fold", "station_fold"])
+def test_held_out_cases_never_enter_the_cross_validation(fold_column):
     cases, grid = two_value_grid()
-    cases.loc[0, "night_fold"] = 5
+    fog_free_in_fold_4 = (cases["night_fold"] == 4) & (cases["truth_fls"] == 0)
+    cases.loc[fog_free_in_fold_4, fold_column] = 5
     base = cross_validate(grid, cases, 5, 0.28)
 
-    grid.loc[grid["case"] == 0, "label"] = 1  # would add a false alarm at both values if it were used
+    grid.loc[grid["case"].isin(cases.index[fog_free_in_fold_4]), "label"] = 1  # false alarms at both values
 
     assert cross_validate(grid, cases, 5, 0.28).equals(base)
 

@@ -1,4 +1,4 @@
-"""Compare label variants at a matched false-alarm ratio: the value is chosen on training folds, scored on test folds."""
+"""Compare label variants at a matched false-alarm ratio: chosen on training folds, scored on test folds."""
 
 from __future__ import annotations
 
@@ -19,14 +19,14 @@ CV_COLUMNS = ["fold", "value", "matched", *SCORE_COLUMNS[1:]]
 
 
 def scored_cases(cases: pd.DataFrame) -> pd.DataFrame:
-    """The cases that are scored: not hidden and with a defined truth, numbered `case` 0..n-1 in a fresh index."""
+    """The cases that are scored: not hidden, truth defined; `case` numbers them 0..n-1 in a fresh index."""
     is_scored = ~cases["hidden"] & cases["truth_fls"].isin((TRUTH_NO, TRUTH_YES))
     scored = cases[is_scored].reset_index(drop=True)
     return scored.assign(case=np.arange(len(scored)))
 
 
 def score_columns(counts: np.ndarray) -> dict:
-    """The counts of one row with their POD, FAR, CSI and case count, as in `SCORE_COLUMNS` without the value."""
+    """The counts with their POD, FAR, CSI and case count: `SCORE_COLUMNS` without the value."""
     scores = skill(counts)
     return {
         **dict(zip(COUNT_NAMES, counts.tolist(), strict=True)),
@@ -67,7 +67,7 @@ def matched_value(scores: pd.DataFrame, far_target: float) -> tuple[float, bool]
 
 
 def cross_validate(grid: pd.DataFrame, cases: pd.DataFrame, n_folds: int, far_target: float) -> pd.DataFrame:
-    """Per fold the value matched on the training part and its scores on the test part, then the pooled test folds.
+    """Per fold the value matched on the training part and its test scores, then the pooled test folds.
 
     Cases of the held-out fold are in no training or test part.
     """
@@ -82,9 +82,9 @@ def cross_validate(grid: pd.DataFrame, cases: pd.DataFrame, n_folds: int, far_ta
                 value,
             )
         at_value = grid[grid["value"] == value]
-        scores = value_scores(at_value, cases, test).iloc[0]
-        test_counts.append(scores[list(COUNT_NAMES)].to_numpy(dtype=int))
-        rows.append({"fold": fold, "matched": matched, **scores.to_dict()})
+        scores = value_scores(at_value, cases, test).to_dict("records")[0]
+        test_counts.append([scores[name] for name in COUNT_NAMES])
+        rows.append({"fold": fold, "matched": matched, **scores})
     pooled = {
         "fold": "pooled",
         "value": np.nan,
@@ -102,7 +102,7 @@ def block_counts(
     season_start: np.datetime64,
     block_days: int,
 ) -> np.ndarray:
-    """Full-count counts of one value per night block over the cases where `mask` is true, shape (n_blocks, 4)."""
+    """Full-count counts of one value per night block over the cases in `mask`, shape (n_blocks, 4)."""
     in_mask = mask.to_numpy()
     block = night_block_start(cases["night"].to_numpy(), season_start, block_days)
     at_value = grid[grid["value"] == value]
