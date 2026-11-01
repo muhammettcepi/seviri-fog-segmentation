@@ -3,7 +3,7 @@ import warnings
 
 import numpy as np
 import pytest
-from helpers import TEST_PARAMS
+from helpers import BASE_FIELDS, TEST_PARAMS
 
 from fogseg.config import load_config
 from fogseg.labels import (
@@ -234,16 +234,6 @@ EXPECTED_LABELS = np.array(
         [255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 255, 255],
     ],
     dtype=np.uint8,
-)
-
-BASE_FIELDS = (
-    "night_min_sza",
-    "btd_fixed",
-    "warm_min_bt108",
-    "cirrus_max_split",
-    "smooth_max_std",
-    "uncertainty_band",
-    "min_blob_pixels",
 )
 
 
