@@ -187,18 +187,20 @@ Computed from the stores on the 304 scenes of each season (a night belongs to th
 starts, so the morning slots after midnight count with the night before). "Mean fog fraction" is the
 mean over scenes of `fog_fraction`, "mean ignore fraction" the mean of `ignore_fraction`.
 
-| Mode | Season | Mean fog fraction | Mean ignore fraction | Dynamic threshold | Fallback to 4.0 K |
-|---|---|---|---|---|---|
-| fixed | 2023-24 (training) | 0.1250 | 0.1464 | – | – |
-| fixed | 2024-25 (test) | 0.2369 | 0.1619 | – | – |
-| dynamic | 2023-24 (training) | 0.0614 | 0.0904 | 293 scenes | 11 scenes |
-| dynamic | 2024-25 (test) | 0.1470 | 0.1194 | 288 scenes | 16 scenes |
+| Mode | Season | Mean fog fraction | Mean ignore fraction | Mean obscured fraction | Dynamic threshold | Fallback to 4.0 K |
+|---|---|---|---|---|---|---|
+| fixed | 2023-24 (training) | 0.2574 | 0.1464 | 0.4639 | – | – |
+| fixed | 2024-25 (test) | 0.3614 | 0.1619 | 0.3248 | – | – |
+| dynamic | 2023-24 (training) | 0.1159 | 0.0904 | 0.4639 | 293 scenes | 11 scenes |
+| dynamic | 2024-25 (test) | 0.2116 | 0.1194 | 0.3248 | 288 scenes | 16 scenes |
 
 In the training season the dynamic threshold has a median of 5.1 K (middle half 4.6 to 5.4 K,
 range 3.5 to 5.9 K; [btd_exploration](notes/btd_exploration.md)), so the dynamic labels mark much
-less fog than the fixed 4.0 K. Fog is a minority class: the mean fog fraction is about 13 % of the
-decided pixels in the training season and about 24 % in the test season (fixed labels), so the class
-balance differs between the two. The ignore fraction is higher with 4.0 K than it was with 5.0 K
+less fog than the fixed 4.0 K. Almost half of the pixels in the training season are obscured (`2`), the same in both
+modes, since the obscured tests do not depend on the threshold. The fog fraction counts only the decided pixels (`0`
+and `1`); with the obscured pixels out of that count it is about 26 % in the training season and 36 % in the test
+season (fixed labels), so the class balance differs between the two. Before the obscured class, when those pixels
+were `0`, the same labels gave 13 % and 24 %. The ignore fraction is higher with 4.0 K than it was with 5.0 K
 (0.146 against 0.096 in the training season), because the 0.5 K band on either side of the threshold now lies where many
 pixels are. The test-season numbers describe the labels only; nothing was tuned on them.
 
@@ -221,6 +223,11 @@ visibility is below 1 km or a broken or overcast deck has its base below 1 km. F
 The threshold was chosen on the Heidke and Peirce skill scores. CSI alone peaks at 3.5 K (0.44), but at 3.5 K far more
 clear ground is labelled fog. The test season scores higher because it had more widespread low stratus and less fog
 under high cloud, not because the labels changed; the details are in the note.
+
+Work on better labels ([`docs/notes/better_labels.md`](notes/better_labels.md)) scores the training season on a
+held-out set of nights and stations, and with the **full count**, in which an ignored or obscured pixel under a fog
+report is a miss. By that count the fixed 4.0 K labels have POD 0.43 and FAR 0.26 on the held-out cases (0.41 and
+0.28 on all cases).
 
 ### Limitations
 
@@ -259,6 +266,21 @@ under high cloud, not because the labels changed; the details are in the note.
 - **Not redistributed.** The data are EUMETSAT data used under the EUMETSAT data licence; this
   repository contains the code to rebuild the dataset, not the data itself.
 
+## Auxiliary data
+
+Two stores on the same grid, used to check and later to improve the labels; neither goes into the labels yet.
+
+| Store | Command | Source | Content |
+|---|---|---|---|
+| `dem_ceu.zarr` | `fogseg dem` | Copernicus DEM GLO-90, public AWS bucket `copernicus-dem-90m` | `elevation_mean`, `elevation_std` per pixel (m), from the 90 m tiles inside each pixel |
+| `era5_ceu.zarr` | `fogseg era5` | ERA5 hourly single levels, Copernicus Climate Data Store | 2 m temperature, skin temperature, 2 m dewpoint, snow depth at each scene time, bilinear to the grid |
+
+- Copernicus DEM: © DLR e.V. 2010–2014 and © Airbus Defence and Space GmbH 2014–2018, provided under COPERNICUS by
+  the European Union and ESA; all rights reserved. GLO-90 is free to use under its licence.
+- ERA5: contains modified Copernicus Climate Change Service information. Downloading needs a free CDS account, the
+  dataset licence accepted on its CDS page, and the key in `~/.cdsapirc`; the code never reads or prints the key.
+- ERA5 has 0.25° cells (about 20 × 28 km here), coarse for valley fog. It is a feature, not truth.
+
 ## Reproduce
 
 ```bash
@@ -267,5 +289,9 @@ fogseg build                 # ~1-3 min
 fogseg label --mode fixed    # labels_fixed.zarr
 fogseg label --mode dynamic  # labels_dynamic.zarr
 fogseg stations              # station reports for the check; SYNOP takes many hours (Ogimet rate limit)
+fogseg dem                   # dem_ceu.zarr, ~3 min
+fogseg era5                  # era5_ceu.zarr (needs ~/.cdsapirc)
+fogseg split                 # held-out nights and stations of the training season, once
 fogseg validate --season 2023-24
+fogseg diagnose              # why visible fog is missed, selection cases only
 ```
