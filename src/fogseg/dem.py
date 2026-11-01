@@ -19,6 +19,8 @@ import rasterio
 import xarray as xr
 from scipy.spatial import cKDTree
 
+from fogseg.parallax import unit_vector
+
 log = logging.getLogger("fogseg")
 
 TILE_URL = "https://copernicus-dem-90m.s3.amazonaws.com/{name}/{name}.tif"
@@ -90,14 +92,6 @@ def tile_samples(path: Path, factor: int = BLOCK_FACTOR) -> tuple[np.ndarray, np
     return lon.ravel(), lat.ravel(), blocks.mean(axis=(1, 3)).ravel()
 
 
-def unit_vectors(lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
-    """Points on the unit sphere, one row per coordinate pair."""
-    lon_rad, lat_rad = np.radians(np.ravel(lon)), np.radians(np.ravel(lat))
-    return np.column_stack(
-        [np.cos(lat_rad) * np.cos(lon_rad), np.cos(lat_rad) * np.sin(lon_rad), np.sin(lat_rad)]
-    )
-
-
 def grid_statistics(
     sample_lon: np.ndarray,
     sample_lat: np.ndarray,
@@ -109,9 +103,11 @@ def grid_statistics(
 
     Samples farther from every pixel than the pixel spacing lie outside the grid and are dropped.
     """
-    pixels = cKDTree(unit_vectors(lon, lat))
+    pixels = cKDTree(unit_vector(np.ravel(lon), np.ravel(lat)))
     spacing = pixels.query(pixels.data, k=2)[0][:, 1].max()
-    _, nearest = pixels.query(unit_vectors(sample_lon, sample_lat), distance_upper_bound=spacing)
+    _, nearest = pixels.query(
+        unit_vector(np.ravel(sample_lon), np.ravel(sample_lat)), distance_upper_bound=spacing
+    )
     inside = nearest < pixels.n
     nearest, elevation = nearest[inside], np.asarray(sample_elevation, dtype="float64")[inside]
 

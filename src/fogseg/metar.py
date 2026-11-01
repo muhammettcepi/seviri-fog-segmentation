@@ -51,9 +51,9 @@ def prevailing_visibility_m(metar: str) -> float:
 def ceiling_m(metar: str) -> float:
     """Base in m of the first (lowest) BKN, OVC or VV layer of the main body.
 
-    Infinite when the body reports cloud but no such layer. NaN when the base is `///`, when a layer of
-    unknown amount (`//////`) is reported and no known BKN, OVC or VV layer comes first, or when the body
-    has no cloud information.
+    A layer of unknown amount (`//////`) does not hide such a layer, wherever it stands. Infinite when the
+    body reports cloud but no such layer. NaN when the base is `///`, when the body has a layer of unknown
+    amount and no such layer, or when it has no cloud information.
     """
     layer = _ceiling_layer(metar)
     if layer is not None:

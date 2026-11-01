@@ -223,8 +223,8 @@ def cmd_validate(args: argparse.Namespace) -> None:
         observation_paths,
         read_observations,
         score_table,
-        season_bounds,
         season_cases,
+        season_start,
     )
 
     cfg = load_config(args.config)
@@ -253,11 +253,13 @@ def cmd_validate(args: argparse.Namespace) -> None:
         )
 
     split_path = splits_path(data_dir, args.season)
-    if args.season == stations_cfg["tune_season"] and split_path.exists():
-        season_start = season_bounds(cfg, args.season)[0].astype("datetime64[D]")
-        cases = assign_folds(
-            cases, pd.read_csv(split_path), season_start, cfg["region"]["bbox"], stations_cfg
-        )
+    if args.season == stations_cfg["tune_season"]:
+        if split_path.exists():
+            splits = pd.read_csv(split_path)
+            start = season_start(cfg, args.season)
+            cases = assign_folds(cases, splits, start, cfg["region"]["bbox"], stations_cfg)
+        else:
+            log.info("%s not found, so the cases get no folds; run `fogseg split` first", split_path)
 
     scores = score_table(cases, stations_cfg, stations_cfg["bootstrap_samples"], stations_cfg["seed"])
     cases_path = data_dir / f"cases_{mode}_{args.season}.csv"
@@ -296,9 +298,8 @@ def require_tune_season(stations_cfg: dict, season: str, verb: str) -> None:
 
 
 def cmd_split(args: argparse.Namespace) -> None:
-    import numpy as np
-
     from fogseg.splits import make_splits, splits_path
+    from fogseg.validation import season_days
 
     cfg = load_config(args.config)
     stations_cfg = cfg["stations"]
@@ -309,13 +310,8 @@ def cmd_split(args: argparse.Namespace) -> None:
     if out_path.exists() and not args.overwrite:
         raise FileExistsError(f"{out_path} exists and fixes the folds; use --overwrite to redraw them")
 
-    entry = next(entry for entry in cfg["time"]["seasons"] if entry["name"] == season)
-    splits = make_splits(
-        np.datetime64(entry["start"], "D"),
-        np.datetime64(entry["end"], "D"),
-        cfg["region"]["bbox"],
-        stations_cfg,
-    )
+    first_day, last_day = season_days(cfg, season)
+    splits = make_splits(first_day, last_day, cfg["region"]["bbox"], stations_cfg)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     splits.to_csv(out_path, index=False)
     log.info("Wrote %d night blocks and station cells to %s", len(splits), out_path)
@@ -326,11 +322,11 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
 
     import xarray as xr
 
-    from fogseg.diagnosis import case_features, diagnosis_table, read_selection_cases
+    from fogseg.diagnosis import case_features, check_fixed_mode, diagnosis_table, read_selection_cases
     from fogseg.label_store import check_labels_match, label_store_path
     from fogseg.labels import LabelParams
     from fogseg.splits import splits_path
-    from fogseg.validation import season_bounds
+    from fogseg.validation import season_start
 
     cfg = load_config(args.config)
     labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
@@ -338,11 +334,12 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     require_tune_season(stations_cfg, season, "diagnosed")
 
     mode = labels_cfg["mode"]
+    check_fixed_mode(mode)
     data_dir = Path(stations_cfg["data_dir"])
     cases = read_selection_cases(
         data_dir / f"cases_{mode}_{season}.csv",
         splits_path(data_dir, season),
-        season_bounds(cfg, season)[0].astype("datetime64[D]"),
+        season_start(cfg, season),
         cfg["region"]["bbox"],
         stations_cfg,
     )
@@ -407,6 +404,7 @@ def cmd_tune(args: argparse.Namespace) -> None:
     from fogseg.dynamic_threshold import DynamicParams
     from fogseg.label_store import label_store_path
     from fogseg.labels import LabelParams
+    from fogseg.splits import read_splits, selection_cases, splits_path
     from fogseg.tuning import tune_parameter
     from fogseg.validation import (
         TRUTH_NO,
@@ -415,6 +413,7 @@ def cmd_tune(args: argparse.Namespace) -> None:
         observation_paths,
         read_observations,
         season_cases,
+        season_start,
     )
 
     cfg = load_config(args.config)
@@ -424,6 +423,8 @@ def cmd_tune(args: argparse.Namespace) -> None:
     dynamic = DynamicParams.from_config(labels_cfg["dynamic"])
 
     data_dir = Path(stations_cfg["data_dir"])
+    split_path = splits_path(data_dir, season)
+    splits = read_splits(split_path)
     observations = read_observations(data_dir)
 
     store_path = label_store_path(Path(labels_cfg["output_dir"]), "dynamic")
@@ -431,13 +432,21 @@ def cmd_tune(args: argparse.Namespace) -> None:
         xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
         xr.open_zarr(store_path, consolidated=False) as labels,
     ):
-        cases = deduplicate(season_cases(data, labels, observations, cfg, season, params))
+        # Only the selection cases choose: the held-out fold never reaches the tuning
+        cases = selection_cases(
+            deduplicate(season_cases(data, labels, observations, cfg, season, params)),
+            splits,
+            season_start(cfg, season),
+            cfg["region"]["bbox"],
+            stations_cfg,
+        )
         cases = cases[cases["truth_fls"].isin([TRUTH_NO, TRUTH_YES]) & ~cases["hidden"]]
         if cases.empty:
             log.warning(
-                "No station observation with a known truth matches a scene of season %s; check %s",
+                "No selection case with a known truth in season %s; check %s and %s",
                 season,
                 ", ".join(str(path) for path in observation_paths(data_dir)),
+                split_path,
             )
             return
 

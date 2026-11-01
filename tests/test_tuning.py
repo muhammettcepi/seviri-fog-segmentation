@@ -3,6 +3,7 @@
 import argparse
 import dataclasses
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -29,7 +30,9 @@ from fogseg.cli import cmd_tune
 from fogseg.config import load_config
 from fogseg.dynamic_threshold import scene_threshold
 from fogseg.label_store import label_dataset, label_store_path
+from fogseg.splits import make_splits, splits_path, station_cell
 from fogseg.tuning import Decision, decide, grid_labels, grid_values
+from fogseg.validation import season_days
 
 # 80 pixels only: the clear background alone is 47. The clamp is wide so no offset of the grid is cut.
 PLANTED_DYNAMIC = dataclasses.replace(TEST_DYNAMIC, min_pixels=20, clamp=(2.0, 6.0))
@@ -329,13 +332,31 @@ def write_observations(tmp_path, visibilities: dict[str, float]) -> None:
     pd.DataFrame(rows).to_csv(data_dir / "observations_metar.csv", index=False)
 
 
+def write_splits(args: argparse.Namespace, held_out_stations: tuple[str, ...] = ()) -> None:
+    """The split file of the tuning season: every case is selection but those of `held_out_stations`."""
+    cfg = load_config(args.config)
+    stations_cfg, bbox = cfg["stations"], cfg["region"]["bbox"]
+    splits = make_splits(*season_days(cfg, "2023-24"), bbox, stations_cfg).assign(fold=1)
+    pixels = [STATION_PIXELS[station][0] for station in held_out_stations]
+    held_out_cells = station_cell(
+        [GRID_LON0 + 0.1 * pixel[1] for pixel in pixels],
+        [GRID_LAT0 - 0.1 * pixel[0] for pixel in pixels],
+        bbox,
+        stations_cfg["station_cell_deg"],
+    )
+    splits.loc[splits["key"].isin(held_out_cells), "fold"] = stations_cfg["n_folds"]
+    splits.to_csv(splits_path(Path(stations_cfg["data_dir"]), "2023-24"), index=False)
+
+
 def tune_setup(tmp_path, offset: float = 4.0) -> argparse.Namespace:
     dataset_path = make_planted_dataset(tmp_path / "data.zarr")
     params = PLANTED_PARAMS
     dynamic = dataclasses.replace(PLANTED_DYNAMIC, offset=offset)
     label_dataset(dataset_path, label_store_path(tmp_path / "labels", "dynamic"), "dynamic", params, dynamic)
     write_observations(tmp_path, {"FOG": 500.0, "STRIP": 9999.0, "CLEAR": 9999.0})
-    return tune_config(tmp_path, dataset_path, offset)
+    args = tune_config(tmp_path, dataset_path, offset)
+    write_splits(args)
+    return args
 
 
 def test_tune_writes_three_tables_and_logs_each_decision(tmp_path, caplog):
@@ -420,3 +441,32 @@ def test_tune_warns_and_stops_when_no_case_matches(tmp_path, caplog):
 
     assert "2023-24" in caplog.text
     assert not list(data_dir.glob("tuning_*.csv"))
+
+
+def test_tune_without_a_split_file_names_the_command(tmp_path):
+    args = tune_setup(tmp_path)
+    splits_path(tmp_path / "stations", "2023-24").unlink()
+
+    with pytest.raises(FileNotFoundError, match="fogseg split"):
+        cmd_tune(args)
+    assert not list((tmp_path / "stations").glob("tuning_*.csv"))
+
+
+def test_tune_never_sees_the_held_out_cases(tmp_path, monkeypatch):
+    args = tune_setup(tmp_path)
+    cfg = load_config(args.config)
+    cfg["stations"]["station_cell_deg"] = 0.25  # one cell per station
+    args.config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    write_splits(args, held_out_stations=("FOG",))
+    tuned_stations = set()
+
+    def recording_tune_parameter(data, cases, *rest):
+        tuned_stations.update(cases["station"])
+        return original_tune_parameter(data, cases, *rest)
+
+    original_tune_parameter = tuning.tune_parameter
+    monkeypatch.setattr(tuning, "tune_parameter", recording_tune_parameter)
+
+    cmd_tune(args)
+
+    assert tuned_stations == {"STRIP", "CLEAR"}

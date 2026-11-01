@@ -14,7 +14,7 @@ import xarray as xr
 from fogseg.label_store import check_labels_match
 from fogseg.labels import IGNORE, LabelParams
 from fogseg.metar import CEILING_AMOUNTS
-from fogseg.parallax import apparent_position
+from fogseg.parallax import EARTH_RADIUS_KM, apparent_position
 from fogseg.scores import counts_by_night, score_summary
 from fogseg.splits import held_out_part
 
@@ -23,7 +23,6 @@ log = logging.getLogger("fogseg")
 SPEC_PATH = "docs/superpowers/specs/2026-10-28-station-validation-design.md"
 SOURCES = ("metar", "synop")
 TRUTH_YES, TRUTH_NO, TRUTH_UNDEFINED = 1, 0, -1
-EARTH_RADIUS_KM = 6371.0
 STATION_COLUMNS = ["station", "source", "lat", "lon", "elevation_m"]
 CASE_COLUMNS = [
     "scene_time",
@@ -253,14 +252,23 @@ def station_cases(
     return cases[CASE_COLUMNS]
 
 
-def season_bounds(cfg: dict, season: str) -> tuple[np.datetime64, np.datetime64]:
-    """Noon of a season's first day to noon after its last, so each night keeps its 00:00 to 05:00 slots."""
+def season_days(cfg: dict, season: str) -> tuple[np.datetime64, np.datetime64]:
+    """First and last day of a season in the config."""
     seasons = {entry["name"]: entry for entry in cfg["time"]["seasons"]}
     if season not in seasons:
         raise ValueError(f"Unknown season {season!r}; the config has {', '.join(seasons)}")
+    return np.datetime64(seasons[season]["start"], "D"), np.datetime64(seasons[season]["end"], "D")
+
+
+def season_start(cfg: dict, season: str) -> np.datetime64:
+    """First day of a season, where the night blocks of its split start."""
+    return season_days(cfg, season)[0]
+
+
+def season_bounds(cfg: dict, season: str) -> tuple[np.datetime64, np.datetime64]:
+    """Noon of a season's first day to noon after its last, so each night keeps its 00:00 to 05:00 slots."""
     noon = np.timedelta64(12, "h")
-    first_day = np.datetime64(seasons[season]["start"], "D")
-    last_day = np.datetime64(seasons[season]["end"], "D")
+    first_day, last_day = season_days(cfg, season)
     return (
         (first_day + noon).astype("datetime64[ns]"),
         (last_day + np.timedelta64(1, "D") + noon).astype("datetime64[ns]"),
@@ -363,9 +371,12 @@ class View(NamedTuple):
 
 
 def full_count_scores(night_counts: np.ndarray, n_samples: int, seed: int) -> dict:
-    """POD and FAR with bootstrap intervals, CSI, HSS and bias of the full count, as `<score>_full` columns."""
+    """The case count, POD and FAR with bootstrap intervals, CSI, HSS and bias of the full count.
+
+    The columns are `n_cases_full` and `<score>_full`.
+    """
     summary = score_summary(night_counts, n_samples, seed, interval_scores=("pod", "far"))
-    scores = {}
+    scores = {"n_cases_full": summary["n_cases"]}
     for name in ("pod", "far"):
         scores[f"{name}_full"] = summary[name]
         scores[f"{name}_full_low"] = summary[f"{name}_low"]

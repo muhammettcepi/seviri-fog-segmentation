@@ -126,6 +126,12 @@ def test_ceiling_amount_agrees_with_ceiling_m():
     assert ceiling_m(with_known_layer_below) == pytest.approx(4 * 100 * 0.3048)
 
 
+def test_a_ceiling_layer_after_an_unknown_layer_still_gives_the_ceiling():
+    metar = "EDDF 010050Z 22005KT 9999 //////CB BKN004 05/02 Q1020"
+    assert ceiling_m(metar) == pytest.approx(4 * 100 * 0.3048)
+    assert ceiling_amount(metar) == "BKN"
+
+
 def test_shallow_fog():
     assert has_shallow_fog("EBBR 202050Z 4000 MIFG SKC 01/01 Q1030")
     assert has_shallow_fog("EBBR 202050Z 3000 BCFG FEW003 01/01 Q1030")

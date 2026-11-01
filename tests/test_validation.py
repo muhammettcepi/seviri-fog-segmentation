@@ -40,6 +40,8 @@ from fogseg.validation import (
     score_row,
     score_table,
     season_bounds,
+    season_days,
+    season_start,
     select_stations,
     station_cases,
 )
@@ -313,6 +315,15 @@ def test_season_bounds_unknown_name():
         season_bounds(season_cfg(), "1999-00")
 
 
+def test_season_days_and_start_are_the_dates_of_the_config():
+    first_day, last_day = season_days(season_cfg(), "2023-24")
+    assert (first_day, last_day) == (np.datetime64("2023-10-01"), np.datetime64("2024-02-29"))
+    assert first_day.dtype == np.dtype("datetime64[D]")
+    assert season_start(season_cfg(), "2023-24") == first_day
+    with pytest.raises(ValueError, match="2023-24"):
+        season_start(season_cfg(), "1999-00")
+
+
 def case(night: str, station: str, source: str, iy: int, truth: int, label: int, **overrides) -> dict:
     """One case of the score tests; `truth` is the FLS truth, the fog truth is 0 unless given."""
     return {
@@ -377,6 +388,7 @@ def test_full_count_columns_count_ignored_fls_as_misses():
 
     row = score_row(View("main", "all", cases), 50, 0)
 
+    assert (row["n_cases"], row["n_cases_full"]) == (3, 4)
     assert (row["pod"], row["pod_full"]) == (pytest.approx(1 / 2), pytest.approx(1 / 3))
     assert row["far_full"] == pytest.approx(1 / 2)
     assert row["csi_full"] == pytest.approx(1 / 4)
@@ -754,6 +766,20 @@ def test_validate_adds_no_folds_outside_the_tuning_season(tmp_path, caplog):
     assert "night_fold" not in pd.read_csv(data_dir / "cases_fixed_2023-24.csv").columns
     assert "split" not in pd.read_csv(data_dir / "scores_fixed_2023-24.csv")["view"].tolist()
     assert "held-out" not in caplog.text
+    assert "fogseg split" not in caplog.text
+
+
+def test_validate_tells_to_draw_the_split_when_the_tuning_season_has_none(tmp_path, caplog):
+    args = validate_setup(tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="fogseg"):
+        cmd_validate(args)
+
+    hints = [record for record in caplog.records if "fogseg split" in record.getMessage()]
+    assert len(hints) == 1
+    assert hints[0].levelno == logging.INFO
+    assert "no folds" in hints[0].getMessage()
+    assert "night_fold" not in pd.read_csv(tmp_path / "stations" / "cases_fixed_2023-24.csv").columns
 
 
 def test_validate_fills_the_elevation_difference_from_the_dem_store(tmp_path):

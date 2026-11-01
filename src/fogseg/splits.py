@@ -15,6 +15,13 @@ def splits_path(data_dir: Path, season: str) -> Path:
     return data_dir / f"splits_{season}.csv"
 
 
+def read_splits(path: Path) -> pd.DataFrame:
+    """The split file that `fogseg split` wrote; nothing may be fitted or chosen without it."""
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not found; run `fogseg split` first")
+    return pd.read_csv(path)
+
+
 def night_block_start(night: np.ndarray, season_start: np.datetime64, block_days: int) -> np.ndarray:
     """The first night of the block each night belongs to; blocks are `block_days` long from the season start."""
     days = (np.asarray(night, dtype="datetime64[D]") - np.datetime64(season_start, "D")).astype(int)
@@ -94,6 +101,19 @@ def assign_folds(
 def held_out(cases: pd.DataFrame, n_folds: int) -> pd.Series:
     """Cases whose night or station is in the last fold; nothing may be fitted or chosen on them."""
     return (cases["night_fold"] == n_folds) | (cases["station_fold"] == n_folds)
+
+
+def selection_cases(
+    cases: pd.DataFrame,
+    splits: pd.DataFrame,
+    season_start: np.datetime64,
+    bbox: list[float],
+    stations_cfg: dict,
+) -> pd.DataFrame:
+    """The cases outside the held-out fold, with their folds."""
+    with_folds = assign_folds(cases, splits, season_start, bbox, stations_cfg)
+    is_selection = held_out_part(with_folds, stations_cfg["n_folds"]) == "selection"
+    return with_folds[is_selection].reset_index(drop=True)
 
 
 def held_out_part(cases: pd.DataFrame, n_folds: int) -> pd.Series:

@@ -357,6 +357,38 @@ def test_read_selection_cases_drops_the_held_out_cases(tmp_path):
     assert read_selection_cases(**kwargs).empty
 
 
+def test_read_selection_cases_counts_a_metar_and_synop_pair_at_one_pixel_and_scene_once(tmp_path):
+    args = diagnose_setup(tmp_path)
+    validate_cases(args)
+    cfg = load_config(args.config)
+    cases_path = tmp_path / "stations" / "cases_fixed_2023-24.csv"
+    cases = pd.read_csv(cases_path, dtype={"station": str})
+    synop_twin = cases[cases["station"] == "MISS"].assign(source="synop", station="10001")
+    pd.concat([synop_twin, cases]).to_csv(cases_path, index=False)
+
+    selection = read_selection_cases(
+        cases_path,
+        splits_path(tmp_path / "stations", "2023-24"),
+        np.datetime64("2023-10-01"),
+        cfg["region"]["bbox"],
+        cfg["stations"],
+    )
+
+    assert sorted(selection["station"]) == ["CLEAR", "HIT", "MISS"]
+
+
+def test_diagnose_refuses_labels_that_are_not_fixed_mode(tmp_path):
+    args = diagnose_setup(tmp_path)
+    validate_cases(args)
+    cfg = load_config(args.config)
+    cfg["labels"]["mode"] = "dynamic"
+    args.config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fixed 4.0 K"):
+        cmd_diagnose(args)
+    assert not list((tmp_path / "stations").glob("diagnosis_*"))
+
+
 def test_diagnose_refuses_the_test_season(tmp_path):
     args = diagnose_setup(tmp_path)
     args.season = "2024-25"

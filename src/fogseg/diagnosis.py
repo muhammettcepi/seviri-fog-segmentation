@@ -9,8 +9,8 @@ import pandas as pd
 import xarray as xr
 
 from fogseg.labels import FOG, OBSCURED, LabelParams, local_std
-from fogseg.splits import assign_folds, held_out_part
-from fogseg.validation import METAR_DTYPES, TRUTH_NO, TRUTH_YES, night_of
+from fogseg.splits import read_splits, selection_cases
+from fogseg.validation import METAR_DTYPES, TRUTH_NO, TRUTH_YES, deduplicate, night_of
 
 LOW_BTD_K = 3.5
 BAND_HIGH_K = 4.5
@@ -22,21 +22,27 @@ TABLE_COLUMNS = ["section", "variable", "statistic", "fls_missed", "no_fls"]
 UNKNOWN = "unknown"
 
 
+def check_fixed_mode(mode: str) -> None:
+    """Refuse labels of any mode but fixed, which the cause bands are set for."""
+    if mode != "fixed":
+        raise ValueError(
+            f"The diagnosis needs the fixed labels, not {mode!r}: its cause bands at {LOW_BTD_K} and "
+            f"{BAND_HIGH_K} K are defined around the fixed 4.0 K threshold"
+        )
+
+
 def read_selection_cases(
     cases_path: Path, split_path: Path, season_start: np.datetime64, bbox: list[float], stations_cfg: dict
 ) -> pd.DataFrame:
-    """The selection cases of the table `fogseg validate` wrote, with their folds from the split file."""
-    if not split_path.exists():
-        raise FileNotFoundError(f"{split_path} not found; run `fogseg split` first")
+    """The selection cases of the table `fogseg validate` wrote, one per scene and pixel as in the score table."""
+    splits = read_splits(split_path)
     if not cases_path.exists():
         raise FileNotFoundError(f"{cases_path} not found; run `fogseg validate` first")
 
     cases = pd.read_csv(
         cases_path, dtype={"station": str, **METAR_DTYPES}, parse_dates=["scene_time", "night"]
     ).fillna({"ceiling_amount": ""})
-    cases = assign_folds(cases, pd.read_csv(split_path), season_start, bbox, stations_cfg)
-    is_selection = held_out_part(cases, stations_cfg["n_folds"]) == "selection"
-    return cases[is_selection].reset_index(drop=True)
+    return selection_cases(deduplicate(cases), splits, season_start, bbox, stations_cfg)
 
 
 def scene_index(store: xr.Dataset, scene_times: pd.Series, name: str) -> np.ndarray:
