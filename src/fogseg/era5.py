@@ -30,17 +30,28 @@ ERA5_VARIABLES = {
 }
 UNITS = {"t2m": "K", "skt": "K", "d2m": "K", "sd": "m of water equivalent"}
 AREA_MARGIN_DEG = 0.5
+ERA5_GRID_DEG = 0.25
 
 
-def era5_area(bbox: list[float], margin: float = AREA_MARGIN_DEG) -> list[float]:
-    """The CDS area [north, west, south, east] around `bbox` (lon_min, lat_min, lon_max, lat_max)."""
-    lon_min, lat_min, lon_max, lat_max = bbox
-    return [lat_max + margin, lon_min - margin, lat_min - margin, lon_max + margin]
+def era5_area(lon: np.ndarray, lat: np.ndarray, margin: float = AREA_MARGIN_DEG) -> list[float]:
+    """The CDS area [north, west, south, east] around the grid, snapped outward to the ERA5 grid."""
+
+    def snap(value: float, round_up: bool) -> float:
+        steps = value / ERA5_GRID_DEG
+        return float(np.ceil(steps) if round_up else np.floor(steps)) * ERA5_GRID_DEG
+
+    return [
+        snap(np.nanmax(lat) + margin, round_up=True),
+        snap(np.nanmin(lon) - margin, round_up=False),
+        snap(np.nanmin(lat) - margin, round_up=False),
+        snap(np.nanmax(lon) + margin, round_up=True),
+    ]
 
 
 def has_cds_credentials() -> bool:
-    """Whether a CDS key is configured, without opening the key file."""
-    return (Path.home() / ".cdsapirc").exists() or "CDSAPI_KEY" in os.environ
+    """Whether a CDS key is configured (key file, or URL and key in the environment); never opens the file."""
+    in_environment = "CDSAPI_URL" in os.environ and "CDSAPI_KEY" in os.environ
+    return (Path.home() / ".cdsapirc").exists() or in_environment
 
 
 def month_requests(times: np.ndarray, area: list[float], variables: list[str]) -> list[tuple[str, dict]]:
@@ -131,7 +142,7 @@ def build_era5_store(
     raw_dir: Path,
     out_path: Path,
 ) -> None:
-    """Write `t2m`, `skt`, `d2m` (K) and `sd` (m water equivalent) per scene on the grid to the Zarr store `out_path`."""
+    """Write `t2m`, `skt`, `d2m` (K) and `sd` (m water equivalent) per scene on the grid to `out_path`."""
     partial = out_path.with_name(out_path.name + ".part")
     shutil.rmtree(partial, ignore_errors=True)
     partial.parent.mkdir(parents=True, exist_ok=True)

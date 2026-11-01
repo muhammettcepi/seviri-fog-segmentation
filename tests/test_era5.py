@@ -78,8 +78,20 @@ def test_month_request_asks_for_netcdf_on_the_area():
     }
 
 
-def test_era5_area_adds_the_margin_to_the_bbox():
-    assert era5_area([2, 43, 20, 55]) == [55.5, 1.5, 42.5, 20.5]
+def test_era5_area_snaps_the_grid_plus_margin_outward_to_the_era5_grid():
+    lon, lat = np.meshgrid([1.57, 14.0, 27.44], [42.59, 49.0, 56.12])
+    assert era5_area(lon, lat) == [56.75, 1.0, 42.0, 28.0]
+
+
+def test_era5_area_ignores_nan_pixels():
+    lon, lat = np.array([[5.0, np.nan]]), np.array([[45.0, np.nan]])
+    assert era5_area(lon, lat, margin=0.0) == [45.0, 5.0, 45.0, 5.0]
+
+
+def test_era5_area_covers_a_grid_wider_than_the_bbox():
+    lon, lat = np.meshgrid(np.linspace(1.57, 27.44, 50), np.linspace(42.59, 56.12, 40))
+    north, west, south, east = era5_area(lon, lat)
+    assert west <= lon.min() and lon.max() <= east and south <= lat.min() and lat.max() <= north
 
 
 def test_era5_variables_map_to_the_short_names_in_the_files():
@@ -91,15 +103,20 @@ def test_era5_variables_map_to_the_short_names_in_the_files():
     }
 
 
-def test_credentials_need_the_key_file_or_the_environment_variable(tmp_path, monkeypatch):
+def test_credentials_need_the_key_file_or_both_environment_variables(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("CDSAPI_URL", raising=False)
     monkeypatch.delenv("CDSAPI_KEY", raising=False)
     assert not has_cds_credentials()
 
     monkeypatch.setenv("CDSAPI_KEY", "set")
+    assert not has_cds_credentials()
+
+    monkeypatch.setenv("CDSAPI_URL", "set")
     assert has_cds_credentials()
 
+    monkeypatch.delenv("CDSAPI_URL")
     monkeypatch.delenv("CDSAPI_KEY")
     (tmp_path / ".cdsapirc").touch()
     assert has_cds_credentials()
@@ -246,11 +263,11 @@ def write_config(tmp_path: Path, dataset_path: Path) -> Path:
     return path
 
 
-def write_dataset(path: Path) -> None:
+def write_dataset(path: Path, n_scenes: int = 2) -> None:
     lon, lat, y, x = make_grid([5.25, 5.75], [45.75, 45.25])
     xr.Dataset(
         coords={
-            "time": SCENES[:2],
+            "time": SCENES[:n_scenes],
             "y": y,
             "x": x,
             "lon": (("y", "x"), lon),
@@ -261,10 +278,13 @@ def write_dataset(path: Path) -> None:
 
 class FakeClient:
     requests: ClassVar[list[dict]] = []
+    failing_months: ClassVar[set[str]] = set()
 
     def retrieve(self, name: str, request: dict, target: str) -> None:
         assert name == "reanalysis-era5-single-levels"
         FakeClient.requests.append(request)
+        if request["month"][0] in FakeClient.failing_months:
+            raise RuntimeError("queue full")
         write_era5_file(Path(target), ["2023-11-20T21:00", "2023-11-21T03:00"])
 
 
@@ -274,6 +294,7 @@ def cds_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.delenv("CDSAPI_KEY", raising=False)
     FakeClient.requests = []
+    FakeClient.failing_months = set()
     monkeypatch.setattr("cdsapi.Client", FakeClient)
     return tmp_path / "home"
 
@@ -301,10 +322,30 @@ def test_cmd_era5_downloads_the_months_and_writes_the_store(tmp_path, cds_enviro
     cmd_era5(args)
 
     assert [request["month"] for request in FakeClient.requests] == [["11"]]
-    assert FakeClient.requests[0]["area"] == AREA
+    assert FakeClient.requests[0]["area"] == [46.25, 4.75, 44.75, 6.25]
     with xr.open_zarr(tmp_path / "era5.zarr", consolidated=False) as store:
         np.testing.assert_array_equal(store["time"], SCENES[:2])
         assert np.isfinite(store["t2m"]).all()
 
     cmd_era5(argparse.Namespace(config=args.config, overwrite=True))
     assert len(FakeClient.requests) == 1
+
+
+def test_cmd_era5_builds_no_store_while_a_month_is_missing(tmp_path, cds_environment, caplog):
+    cds_environment.mkdir()
+    (cds_environment / ".cdsapirc").touch()
+    write_dataset(tmp_path / "seviri.zarr", n_scenes=3)
+    args = argparse.Namespace(config=str(write_config(tmp_path, tmp_path / "seviri.zarr")), overwrite=False)
+
+    FakeClient.failing_months = {"12"}
+    with caplog.at_level(logging.WARNING, logger="fogseg"):
+        cmd_era5(args)
+    assert not (tmp_path / "era5.zarr").exists()
+    assert "2023-12" in caplog.text and "fogseg era5" in caplog.text
+
+    FakeClient.failing_months = set()
+    FakeClient.requests = []
+    cmd_era5(args)
+    assert [request["month"] for request in FakeClient.requests] == [["12"]]
+    with xr.open_zarr(tmp_path / "era5.zarr", consolidated=False) as store:
+        np.testing.assert_array_equal(store["time"], SCENES)

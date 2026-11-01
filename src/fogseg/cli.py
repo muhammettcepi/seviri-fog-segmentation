@@ -172,10 +172,16 @@ def cmd_era5(args: argparse.Namespace) -> None:
         times = data["time"].values
         lon, lat, y, x = (data[name].values for name in ("lon", "lat", "y", "x"))
 
-    requests = month_requests(times, era5_area(cfg["region"]["bbox"]), era5_cfg["variables"])
+    requests = month_requests(times, era5_area(lon, lat), era5_cfg["variables"])
     failed = download_months(requests, raw_dir, retrieve)
     if failed:
-        log.warning("%d of %d months failed, run again to retry: %s", len(failed), len(requests), failed)
+        log.error(
+            "%d of %d months failed: %s. No store written; run `fogseg era5` again (cached months are kept)",
+            len(failed),
+            len(requests),
+            failed,
+        )
+        return
     build_era5_store(times, lon, lat, y, x, raw_dir, out_path)
     log.info("Wrote ERA5 to %s in %.0f s", out_path, time.time() - started)
 
