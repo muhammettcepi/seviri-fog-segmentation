@@ -11,13 +11,16 @@ from fogseg.labels import (
     IGNORE,
     NO_FOG,
     OBSCURED,
+    TEXTURES,
     LabelParams,
     emissivity_39,
     emissivity_btd_threshold,
     histogram_pixels,
     label_scene,
+    local_mad,
     local_std,
     small_blobs,
+    texture_ok,
     trusted_mask,
     warm_and_not_cirrus,
 )
@@ -280,6 +283,80 @@ def test_emissivity_threshold_is_the_btd_with_that_emissivity():
     emissivity = emissivity_39(ir108 - 4.0, ir108)
     assert emissivity_btd_threshold(ir108, float(emissivity[0]))[0] == pytest.approx(4.0, abs=1e-6)
     assert emissivity[1] > emissivity[0]  # the same BTD is a weaker signal on a warmer top
+
+
+def rough_field() -> np.ndarray:
+    """A 6 x 6 IR_108 checkerboard whose 3 x 3 standard deviation is about 3 K everywhere."""
+    rows, cols = np.indices((6, 6))
+    return 270.0 + 3.0 * np.where((rows + cols) % 2 == 0, 1.0, -1.0)
+
+
+LEFT_BLOB = (slice(2, 5), slice(1, 5))
+RIGHT_BLOB = (slice(2, 5), slice(8, 12))
+
+
+def two_blobs() -> tuple[np.ndarray, np.ndarray]:
+    """An IR_108 field and a region of two separate groups: a smooth one with a hot edge pixel and a rough one."""
+    rows, cols = np.indices((8, 14))
+    ir108 = np.full((8, 14), 270.0)
+    ir108[RIGHT_BLOB] = 270.0 + 3.0 * np.where((rows + cols) % 2 == 0, 1.0, -1.0)[RIGHT_BLOB]
+    ir108[2, 1] = 280.0
+    region = np.zeros((8, 14), dtype=bool)
+    region[LEFT_BLOB] = True
+    region[RIGHT_BLOB] = True
+    return ir108, region
+
+
+def test_mad5_ignores_one_hot_pixel_that_fails_std3():
+    ir108 = np.full((7, 7), 270.0)
+    ir108[3, 3] = 276.0
+    btd = np.full((7, 7), 5.0)
+    region = np.ones((7, 7), dtype=bool)
+    std3 = texture_ok(ir108, btd, region, TEST_PARAMS)
+    mad5 = texture_ok(ir108, btd, region, dataclasses.replace(TEST_PARAMS, texture="ir108_mad5"))
+    assert not std3[3, 3] and mad5.all()
+
+
+def test_btd_std3_looks_at_the_btd_not_ir108():
+    ir108 = rough_field()
+    btd = np.full(ir108.shape, 5.0)
+    params = dataclasses.replace(TEST_PARAMS, texture="btd_std3")
+    assert texture_ok(ir108, btd, np.ones(ir108.shape, dtype=bool), params).all()
+
+
+def test_blob_judges_each_group_by_its_median_spread():
+    ir108, region = two_blobs()
+    params = dataclasses.replace(TEST_PARAMS, texture="blob")
+    passed = texture_ok(ir108, np.zeros_like(ir108), region, params)
+    assert passed[LEFT_BLOB].all() and not passed[RIGHT_BLOB].any() and not passed[~region].any()
+
+
+def test_blob_texture_of_an_empty_region_fails_everywhere():
+    ir108 = rough_field()
+    params = dataclasses.replace(TEST_PARAMS, texture="blob")
+    assert not texture_ok(ir108, ir108, np.zeros(ir108.shape, dtype=bool), params).any()
+
+
+def test_no_texture_test_passes_everything():
+    params = dataclasses.replace(TEST_PARAMS, texture="none")
+    assert texture_ok(rough_field(), np.zeros((6, 6)), np.zeros((6, 6), dtype=bool), params).all()
+
+
+def test_local_mad_is_nan_wherever_a_missing_value_reaches_it(recwarn):
+    field = np.full((13, 13), 270.0)
+    field[6, 6] = np.nan
+    mad = local_mad(field)
+    assert np.isnan(mad[2:11, 2:11]).all() and np.isfinite(mad[0, 0]) and np.isfinite(mad[12, 12])
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
+
+
+def test_nan_channel_stays_ignored_under_every_texture(recwarn):
+    ir039, ir108, ir120, sza = scene_arrays()
+    ir108[2, 2] = np.nan
+    for texture in TEXTURES:
+        labels = label_scene(ir039, ir108, ir120, sza, 4.0, dataclasses.replace(TEST_PARAMS, texture=texture))
+        assert labels[2, 2] == IGNORE
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
 
 
 def test_emissivity_index_labels_like_the_btd_on_a_uniform_top():

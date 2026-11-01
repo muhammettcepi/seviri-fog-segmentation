@@ -89,8 +89,8 @@ def histogram_pixels(
 def warm_and_not_cirrus(ir108: np.ndarray, ir120: np.ndarray, params: LabelParams) -> np.ndarray:
     """Pixels warm enough to be a low cloud top and without a thin-cirrus split-window signature.
 
-    The `fixed` split window calls a difference of `cirrus_max_split` or more cirrus; the `kma` one
-    calls cirrus any difference farther than `KMA_HALFWIDTH_K` from the line `KMA_INTERCEPT + KMA_SLOPE * ir108`.
+    The `fixed` split window calls a difference of `cirrus_max_split` or more cirrus; the `kma` one calls
+    cirrus any difference farther than `KMA_HALFWIDTH_K` from the line `KMA_INTERCEPT + KMA_SLOPE * ir108`.
     """
     is_warm = ir108 >= params.warm_min_bt108
     split = ir108 - ir120
@@ -107,19 +107,19 @@ def planck_39(bt: np.ndarray) -> np.ndarray:
 
 
 def emissivity_39(ir039: np.ndarray, ir108: np.ndarray) -> np.ndarray:
-    """Effective 3.9 µm emissivity: the 3.9 µm radiance relative to that of a black body at the IR_108 temperature."""
+    """Effective 3.9 µm emissivity: the radiance relative to a black body at the IR_108 temperature."""
     return planck_39(ir039) / planck_39(ir108)
 
 
 def emissivity_btd_threshold(ir108: np.ndarray, emissivity_max: float) -> np.ndarray:
-    """The BTD (IR_108 - IR_039) at which a pixel with this IR_108 has the 3.9 µm emissivity `emissivity_max`."""
+    """The BTD (IR_108 - IR_039) at which a pixel with this IR_108 has the emissivity `emissivity_max`."""
     radiance = emissivity_max * planck_39(ir108)
     ir039 = PLANCK_SECOND_CONSTANT_UM_K / (WAVELENGTH_39_UM * np.log1p(1.0 / radiance))
     return ir108 - ir039
 
 
 def btd_threshold_image(ir108: np.ndarray, threshold: float, params: LabelParams) -> float | np.ndarray:
-    """The BTD threshold of each pixel: `threshold` in K, or the BTD that `threshold` as an emissivity means."""
+    """The BTD threshold of each pixel: `threshold` in K, or the BTD that an emissivity `threshold` means."""
     if params.fog_index == "emissivity":
         return emissivity_btd_threshold(ir108, threshold)
     return threshold
@@ -146,10 +146,37 @@ def local_std(field: np.ndarray, size: int = 3) -> np.ndarray:
     return np.where(has_valid, std, np.nan)
 
 
-def passes_other_tests(ir108: np.ndarray, ir120: np.ndarray, params: LabelParams) -> np.ndarray:
-    """Pixels passing the fog tests besides the BTD: warm top, no thin cirrus, smooth IR_108 texture."""
-    is_smooth = local_std(ir108) < params.smooth_max_std
-    return warm_and_not_cirrus(ir108, ir120, params) & is_smooth
+def local_mad(field: np.ndarray, size: int = 5) -> np.ndarray:
+    """Median absolute deviation in a size x size window; NaN wherever a missing value reaches the result."""
+    is_missing = np.isnan(field)
+    filled = np.where(is_missing, 0.0, field)
+    deviation = np.abs(filled - ndimage.median_filter(filled, size=size, mode="nearest"))
+    mad = ndimage.median_filter(deviation, size=size, mode="nearest")
+    # The deviations of the neighbours depend on their own windows, so the missing values reach twice as far.
+    is_reached = ndimage.maximum_filter(is_missing, size=2 * size - 1, mode="nearest")
+    return np.where(is_reached, np.nan, mad)
+
+
+def texture_ok(ir108: np.ndarray, btd: np.ndarray, region: np.ndarray, params: LabelParams) -> np.ndarray:
+    """Pixels that pass the smoothness test chosen by `params.texture`.
+
+    Only the `blob` test looks at `region`: it judges each 8-connected group of it by its median IR_108
+    spread, and pixels outside the region fail.
+    """
+    limit = params.smooth_max_std
+    if params.texture == "ir108_std3":
+        return local_std(ir108) < limit
+    if params.texture == "btd_std3":
+        return local_std(btd) < limit
+    if params.texture == "ir108_mad5":
+        return local_mad(ir108) < limit
+    if params.texture == "none":
+        return np.ones(ir108.shape, dtype=bool)
+
+    group_ids, group_count = ndimage.label(region, structure=np.ones((3, 3), dtype=int))
+    group_spread = ndimage.median(local_std(ir108), group_ids, np.arange(1, group_count + 1))
+    is_smooth_group = np.concatenate([[False], np.asarray(group_spread) < limit])
+    return is_smooth_group[group_ids]
 
 
 def small_blobs(mask: np.ndarray, min_pixels: int) -> np.ndarray:
@@ -180,10 +207,14 @@ def label_scene(
     remaining fog pixels.
     """
     trusted = trusted_mask(ir039, ir108, ir120, sza, params.night_min_sza)
-    is_obscured = trusted & ~warm_and_not_cirrus(ir108, ir120, params)
-    fog_like = trusted & passes_other_tests(ir108, ir120, params)
+    is_candidate = trusted & warm_and_not_cirrus(ir108, ir120, params)
+    is_obscured = trusted & ~is_candidate
 
-    margin = (ir108 - ir039) - btd_threshold_image(ir108, threshold, params)
+    btd = ir108 - ir039
+    margin = btd - btd_threshold_image(ir108, threshold, params)
+    region = is_candidate & (margin > -params.uncertainty_band)
+    fog_like = is_candidate & texture_ok(ir108, btd, region, params)
+
     is_uncertain = fog_like & (np.abs(margin) < params.uncertainty_band)
     is_fog = fog_like & (margin > 0) & ~is_uncertain
 
