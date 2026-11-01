@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 GRID_COLUMNS = ["value", "case", "label"]
 SCORE_COLUMNS = ["value", *COUNT_NAMES, "pod", "far", "csi", "n_cases"]
 CV_COLUMNS = ["fold", "value", "matched", *SCORE_COLUMNS[1:]]
+UNSCORED = dict.fromkeys(SCORE_COLUMNS, np.nan)
 
 PHASE_B_VARIANTS: list[tuple[str, dict]] = [
     ("1 baseline", {}),
@@ -137,6 +138,19 @@ def value_scores(grid: pd.DataFrame, cases: pd.DataFrame, mask: pd.Series) -> pd
     return pd.DataFrame(rows, columns=SCORE_COLUMNS)
 
 
+def warn_at_grid_edge(where: str, value: float, values: pd.Series | np.ndarray) -> None:
+    """Warn when a matched value is the first or the last of its grid, where a better one may lie beyond."""
+    low, high = np.min(values), np.max(values)
+    if value in (low, high):
+        log.warning(
+            "%s: the matched value %g is at the edge of the grid %g to %g; consider a wider grid",
+            where,
+            value,
+            low,
+            high,
+        )
+
+
 def matched_value(scores: pd.DataFrame, far_target: float) -> tuple[float, bool]:
     """The value with the highest FAR not above the target, and whether there is one.
 
@@ -159,28 +173,35 @@ def cross_validate(
     """Per fold the value matched on the training part and its test scores, then the pooled test folds.
 
     Cases of the held-out fold are in no training or test part. `variant` names the variant in the warnings.
+    A fold whose training part has no fog at any value is unusable: it and the pooled row have no scores.
     """
     of_variant = f" of variant {variant}" if variant else ""
     rows, test_counts = [], []
     for fold, train, test in cv_folds(cases, n_folds):
-        value, matched = matched_value(value_scores(grid, cases, train), far_target)
-        if not matched:
+        where = f"Fold {fold}{of_variant}"
+        train_scores = value_scores(grid, cases, train)
+        try:
+            value, matched = matched_value(train_scores, far_target)
+        except ValueError as error:
+            log.warning("%s is unusable: %s", where, error)
+            rows.append({"fold": fold, "matched": False, **UNSCORED})
+            continue
+        if matched:
+            warn_at_grid_edge(where, value, grid["value"])
+        else:
             log.warning(
-                "Fold %d%s: no value reaches a FAR of %.3f on its training part; using %g",
-                fold,
-                of_variant,
-                far_target,
-                value,
+                "%s: no value reaches a FAR of %.3f on its training part; using %g", where, far_target, value
             )
         at_value = grid[grid["value"] == value]
         scores = value_scores(at_value, cases, test).to_dict("records")[0]
         test_counts.append([scores[name] for name in COUNT_NAMES])
         rows.append({"fold": fold, "matched": matched, **scores})
+    pooled_counts = score_columns(np.sum(test_counts, axis=0)) if len(test_counts) == len(rows) else UNSCORED
     pooled = {
         "fold": "pooled",
         "value": np.nan,
         "matched": all(row["matched"] for row in rows),
-        **score_columns(np.sum(test_counts, axis=0)),
+        **pooled_counts,
     }
     return pd.DataFrame([*rows, pooled], columns=CV_COLUMNS)
 
@@ -215,15 +236,39 @@ def pooled_scores(table: pd.DataFrame) -> pd.DataFrame:
 
 
 def best_variant(pooled: pd.DataFrame) -> str:
-    """The variant with the highest pooled POD; ties go to the lower variant number."""
-    number = pooled.index.str.split().str[0].astype(int)
-    ranked = pooled.assign(number=number).sort_values(["pod", "number"], ascending=[False, True])
+    """The matched variant with the highest pooled POD; ties go to the lower variant number."""
+    eligible = pooled[pooled["matched"] & pooled["pod"].notna()]
+    if eligible.empty:
+        raise ValueError(f"No variant of {', '.join(pooled.index)} has a matched pooled FAR to win on")
+    number = eligible.index.str.split().str[0].astype(int)
+    ranked = eligible.assign(number=number).sort_values(["pod", "number"], ascending=[False, True])
     return ranked.index[0]
 
 
 def winner(table: pd.DataFrame) -> str:
-    """The variant of the table with the highest pooled POD; ties go to the lower variant number."""
+    """The matched variant of the table with the highest pooled POD; ties go to the lower variant number."""
     return best_variant(pooled_scores(table))
+
+
+def log_winner(table: pd.DataFrame, far_target: float) -> None:
+    """Log the winner and the baseline at their pooled scores; warn if the winner's FAR is over the target."""
+    pooled = pooled_scores(table)
+    best = winner(table)
+    log.info(
+        "Experiment B winner %s: pooled POD %.3f, FAR %.3f; baseline POD %.3f, FAR %.3f",
+        best,
+        pooled.loc[best, "pod"],
+        pooled.loc[best, "far"],
+        pooled.loc["1 baseline", "pod"],
+        pooled.loc["1 baseline", "far"],
+    )
+    if pooled.loc[best, "far"] > far_target:
+        log.warning(
+            "Winner %s: pooled FAR %.3f is above the matched FAR %.3f",
+            best,
+            pooled.loc[best, "far"],
+            far_target,
+        )
 
 
 def combined_variants(
@@ -386,7 +431,9 @@ def held_out_comparison(
         pd.Series(True, index=selection.index),
     )
     value, matched = matched_value(selection_scores, stations_cfg["matched_far"])
-    if not matched:
+    if matched:
+        warn_at_grid_edge(f"Winner {name}", value, winner_values)
+    else:
         log.warning(
             "Winner %s: no value reaches a FAR of %.3f on the selection cases; using %g",
             name,

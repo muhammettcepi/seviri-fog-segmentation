@@ -27,6 +27,7 @@ from fogseg.experiment import (
     cross_validate,
     experiment_cases,
     held_out_comparison,
+    log_winner,
     matched_value,
     run_variants,
     scored_cases,
@@ -285,10 +286,10 @@ def test_variant_grid_of_no_cases_or_no_values_is_empty(tmp_path):
     assert no_cases.empty and no_values.empty
 
 
-def pooled_table(pods: dict[str, float]) -> pd.DataFrame:
-    """A fold-1 row with a misleading POD and the pooled row of every variant."""
+def pooled_table(pods: dict[str, float], unmatched: tuple[str, ...] = ()) -> pd.DataFrame:
+    """A fold-1 row with a misleading POD and the pooled row of every variant; some are not matched."""
     rows = [
-        {"variant": name, "fold": fold, "pod": pod}
+        {"variant": name, "fold": fold, "pod": pod, "matched": name not in unmatched}
         for name, pooled_pod in pods.items()
         for fold, pod in (("1", 1.0), ("pooled", pooled_pod))
     ]
@@ -350,6 +351,53 @@ def test_the_winner_has_the_highest_pooled_pod_and_a_tie_goes_to_the_lower_numbe
     assert winner(table) == "7 emissivity"
 
 
+def test_an_unmatched_variant_cannot_win():
+    table = pooled_table(
+        {"1 baseline": 0.40, "7 emissivity": 0.45, "9 combined": 0.50}, unmatched=("9 combined",)
+    )
+    assert winner(table) == "7 emissivity"
+
+
+def test_a_variant_without_a_pooled_pod_cannot_win():
+    table = pooled_table({"1 baseline": 0.40, "7 emissivity": np.nan})
+    assert winner(table) == "1 baseline"
+
+
+def test_the_winner_needs_a_matched_variant():
+    table = pooled_table({"1 baseline": 0.40, "7 emissivity": 0.45}, unmatched=("1 baseline", "7 emissivity"))
+    with pytest.raises(ValueError, match="No variant.*matched"):
+        winner(table)
+
+
+def test_variant_9_ignores_unmatched_variants():
+    table = pooled_table(
+        {
+            "1 baseline": 0.40,
+            "2 texture btd_std3": 0.42,
+            "3 texture ir108_mad5": 0.45,
+            "4 texture blob": 0.41,
+            "5 texture none": 0.39,
+            "7 emissivity": 0.44,
+        },
+        unmatched=("3 texture ir108_mad5", "7 emissivity"),
+    )
+    combined = combined_variants(table, [])
+    assert combined == [("9 combined", {"texture": "btd_std3", "fog_index": "btd"})]
+
+
+def test_variant_9_needs_a_matched_variant_of_each_choice():
+    pods = {
+        "1 baseline": 0.40,
+        "2 texture btd_std3": 0.42,
+        "3 texture ir108_mad5": 0.45,
+        "4 texture blob": 0.41,
+        "5 texture none": 0.39,
+        "7 emissivity": 0.44,
+    }
+    with pytest.raises(ValueError, match="No variant.*matched"):
+        combined_variants(pooled_table(pods, unmatched=("1 baseline", "7 emissivity")), [])
+
+
 def test_run_variants_marks_every_row_with_its_variant_and_options(tmp_path):
     cfg = experiment_config(tmp_path)
     data, cases = experiment_data(cfg)
@@ -362,6 +410,44 @@ def test_run_variants_marks_every_row_with_its_variant_and_options(tmp_path):
     ]
     folds = table.loc[table["variant"] == "1 baseline", "fold"]
     assert folds.astype(str).tolist() == ["1", "2", "3", "4", "pooled"]
+
+
+def test_a_variant_without_any_fog_is_recorded_as_unusable_and_the_run_goes_on(tmp_path, caplog):
+    cfg = experiment_config(tmp_path)
+    data, cases = experiment_data(cfg)
+    variants = [("6 never fog", {"night_min_sza": 200.0}), ("1 baseline", {})]
+    with caplog.at_level(logging.WARNING, logger="fogseg"):
+        table = run_variants(data, cases, TEST_PARAMS, variants, cfg["stations"])
+    unusable = table[table["variant"] == "6 never fog"]
+    assert unusable["fold"].astype(str).tolist() == ["1", "2", "3", "4", "pooled"]
+    assert not unusable["matched"].any() and unusable["pod"].isna().all() and unusable["hits"].isna().all()
+    assert table.loc[table["variant"] == "1 baseline", "pod"].notna().all()
+    assert "variant 6 never fog" in caplog.text and "Fold 1" in caplog.text and "Fold 4" in caplog.text
+    assert winner(table) == "1 baseline"
+
+
+def test_a_fold_without_any_fog_in_its_training_part_is_unusable():
+    cases, grid = two_value_grid()
+    grid["label"] = 0
+    table = cross_validate(grid, cases, n_folds=5, far_target=0.28)
+    assert table["pod"].isna().all() and not table["matched"].any()
+
+
+def test_a_matched_value_at_the_edge_of_the_grid_is_logged_with_its_variant(caplog):
+    cases, grid = two_value_grid()  # fold 1 matches 3.0, the others 4.0: the first and the last value
+    with caplog.at_level(logging.WARNING, logger="fogseg"):
+        cross_validate(grid, cases, 5, 0.28, "6 band 0.25")
+    edge_warnings = [message for message in caplog.messages if "edge" in message]
+    assert len(edge_warnings) == 4 and "Fold 1 of variant 6 band 0.25" in edge_warnings[0]
+
+
+def test_a_matched_value_inside_the_grid_is_not_an_edge(caplog):
+    cases, grid = two_value_grid()
+    grid = pd.concat([grid, grid[grid["value"] == 4.0].assign(value=5.0)], ignore_index=True)
+    with caplog.at_level(logging.WARNING, logger="fogseg"):
+        cross_validate(grid, cases, 5, 0.28)
+    edge_warnings = [message for message in caplog.messages if "edge" in message]
+    assert len(edge_warnings) == 1 and edge_warnings[0].startswith("Fold 1")
 
 
 def test_a_fold_fallback_names_its_variant(tmp_path, caplog):
@@ -446,7 +532,7 @@ def experiment_config(tmp_path: Path) -> dict:
     cfg["data"] |= {"processed_path": str(tmp_path / "season.zarr"), "log_dir": str(tmp_path / "logs")}
     cfg["labels"] |= dataclasses.asdict(TEST_PARAMS)
     cfg["time"]["seasons"][0] |= {"start": "2023-11-20", "end": "2023-11-22"}
-    cfg["stations"] |= {**STATIONS_CFG, "data_dir": str(data_dir)}
+    cfg["stations"] |= {**STATIONS_CFG, "data_dir": str(data_dir), "matched_far": 0.6}
     return cfg
 
 
@@ -807,7 +893,7 @@ def test_the_cross_validation_records_its_configuration(tmp_path):
         "emissivity_grid",
         "temporal_relax_grid",
     }
-    assert record["stations"]["matched_far"] == 0.28
+    assert record["stations"]["matched_far"] == cfg["stations"]["matched_far"]
 
 
 def test_held_out_refuses_a_configuration_that_differs_from_the_cross_validation(tmp_path):
@@ -827,6 +913,36 @@ def test_held_out_needs_the_configuration_of_the_cross_validation(tmp_path):
     (tmp_path / "stations" / "experiment_B_config.json").unlink()
     with pytest.raises(FileNotFoundError, match="experiment --phase B"):
         cmd_experiment(experiment_args(cfg, held_out=True))
+
+
+def test_a_held_out_match_at_the_edge_of_the_grid_is_logged_with_the_winner(tmp_path, caplog):
+    stations_cfg = {**STATIONS_CFG, "matched_far": 0.6}
+    data, selection, held_out = split_season(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="fogseg"):
+        held_out_comparison(data, selection, held_out, RULE_AT_4_K, WINNER, stations_cfg, START)
+    assert "Winner 6 band 0.25" in caplog.text and "edge of the grid" in caplog.text
+
+
+def log_table(far: float) -> pd.DataFrame:
+    rows = [
+        {"variant": name, "fold": "pooled", "pod": 0.5, "far": far, "matched": True}
+        for name in ("1 baseline", "7 emissivity")
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_a_winner_above_the_matched_far_is_logged(caplog):
+    with caplog.at_level(logging.INFO, logger="fogseg"):
+        log_winner(log_table(far=0.31), 0.28)
+    assert "winner 1 baseline" in caplog.text
+    assert [record.levelname for record in caplog.records] == ["INFO", "WARNING"]
+    assert "0.310" in caplog.records[1].getMessage()
+
+
+def test_a_winner_within_the_matched_far_is_not_warned_about(caplog):
+    with caplog.at_level(logging.INFO, logger="fogseg"):
+        log_winner(log_table(far=0.25), 0.28)
+    assert [record.levelname for record in caplog.records] == ["INFO"]
 
 
 def test_the_held_out_and_selection_tables_cannot_be_swapped(tmp_path):

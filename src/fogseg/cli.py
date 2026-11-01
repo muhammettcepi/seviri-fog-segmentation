@@ -401,9 +401,8 @@ def cmd_experiment(args: argparse.Namespace) -> None:
         combined_variants,
         config_record,
         experiment_cases,
-        pooled_scores,
+        log_winner,
         run_variants,
-        winner,
     )
     from fogseg.labels import LabelParams
 
@@ -433,16 +432,7 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     record = config_record(season, labels_cfg["mode"], params, stations_cfg)
     write_atomically(data_dir / "experiment_B_config.json", json.dumps(record, indent=2))
 
-    pooled = pooled_scores(table)
-    best = winner(table)
-    log.info(
-        "Experiment B winner %s: pooled POD %.3f, FAR %.3f; baseline POD %.3f, FAR %.3f",
-        best,
-        pooled.loc[best, "pod"],
-        pooled.loc[best, "far"],
-        pooled.loc["1 baseline", "pod"],
-        pooled.loc["1 baseline", "far"],
-    )
+    log_winner(table, stations_cfg["matched_far"])
     log.info("Wrote %s", out_path)
 
 
