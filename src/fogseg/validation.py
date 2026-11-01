@@ -158,6 +158,16 @@ def deduplicate(cases: pd.DataFrame) -> pd.DataFrame:
     return ordered.drop_duplicates(["scene_time", "iy", "ix"]).reset_index(drop=True)
 
 
+def read_case_table(cases_path: Path) -> pd.DataFrame:
+    """The table `fogseg validate` wrote, one case per scene and pixel as in the score table."""
+    if not cases_path.exists():
+        raise FileNotFoundError(f"{cases_path} not found; run `fogseg validate` first")
+    cases = pd.read_csv(
+        cases_path, dtype={"station": str, **METAR_DTYPES}, parse_dates=["scene_time", "night"]
+    ).fillna({"ceiling_amount": ""})
+    return deduplicate(cases)
+
+
 def on_grid_stations(data: xr.Dataset, observations: pd.DataFrame, stations_cfg: dict) -> pd.DataFrame:
     """The stations of the table that are close to a pixel centre and low enough, with that pixel.
 
