@@ -121,7 +121,9 @@ def test_satellite_zenith_by_hand():
 
 
 def test_hours_after_21():
-    times = np.array(["2023-11-20T21", "2023-11-21T00", "2023-11-21T03", "2023-11-21T05"], dtype="datetime64[ns]")
+    times = np.array(
+        ["2023-11-20T21", "2023-11-21T00", "2023-11-21T03", "2023-11-21T05"], dtype="datetime64[ns]"
+    )
     assert hours_after_21(times).tolist() == [0, 3, 6, 8]
 
 
@@ -681,7 +683,9 @@ def test_nan_channel_is_ignored_without_warnings(tmp_path, recwarn):
     cfg = teacher_label_config(tmp_path, nan_pixel=(2, 2))
     label_teacher_dataset(Path(cfg["data"]["processed_path"]), tmp_path / "labels_teacher.zarr", cfg)
     store = xr.open_zarr(tmp_path / "labels_teacher.zarr", consolidated=False)
-    assert (store["label"].values[:, 2, 2] == 255).all() and (store["fog_probability"].values[:, 2, 2] == 255).all()
+    assert (store["label"].values[:, 2, 2] == 255).all() and (
+        store["fog_probability"].values[:, 2, 2] == 255
+    ).all()
     assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
 ```
 
