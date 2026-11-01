@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import logging
+import time
 
 import numpy as np
 import pandas as pd
@@ -20,6 +23,19 @@ log = logging.getLogger(__name__)
 GRID_COLUMNS = ["value", "case", "label"]
 SCORE_COLUMNS = ["value", *COUNT_NAMES, "pod", "far", "csi", "n_cases"]
 CV_COLUMNS = ["fold", "value", "matched", *SCORE_COLUMNS[1:]]
+
+PHASE_B_VARIANTS: list[tuple[str, dict]] = [
+    ("1 baseline", {}),
+    ("2 texture btd_std3", {"texture": "btd_std3"}),
+    ("3 texture ir108_mad5", {"texture": "ir108_mad5"}),
+    ("4 texture blob", {"texture": "blob"}),
+    ("5 texture none", {"texture": "none"}),
+    ("6 band 0.25", {"uncertainty_band": 0.25}),
+    ("7 emissivity", {"fog_index": "emissivity"}),
+    ("8 split window kma", {"split_window": "kma"}),
+]
+TEXTURE_VARIANTS = [name for name, _ in PHASE_B_VARIANTS[:5]]
+FOG_INDEX_VARIANTS = ["1 baseline", "7 emissivity"]
 
 
 def scored_cases(cases: pd.DataFrame) -> pd.DataFrame:
@@ -67,7 +83,10 @@ def variant_grid(
             labels = label_night(ir039, ir108, ir120, sza, np.full(len(in_night), value), params)
             picked = labels[slot, of_night["iy"].to_numpy(), of_night["ix"].to_numpy()]
             parts.append(pd.DataFrame({"value": value, "case": of_night["case"].to_numpy(), "label": picked}))
-    return pd.concat(parts, ignore_index=True).sort_values(["value", "case"], ignore_index=True)[GRID_COLUMNS]
+    if not parts:
+        return pd.DataFrame(columns=GRID_COLUMNS)
+    grid = pd.concat(parts, ignore_index=True)
+    return grid.sort_values(["value", "case"], ignore_index=True)[GRID_COLUMNS]
 
 
 def score_columns(counts: np.ndarray) -> dict:
@@ -111,18 +130,22 @@ def matched_value(scores: pd.DataFrame, far_target: float) -> tuple[float, bool]
     return float(ranked["value"].iloc[0]), qualifies
 
 
-def cross_validate(grid: pd.DataFrame, cases: pd.DataFrame, n_folds: int, far_target: float) -> pd.DataFrame:
+def cross_validate(
+    grid: pd.DataFrame, cases: pd.DataFrame, n_folds: int, far_target: float, variant: str = ""
+) -> pd.DataFrame:
     """Per fold the value matched on the training part and its test scores, then the pooled test folds.
 
-    Cases of the held-out fold are in no training or test part.
+    Cases of the held-out fold are in no training or test part. `variant` names the variant in the warnings.
     """
+    of_variant = f" of variant {variant}" if variant else ""
     rows, test_counts = [], []
     for fold, train, test in cv_folds(cases, n_folds):
         value, matched = matched_value(value_scores(grid, cases, train), far_target)
         if not matched:
             log.warning(
-                "Fold %d: no value reaches a FAR of %.3f on its training part; using %g",
+                "Fold %d%s: no value reaches a FAR of %.3f on its training part; using %g",
                 fold,
+                of_variant,
                 far_target,
                 value,
             )
@@ -160,3 +183,67 @@ def block_counts(
         np.unique(block[in_mask]),
         full_count=True,
     )
+
+
+def pooled_scores(table: pd.DataFrame) -> pd.DataFrame:
+    """The pooled row of every variant, indexed by variant name."""
+    pooled = table[table["fold"].astype(str) == "pooled"]
+    return pooled.set_index("variant")
+
+
+def best_variant(pooled: pd.DataFrame) -> str:
+    """The variant with the highest pooled POD; ties go to the lower variant number."""
+    number = pooled.index.str.split().str[0].astype(int)
+    ranked = pooled.assign(number=number).sort_values(["pod", "number"], ascending=[False, True])
+    return ranked.index[0]
+
+
+def winner(table: pd.DataFrame) -> str:
+    """The variant of the table with the highest pooled POD; ties go to the lower variant number."""
+    return best_variant(pooled_scores(table))
+
+
+def combined_variants(
+    table: pd.DataFrame,
+    relax_grid: list[float],
+    baseline_texture: str = "ir108_std3",
+    baseline_index: str = "btd",
+) -> list[tuple[str, dict]]:
+    """Variant 9, the best texture with the better fog index, then variant 9 with each temporal relaxation.
+
+    The best texture is chosen among variants 1 to 5 and the better fog index between 1 and 7, by pooled POD.
+    The baseline variant uses `baseline_texture` and `baseline_index`.
+    """
+    pooled = pooled_scores(table)
+    options = dict(PHASE_B_VARIANTS)
+    texture = options[best_variant(pooled.loc[TEXTURE_VARIANTS])].get("texture", baseline_texture)
+    fog_index = options[best_variant(pooled.loc[FOG_INDEX_VARIANTS])].get("fog_index", baseline_index)
+    combined = {"texture": texture, "fog_index": fog_index}
+    relaxed = [(f"10 temporal relax {relax}", {**combined, "temporal_relax": relax}) for relax in relax_grid]
+    return [("9 combined", combined), *relaxed]
+
+
+def run_variants(
+    data: xr.Dataset,
+    cases: pd.DataFrame,
+    params: LabelParams,
+    variants: list[tuple[str, dict]],
+    stations_cfg: dict,
+) -> pd.DataFrame:
+    """The cross-validation rows of every variant, with its name and its overrides of `params` in front."""
+    tables = []
+    for name, options in variants:
+        started = time.perf_counter()
+        variant_params = dataclasses.replace(params, **options)
+        grid = variant_grid(data, cases, variant_params, value_grid(variant_params, stations_cfg))
+        table = cross_validate(grid, cases, stations_cfg["n_folds"], stations_cfg["matched_far"], name)
+        pooled = table.iloc[-1]
+        log.info(
+            "Variant %s: pooled POD %.3f, FAR %.3f, %.0f s",
+            name,
+            pooled["pod"],
+            pooled["far"],
+            time.perf_counter() - started,
+        )
+        tables.append(table.assign(variant=name, options=json.dumps(options)))
+    return pd.concat(tables, ignore_index=True)[["variant", "options", *CV_COLUMNS]]

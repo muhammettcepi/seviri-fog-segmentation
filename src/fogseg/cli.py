@@ -373,6 +373,65 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     log.info("Wrote %s", out_path)
 
 
+def cmd_experiment(args: argparse.Namespace) -> None:
+    import pandas as pd
+    import xarray as xr
+
+    from fogseg.experiment import (
+        PHASE_B_VARIANTS,
+        combined_variants,
+        pooled_scores,
+        run_variants,
+        scored_cases,
+        winner,
+    )
+    from fogseg.labels import LabelParams
+    from fogseg.splits import read_splits, selection_cases, splits_path
+    from fogseg.validation import read_case_table, season_start
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "experimented on")
+
+    data_dir = Path(stations_cfg["data_dir"])
+    splits = read_splits(splits_path(data_dir, season))
+    cases = scored_cases(
+        selection_cases(
+            read_case_table(data_dir / f"cases_{labels_cfg['mode']}_{season}.csv"),
+            splits,
+            season_start(cfg, season),
+            cfg["region"]["bbox"],
+            stations_cfg,
+        )
+    )
+
+    params = LabelParams.from_config(labels_cfg)
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        table = run_variants(data, cases, params, PHASE_B_VARIANTS, stations_cfg)
+        combined = combined_variants(
+            table, stations_cfg["temporal_relax_grid"], params.texture, params.fog_index
+        )
+        table = pd.concat(
+            [table, run_variants(data, cases, params, combined, stations_cfg)], ignore_index=True
+        )
+
+    out_path = data_dir / "experiment_B.csv"
+    table.to_csv(out_path, index=False)
+
+    pooled = pooled_scores(table)
+    best = winner(table)
+    log.info(
+        "Experiment B winner %s: pooled POD %.3f, FAR %.3f; baseline POD %.3f, FAR %.3f",
+        best,
+        pooled.loc[best, "pod"],
+        pooled.loc[best, "far"],
+        pooled.loc["1 baseline", "pod"],
+        pooled.loc["1 baseline", "far"],
+    )
+    log.info("Wrote %s", out_path)
+
+
 def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:
     """Log the best value of a tuned parameter; a `report_only` grid does not decide the config value."""
     if report_only:
@@ -681,6 +740,14 @@ def main() -> None:
     diagnose.add_argument("--config", default="configs/default.yaml")
     diagnose.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
     diagnose.set_defaults(func=cmd_diagnose)
+
+    experiment = sub.add_parser(
+        "experiment", help="compare label variants at a matched FAR, cross-validated on the tuning season"
+    )
+    experiment.add_argument("--config", default="configs/default.yaml")
+    experiment.add_argument("--phase", required=True, choices=["B"], help="the set of variants to compare")
+    experiment.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
+    experiment.set_defaults(func=cmd_experiment)
 
     tune = sub.add_parser(
         "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"
