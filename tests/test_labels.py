@@ -16,6 +16,7 @@ from fogseg.labels import (
     emissivity_39,
     emissivity_btd_threshold,
     histogram_pixels,
+    label_night,
     label_scene,
     local_mad,
     local_std,
@@ -296,7 +297,7 @@ RIGHT_BLOB = (slice(2, 5), slice(8, 12))
 
 
 def two_blobs() -> tuple[np.ndarray, np.ndarray]:
-    """An IR_108 field and a region of two separate groups: a smooth one with a hot edge pixel and a rough one."""
+    """An IR_108 field and a region of two groups: a smooth one with a hot edge pixel and a rough one."""
     rows, cols = np.indices((8, 14))
     ir108 = np.full((8, 14), 270.0)
     ir108[RIGHT_BLOB] = 270.0 + 3.0 * np.where((rows + cols) % 2 == 0, 1.0, -1.0)[RIGHT_BLOB]
@@ -366,3 +367,61 @@ def test_emissivity_index_labels_like_the_btd_on_a_uniform_top():
     emissivity_labels = label_scene(ir039, ir108, ir120, sza, threshold, params)
     assert np.array_equal(emissivity_labels, label_scene(ir039, ir108, ir120, sza, 4.0, TEST_PARAMS))
     assert set(emissivity_labels.ravel()) == {FOG, NO_FOG, IGNORE}
+
+
+def test_nan_channel_stays_ignored_under_the_emissivity_index(recwarn):
+    ir039, ir108, ir120, sza = scene_arrays()
+    ir108[2, 2] = np.nan
+    ir039[3, 3] = np.nan
+    params = dataclasses.replace(TEST_PARAMS, fog_index="emissivity")
+    labels = label_scene(ir039, ir108, ir120, sza, 0.85, params)
+    assert labels[2, 2] == IGNORE and labels[3, 3] == IGNORE
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
+
+
+def night_arrays(
+    btd: list[float], ir108: list[float]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """A night of 9 x 9 scenes of warm ground, each with a central 3 x 3 block of the given BTD and IR_108."""
+    n_scenes = len(btd)
+    ir108_night = np.full((n_scenes, 9, 9), 270.0)
+    ir039_night = ir108_night - 0.5
+    for s in range(n_scenes):
+        ir108_night[s, 3:6, 3:6] = ir108[s]
+        ir039_night[s, 3:6, 3:6] = ir108[s] - btd[s]
+    return ir039_night, ir108_night, ir108_night - 0.5, np.full((n_scenes, 9, 9), 120.0)
+
+
+def relaxed(temporal_relax: float) -> LabelParams:
+    return dataclasses.replace(TEST_PARAMS, temporal_relax=temporal_relax)
+
+
+def test_hysteresis_turns_a_near_miss_next_to_fog_into_fog():
+    night = night_arrays(btd=[5.0, 3.3, 3.3], ir108=[270.0, 270.5, 270.5])
+    labels = label_night(*night, np.full(3, 4.0), relaxed(1.0))
+    assert labels[:, 4, 4].tolist() == [FOG, FOG, NO_FOG]  # scene 2 only sees the strict label of scene 1
+
+
+def test_hysteresis_needs_a_steady_top():
+    night = night_arrays(btd=[5.0, 3.3], ir108=[270.0, 273.0])
+    labels = label_night(*night, np.full(2, 4.0), relaxed(1.0))
+    assert labels[1, 4, 4] == NO_FOG
+
+
+def test_no_relax_gives_the_scene_labels():
+    night = night_arrays(btd=[5.0, 3.7, 4.2], ir108=[270.0, 270.0, 270.0])
+    labels = label_night(*night, np.full(3, 4.0), TEST_PARAMS)
+    for s in range(3):
+        assert np.array_equal(labels[s], label_scene(*(a[s] for a in night), 4.0, TEST_PARAMS))
+
+
+def test_obscured_pixel_next_to_fog_stays_obscured():
+    night = night_arrays(btd=[5.0, 3.9], ir108=[270.0, 250.0])
+    labels = label_night(*night, np.full(2, 4.0), relaxed(0.5))
+    assert labels[1, 4, 4] == OBSCURED
+
+
+def test_neighbours_are_the_stored_scenes():
+    night = night_arrays(btd=[5.0, 3.7], ir108=[270.0, 270.0])  # e.g. 21:00 and 03:00, 00:00 missing
+    labels = label_night(*night, np.full(2, 4.0), relaxed(0.5))
+    assert labels[1, 4, 4] == FOG

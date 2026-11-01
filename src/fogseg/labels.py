@@ -172,11 +172,12 @@ def texture_ok(ir108: np.ndarray, btd: np.ndarray, region: np.ndarray, params: L
         return local_mad(ir108) < limit
     if params.texture == "none":
         return np.ones(ir108.shape, dtype=bool)
-
-    group_ids, group_count = ndimage.label(region, structure=np.ones((3, 3), dtype=int))
-    group_spread = ndimage.median(local_std(ir108), group_ids, np.arange(1, group_count + 1))
-    is_smooth_group = np.concatenate([[False], np.asarray(group_spread) < limit])
-    return is_smooth_group[group_ids]
+    if params.texture == "blob":
+        group_ids, group_count = ndimage.label(region, structure=np.ones((3, 3), dtype=int))
+        group_spread = ndimage.median(local_std(ir108), group_ids, np.arange(1, group_count + 1))
+        is_smooth_group = np.concatenate([[False], np.asarray(group_spread) < limit])
+        return is_smooth_group[group_ids]
+    raise ValueError(f"unknown texture {params.texture!r}")
 
 
 def small_blobs(mask: np.ndarray, min_pixels: int) -> np.ndarray:
@@ -226,4 +227,46 @@ def label_scene(
 
     isolated = small_blobs(labels == FOG, params.min_blob_pixels)
     labels[isolated] = IGNORE
+    return labels
+
+
+def label_night(
+    ir039: np.ndarray,
+    ir108: np.ndarray,
+    ir120: np.ndarray,
+    sza: np.ndarray,
+    thresholds: np.ndarray,
+    params: LabelParams,
+) -> np.ndarray:
+    """Label the stored scenes of one night, shape (n_scenes, y, x), in time order.
+
+    Each scene gets its `label_scene` labels. With `params.temporal_relax` above zero, a not-fog pixel whose
+    BTD misses the threshold by less than `temporal_relax` K becomes fog, once and without iterating, when
+    the same pixel is fog in the previous or next stored scene and its IR_108 changed by less than
+    `params.temporal_max_dt108`. Obscured and untrusted pixels never change.
+    """
+    n_scenes = len(ir108)
+    strict = np.stack(
+        [label_scene(ir039[s], ir108[s], ir120[s], sza[s], thresholds[s], params) for s in range(n_scenes)]
+    )
+    if params.temporal_relax <= 0:
+        return strict
+
+    labels = strict.copy()
+    for s in range(n_scenes):
+        trusted = trusted_mask(ir039[s], ir108[s], ir120[s], sza[s], params.night_min_sza)
+        is_candidate = trusted & warm_and_not_cirrus(ir108[s], ir120[s], params)
+        btd = ir108[s] - ir039[s]
+        margin = btd - btd_threshold_image(ir108[s], thresholds[s], params)
+        region = is_candidate & (margin > -max(params.uncertainty_band, params.temporal_relax))
+        is_smooth = texture_ok(ir108[s], btd, region, params)
+        near_miss = is_candidate & is_smooth & (margin > -params.temporal_relax)
+
+        next_to_fog = np.zeros(ir108[s].shape, dtype=bool)
+        for neighbour in (s - 1, s + 1):
+            if 0 <= neighbour < n_scenes:
+                steady_top = np.abs(ir108[s] - ir108[neighbour]) < params.temporal_max_dt108
+                next_to_fog |= (strict[neighbour] == FOG) & steady_top
+
+        labels[s][near_miss & next_to_fog & np.isin(strict[s], (NO_FOG, IGNORE))] = FOG
     return labels
