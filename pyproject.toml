@@ -23,6 +23,7 @@ dependencies = [
     "rasterio",
     "matplotlib",
     "zarr>=3",
+    "cdsapi",
 ]
 
 [project.optional-dependencies]

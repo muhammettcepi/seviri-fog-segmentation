@@ -61,6 +61,12 @@ dem:
   raw_dir: "/mnt/d/fogseg-data/raw/dem"
   out_path: "/mnt/d/fogseg-data/processed/dem_ceu.zarr"
 
+# ERA5 surface fields at the scene times, with your own CDS key in ~/.cdsapirc (`fogseg era5`)
+era5:
+  raw_dir: "/mnt/d/fogseg-data/raw/era5"
+  out_path: "/mnt/d/fogseg-data/processed/era5_ceu.zarr"
+  variables: [2m_temperature, skin_temperature, 2m_dewpoint_temperature, snow_depth]
+
 # Station observations that check and tune the labels; design in docs/superpowers/specs/2026-10-28-station-validation-design.md
 stations:
   data_dir: "/mnt/d/fogseg-data/stations"

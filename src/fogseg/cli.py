@@ -137,6 +137,49 @@ def cmd_dem(args: argparse.Namespace) -> None:
     log.info("Wrote the DEM to %s in %.0f s", out_path, time.time() - started)
 
 
+def cmd_era5(args: argparse.Namespace) -> None:
+    import xarray as xr
+
+    from fogseg.era5 import (
+        build_era5_store,
+        download_months,
+        era5_area,
+        has_cds_credentials,
+        month_requests,
+    )
+
+    cfg = load_config(args.config)
+    era5_cfg = cfg["era5"]
+    out_path = Path(era5_cfg["out_path"])
+    if out_path.exists() and not args.overwrite:
+        raise FileExistsError(f"{out_path} exists; use --overwrite to rebuild it")
+    if not has_cds_credentials():
+        raise SystemExit(
+            "No CDS key found. Create an account and put your key in ~/.cdsapirc as described at "
+            "https://cds.climate.copernicus.eu/how-to-api"
+        )
+
+    import cdsapi
+
+    client = cdsapi.Client()
+
+    def retrieve(request: dict, path: Path) -> None:
+        client.retrieve("reanalysis-era5-single-levels", request, str(path))
+
+    started = time.time()
+    raw_dir = Path(era5_cfg["raw_dir"])
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        times = data["time"].values
+        lon, lat, y, x = (data[name].values for name in ("lon", "lat", "y", "x"))
+
+    requests = month_requests(times, era5_area(cfg["region"]["bbox"]), era5_cfg["variables"])
+    failed = download_months(requests, raw_dir, retrieve)
+    if failed:
+        log.warning("%d of %d months failed, run again to retry: %s", len(failed), len(requests), failed)
+    build_era5_store(times, lon, lat, y, x, raw_dir, out_path)
+    log.info("Wrote ERA5 to %s in %.0f s", out_path, time.time() - started)
+
+
 def cmd_stations(args: argparse.Namespace) -> None:
     import xarray as xr
 
@@ -506,6 +549,14 @@ def main() -> None:
     dem_cmd.add_argument("--config", default="configs/default.yaml")
     dem_cmd.add_argument("--overwrite", action="store_true", help="replace the DEM store if it exists")
     dem_cmd.set_defaults(func=cmd_dem)
+
+    era5_cmd = sub.add_parser(
+        "era5",
+        help="download ERA5 surface fields and put them on the SEVIRI grid (resumable, needs a CDS key)",
+    )
+    era5_cmd.add_argument("--config", default="configs/default.yaml")
+    era5_cmd.add_argument("--overwrite", action="store_true", help="replace the ERA5 store if it exists")
+    era5_cmd.set_defaults(func=cmd_era5)
 
     stations = sub.add_parser(
         "stations", help="download METAR and SYNOP observations of the dataset nights (resumable)"
