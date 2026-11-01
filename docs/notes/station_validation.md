@@ -186,6 +186,10 @@ How to read the views:
 and no BTD threshold can find them. Counted in, CSI falls from 0.420 to 0.201 and POD from 0.50 to 0.22. This is the
 largest single limit of the labels. A model trained on them learns that there is no fog under high cloud.
 
+*Since 1 November 2026 these pixels are labelled `2`, obscured, instead of `0`
+([`better_labels.md`](better_labels.md)). The scores here are unchanged: they leave the hidden cases out, and the
+counted-in view treats `2` as "no fog", as it treated `0`.*
+
 ### Ignored fog
 
 10.5 % of the defined FLS reports (20 % of the visible ones) have label `255`:
@@ -347,7 +351,8 @@ What it shows:
 - **The known failures are still there:**
   - cloud-free reports labelled fog: 0.06 in 43–47° N and 0.23 in 51–56° N (0.05 and 0.26 in training);
   - 17 % of the visible FLS reports are labelled `255` (20 % in training);
-  - fog under high cloud still gets `0`: counted in, CSI falls to 0.42.
+  - fog under high cloud still gets `0` (now `2`, obscured; see [`better_labels.md`](better_labels.md)): counted in,
+    CSI falls to 0.42.
 
 ## Next step: better labels before the U-Net
 
@@ -367,6 +372,9 @@ first. They are the next piece of work, in their own spec:
 5. **A station point loss** next to the dense labels when the U-Net is trained.
 6. **A station-trained model** (in the style of Jahani et al. 2025) as a benchmark and, if it beats the rule on
    held-out stations, as the source of the dense labels.
+
+The first part (the held-out protocol, the obscured class, the matching fixes and a diagnosis of the misses) is done;
+results and the next phases are in [`better_labels.md`](better_labels.md).
 
 ## Caveats
 

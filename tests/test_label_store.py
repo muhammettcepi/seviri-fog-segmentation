@@ -24,8 +24,8 @@ import fogseg
 from fogseg import label_store
 from fogseg.cli import cmd_label
 from fogseg.config import load_config
-from fogseg.label_store import label_dataset, label_store_path, summarize_store
-from fogseg.labels import FOG, IGNORE
+from fogseg.label_store import label_dataset, label_fractions, label_store_path, summarize_store
+from fogseg.labels import FOG, IGNORE, OBSCURED
 
 # Small enough for the 80-pixel test scenes, so the dynamic threshold really finds the clear-ground peak
 SMALL_SCENE_DYNAMIC = dataclasses.replace(TEST_DYNAMIC, min_pixels=10)
@@ -48,7 +48,7 @@ def test_store_has_spec_variables_and_aligns_with_the_dataset(tmp_path):
     assert label_dataset(data, out, "fixed", TEST_PARAMS) == 3
     labels = open_store(out)
     assert labels["label"].dtype == np.uint8
-    assert set(np.unique(labels["label"])) <= {0, 1, 255}
+    assert set(np.unique(labels["label"])) <= {0, 1, 2, 255}
     assert list(labels["threshold_source"].values) == ["fixed"] * 3
     merged = xr.merge([open_store(data), labels])
     assert merged.sizes["time"] == 3
@@ -64,6 +64,29 @@ def test_threshold_source_is_stored_as_a_variable_length_string(tmp_path):
     assert metadata["data_type"] == "string"
 
 
+def test_label_fractions_report_obscured_separately():
+    fog, ignored, obscured = label_fractions(np.array([1, 0, 2, 2, 255], dtype=np.uint8))
+    assert (fog, ignored, obscured) == (0.5, 0.2, 0.4)
+
+
+def test_label_fractions_exclude_obscured_pixels_from_the_decided_ones():
+    fog, _, _ = label_fractions(np.array([1, 2, 2, 2], dtype=np.uint8))
+    assert fog == 1.0
+
+
+def test_store_has_obscured_fraction_and_lists_value_2_in_the_label_name(tmp_path):
+    data = make_label_dataset(tmp_path / "data.zarr")
+    out = tmp_path / "labels_fixed.zarr"
+    label_dataset(data, out, "fixed", TEST_PARAMS)
+    labels = open_store(out)
+
+    assert labels["obscured_fraction"].dims == ("time",)
+    assert labels["obscured_fraction"].dtype == np.float32
+    assert "2 obscured" in labels["label"].attrs["long_name"]
+    expected = (labels["label"] == OBSCURED).mean(dim=["y", "x"]).values
+    np.testing.assert_allclose(labels["obscured_fraction"].values, expected)
+
+
 def test_store_variables_have_the_documented_layout(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_fixed.zarr"
@@ -72,7 +95,7 @@ def test_store_variables_have_the_documented_layout(tmp_path):
 
     assert labels["label"].dims == ("time", "y", "x")
     assert labels["label"].encoding["chunks"] == (8, LABEL_NY, LABEL_NX)
-    for name in ["btd_threshold", "fog_fraction", "ignore_fraction"]:
+    for name in ["btd_threshold", "fog_fraction", "ignore_fraction", "obscured_fraction"]:
         assert labels[name].dims == ("time",)
         assert labels[name].dtype == np.float32
     assert labels["threshold_source"].dims == ("time",)

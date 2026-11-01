@@ -9,9 +9,13 @@ INTERVAL_SCORES = ("pod", "far", "csi")
 INTERVAL_PERCENTILES = (2.5, 97.5)
 
 
-def contingency(label: np.ndarray, truth: np.ndarray) -> np.ndarray:
-    """Counts in `COUNT_NAMES` order; cases with label 255 (ignored) or truth -1 (undefined) are skipped."""
-    is_scored = np.isin(label, (0, 1)) & np.isin(truth, (0, 1))
+def contingency(label: np.ndarray, truth: np.ndarray, full_count: bool = False) -> np.ndarray:
+    """Counts in `COUNT_NAMES` order; label 2 (obscured) counts as no, truth -1 (undefined) is skipped.
+
+    Label 255 (ignored) is skipped too, unless `full_count` counts it as no.
+    """
+    scored_labels = (0, 1, 2, 255) if full_count else (0, 1, 2)
+    is_scored = np.isin(label, scored_labels) & np.isin(truth, (0, 1))
     is_fog = label[is_scored] == 1
     is_fls = truth[is_scored] == 1
     return np.array(
@@ -31,24 +35,28 @@ def ratio(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
 
 
 def skill(counts: np.ndarray) -> dict[str, np.ndarray]:
-    """POD, FAR, CSI and frequency bias from counts in `COUNT_NAMES` order, along the last axis.
+    """POD, FAR, CSI, frequency bias and HSS from counts in `COUNT_NAMES` order, along the last axis.
 
     A score is NaN where its denominator is 0, e.g. when a night or sample has no fog at all.
     """
-    hits, misses, false_alarms, _ = np.moveaxis(np.asarray(counts), -1, 0)
+    hits, misses, false_alarms, correct_negatives = np.moveaxis(np.asarray(counts), -1, 0)
+    heidke_denominator = (hits + misses) * (misses + correct_negatives) + (hits + false_alarms) * (
+        false_alarms + correct_negatives
+    )
     return {
         "pod": ratio(hits, hits + misses),
         "far": ratio(false_alarms, hits + false_alarms),
         "csi": ratio(hits, hits + misses + false_alarms),
         "bias": ratio(hits + false_alarms, hits + misses),
+        "hss": ratio(2 * (hits * correct_negatives - false_alarms * misses), heidke_denominator),
     }
 
 
 def counts_by_night(
-    night: np.ndarray, label: np.ndarray, truth: np.ndarray, nights: np.ndarray
+    night: np.ndarray, label: np.ndarray, truth: np.ndarray, nights: np.ndarray, full_count: bool = False
 ) -> np.ndarray:
     """Counts per night as an array of shape (len(nights), 4), rows in the order of `nights`."""
-    counts = [contingency(label[night == one], truth[night == one]) for one in nights]
+    counts = [contingency(label[night == one], truth[night == one], full_count) for one in nights]
     return np.array(counts, dtype=int).reshape(-1, 4)
 
 
@@ -79,7 +87,7 @@ def score_summary(
     """Row of a score table: the case count, the four counts, the scores and their bootstrap intervals.
 
     The columns are `n_cases`, `COUNT_NAMES`, then `pod`, `far` and `csi` with `<name>_low` and `<name>_high`
-    after each one in `interval_scores`, and `bias`. Without any night the intervals are NaN.
+    after each one in `interval_scores`, then `bias` and `hss`. Without any night the intervals are NaN.
     """
     counts = night_counts.sum(axis=0)
     point = skill(counts)
@@ -95,14 +103,15 @@ def score_summary(
         if name in interval_scores:
             row[f"{name}_low"], row[f"{name}_high"] = intervals[name]
     row["bias"] = float(point["bias"])
+    row["hss"] = float(point["hss"])
     return row
 
 
-def paired_csi_difference(
-    counts_a: np.ndarray, counts_b: np.ndarray, n_samples: int, seed: int
+def paired_difference(
+    counts_a: np.ndarray, counts_b: np.ndarray, score: str, n_samples: int, seed: int
 ) -> tuple[float, float]:
-    """95 % interval of CSI(a) - CSI(b); both are scored on the same drawn nights, so night effects cancel."""
+    """95 % interval of score(a) - score(b); both are scored on the same drawn nights, so night effects cancel."""
     drawn = draw_nights(len(counts_a), n_samples, seed)
-    csi_a = skill(counts_a[drawn].sum(axis=1))["csi"]
-    csi_b = skill(counts_b[drawn].sum(axis=1))["csi"]
-    return interval(csi_a - csi_b)
+    score_a = skill(counts_a[drawn].sum(axis=1))[score]
+    score_b = skill(counts_b[drawn].sum(axis=1))[score]
+    return interval(score_a - score_b)

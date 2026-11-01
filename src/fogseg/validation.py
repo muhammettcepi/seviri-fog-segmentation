@@ -13,14 +13,16 @@ import xarray as xr
 
 from fogseg.label_store import check_labels_match
 from fogseg.labels import IGNORE, LabelParams
+from fogseg.metar import CEILING_AMOUNTS
+from fogseg.parallax import EARTH_RADIUS_KM, apparent_position
 from fogseg.scores import counts_by_night, score_summary
+from fogseg.splits import held_out_part
 
 log = logging.getLogger("fogseg")
 
 SPEC_PATH = "docs/superpowers/specs/2026-10-28-station-validation-design.md"
 SOURCES = ("metar", "synop")
 TRUTH_YES, TRUTH_NO, TRUTH_UNDEFINED = 1, 0, -1
-EARTH_RADIUS_KM = 6371.0
 STATION_COLUMNS = ["station", "source", "lat", "lon", "elevation_m"]
 CASE_COLUMNS = [
     "scene_time",
@@ -39,7 +41,13 @@ CASE_COLUMNS = [
     "label",
     "hidden",
     "threshold_source",
+    "auto",
+    "ceiling_amount",
+    "shallow_fog",
+    "elevation_diff_m",
 ]
+METAR_DTYPES = {"auto": "boolean", "ceiling_amount": str, "shallow_fog": "boolean"}
+METAR_EMPTY = {"auto": pd.NA, "ceiling_amount": "", "shallow_fog": pd.NA}
 
 
 def truth_array(is_yes: np.ndarray, is_no: np.ndarray) -> np.ndarray:
@@ -151,15 +159,46 @@ def deduplicate(cases: pd.DataFrame) -> pd.DataFrame:
 
 
 def on_grid_stations(data: xr.Dataset, observations: pd.DataFrame, stations_cfg: dict) -> pd.DataFrame:
-    """The stations of the table that are close to a pixel centre and low enough, with that pixel."""
-    stations = observations[STATION_COLUMNS].drop_duplicates(["station", "source"])
-    return select_stations(
-        stations,
+    """The stations of the table that are close to a pixel centre and low enough, with that pixel.
+
+    The pixel is the one where a low cloud over the station appears from the satellite; `lat` and
+    `lon` stay the true position of the station.
+    """
+    stations = observations[STATION_COLUMNS].drop_duplicates(["station", "source"]).reset_index(drop=True)
+    cloud_top_m = stations["elevation_m"].fillna(0) + stations_cfg["parallax_cloud_top_m"]
+    apparent_lon, apparent_lat = apparent_position(
+        stations["lon"].values, stations["lat"].values, cloud_top_m.values
+    )
+    selected = select_stations(
+        stations.assign(lon=apparent_lon, lat=apparent_lat),
         data["lon"].values,
         data["lat"].values,
         stations_cfg["max_distance_km"],
         stations_cfg["max_elevation_m"],
     )
+    true_position = stations.set_index(["station", "source"])[["lat", "lon"]]
+    keys = pd.MultiIndex.from_frame(selected[["station", "source"]])
+    return selected.assign(
+        lat=true_position.loc[keys, "lat"].values, lon=true_position.loc[keys, "lon"].values
+    )
+
+
+def with_metar_columns(observations: pd.DataFrame) -> pd.DataFrame:
+    """The observations with `auto`, `ceiling_amount` and `shallow_fog`, empty where a table has none of them.
+
+    Empty means NA for the two flags and "" for the ceiling amount, as in the SYNOP rows.
+    """
+    missing = {name: empty for name, empty in METAR_EMPTY.items() if name not in observations}
+    filled = observations.assign(**missing).fillna({"ceiling_amount": ""})
+    return filled.astype(METAR_DTYPES)
+
+
+def elevation_at(dem: xr.Dataset | None, iy: np.ndarray, ix: np.ndarray) -> np.ndarray:
+    """Pixel-mean DEM elevation at the pixels (`iy`, `ix`); NaN without a DEM."""
+    if dem is None:
+        return np.full(len(iy), np.nan)
+    pixels = {"y": xr.DataArray(iy, dims="case"), "x": xr.DataArray(ix, dims="case")}
+    return dem["elevation_mean"].isel(pixels).values
 
 
 def station_cases(
@@ -169,18 +208,20 @@ def station_cases(
     stations_cfg: dict,
     params: LabelParams,
     selected: pd.DataFrame | None = None,
+    dem: xr.Dataset | None = None,
 ) -> pd.DataFrame:
     """The case table: truth of every matched station observation next to the label at its pixel.
 
     `hidden` marks cases whose pixel fails the labels' own warm-top and no-cirrus tests, so a
     high cloud covers the fog. `data` and `labels` must hold the same scenes. `selected` is the
     result of `on_grid_stations`, which is computed here if the caller does not have it yet.
+    `elevation_diff_m` is the station elevation minus the `dem` elevation of the case pixel.
     """
     if selected is None:
         selected = on_grid_stations(data, observations, stations_cfg)
     pixels = selected[["station", "source", "iy", "ix"]]
     matched = match_observations(
-        observations.merge(pixels, on=["station", "source"]),
+        with_metar_columns(observations).merge(pixels, on=["station", "source"]),
         labels["time"].values,
         stations_cfg["scan_delay_min"],
         stations_cfg["time_tolerance_min"],
@@ -194,6 +235,7 @@ def station_cases(
     }
     ir108 = data["bt"].sel(channel="IR_108").isel(at_cases).values
     ir120 = data["bt"].sel(channel="IR_120").isel(at_cases).values
+    pixel_elevation_m = elevation_at(dem, matched["iy"].values, matched["ix"].values)
 
     cases = matched.assign(
         night=night_of(matched["scene_time"]),
@@ -205,18 +247,28 @@ def station_cases(
         label=labels["label"].isel(at_cases).values,
         hidden=(ir108 < params.warm_min_bt108) | (ir108 - ir120 >= params.cirrus_max_split),
         threshold_source=labels["threshold_source"].isel(time=at_cases["time"]).values.astype(object),
+        elevation_diff_m=matched["elevation_m"].values - pixel_elevation_m,
     )
     return cases[CASE_COLUMNS]
 
 
-def season_bounds(cfg: dict, season: str) -> tuple[np.datetime64, np.datetime64]:
-    """Noon of a season's first day to noon after its last, so each night keeps its 00:00 to 05:00 slots."""
+def season_days(cfg: dict, season: str) -> tuple[np.datetime64, np.datetime64]:
+    """First and last day of a season in the config."""
     seasons = {entry["name"]: entry for entry in cfg["time"]["seasons"]}
     if season not in seasons:
         raise ValueError(f"Unknown season {season!r}; the config has {', '.join(seasons)}")
+    return np.datetime64(seasons[season]["start"], "D"), np.datetime64(seasons[season]["end"], "D")
+
+
+def season_start(cfg: dict, season: str) -> np.datetime64:
+    """First day of a season, where the night blocks of its split start."""
+    return season_days(cfg, season)[0]
+
+
+def season_bounds(cfg: dict, season: str) -> tuple[np.datetime64, np.datetime64]:
+    """Noon of a season's first day to noon after its last, so each night keeps its 00:00 to 05:00 slots."""
     noon = np.timedelta64(12, "h")
-    first_day = np.datetime64(seasons[season]["start"], "D")
-    last_day = np.datetime64(seasons[season]["end"], "D")
+    first_day, last_day = season_days(cfg, season)
     return (
         (first_day + noon).astype("datetime64[ns]"),
         (last_day + np.timedelta64(1, "D") + noon).astype("datetime64[ns]"),
@@ -252,6 +304,7 @@ def season_cases(
     cfg: dict,
     season: str,
     params: LabelParams,
+    dem: xr.Dataset | None = None,
 ) -> pd.DataFrame:
     """The case table of the scenes of one season, from a dataset and the label store made from it.
 
@@ -264,7 +317,13 @@ def season_cases(
     stations_cfg = cfg["stations"]
     selected = on_grid_stations(data, observations, stations_cfg)
     cases = station_cases(
-        data.isel(time=in_season), labels.isel(time=in_season), observations, stations_cfg, params, selected
+        data.isel(time=in_season),
+        labels.isel(time=in_season),
+        observations,
+        stations_cfg,
+        params,
+        selected,
+        dem,
     )
     log_stations_without_cases(selected, cases, season)
     return cases
@@ -285,17 +344,20 @@ def observation_paths(data_dir: Path) -> list[Path]:
 
 
 def read_observations(data_dir: Path) -> pd.DataFrame:
-    """The METAR and SYNOP tables that `fogseg stations` wrote; one of them may be missing."""
+    """The METAR and SYNOP tables that `fogseg stations` wrote; one of them may be missing.
+
+    A table written before the METAR columns existed gets them empty, see `with_metar_columns`.
+    """
     tables = []
     for source, path in zip(SOURCES, observation_paths(data_dir), strict=True):
         if path.exists():
-            tables.append(pd.read_csv(path, dtype={"station": str}, parse_dates=["time"]))
+            tables.append(pd.read_csv(path, dtype={"station": str, **METAR_DTYPES}, parse_dates=["time"]))
         else:
             log.warning("%s is missing; scoring without %s observations", path, source)
     if not tables:
         missing = " and ".join(path.name for path in observation_paths(data_dir))
         raise FileNotFoundError(f"{missing} not found in {data_dir}; run `fogseg stations` first")
-    return pd.concat(tables, ignore_index=True)
+    return with_metar_columns(pd.concat(tables, ignore_index=True))
 
 
 class View(NamedTuple):
@@ -308,12 +370,29 @@ class View(NamedTuple):
     keep_hidden: bool = False
 
 
-def score_row(view: View, n_samples: int, seed: int) -> dict:
-    """Counts, scores with bootstrap intervals, and the cases of the view that were not scored.
+def full_count_scores(night_counts: np.ndarray, n_samples: int, seed: int) -> dict:
+    """The case count, POD and FAR with bootstrap intervals, CSI, HSS and bias of the full count.
 
-    The three `n_fls_*` counts take every case of the view, hidden or not, so they are separate
-    diagnostics that may overlap: a hidden case with an ignored label is in both. They refer to the
-    truth the view is scored against, which is the fog truth in the `fog_only` row.
+    The columns are `n_cases_full` and `<score>_full`.
+    """
+    summary = score_summary(night_counts, n_samples, seed, interval_scores=("pod", "far"))
+    scores = {"n_cases_full": summary["n_cases"]}
+    for name in ("pod", "far"):
+        scores[f"{name}_full"] = summary[name]
+        scores[f"{name}_full_low"] = summary[f"{name}_low"]
+        scores[f"{name}_full_high"] = summary[f"{name}_high"]
+    for name in ("csi", "hss", "bias"):
+        scores[f"{name}_full"] = summary[name]
+    return scores
+
+
+def score_row(view: View, n_samples: int, seed: int) -> dict:
+    """Counts, scores with bootstrap intervals, the full-count scores, and the cases that were not scored.
+
+    The decided-only counts skip ignored labels; the full count takes them as "no fog", so an ignored
+    fog case is a miss there. The three `n_fls_*` counts take every case of the view, hidden or not,
+    so they are separate diagnostics that may overlap: a hidden case with an ignored label is in both.
+    They refer to the truth the view is scored against, which is the fog truth in the `fog_only` row.
     """
     scored = view.cases if view.keep_hidden else view.cases[~view.cases["hidden"]]
     label, truth, night = (
@@ -321,10 +400,13 @@ def score_row(view: View, n_samples: int, seed: int) -> dict:
         scored[view.truth_column].to_numpy(),
         scored["night"].to_numpy(),
     )
-    night_counts = counts_by_night(night, label, truth, np.unique(night))
+    nights = np.unique(night)
+    night_counts = counts_by_night(night, label, truth, nights)
+    full_night_counts = counts_by_night(night, label, truth, nights, full_count=True)
 
     row = {"view": view.name, "group": view.group}
     row |= score_summary(night_counts, n_samples, seed)
+    row |= full_count_scores(full_night_counts, n_samples, seed)
 
     all_truth = view.cases[view.truth_column]
     is_ignored = view.cases["label"] == IGNORE
@@ -334,11 +416,39 @@ def score_row(view: View, n_samples: int, seed: int) -> dict:
     return row
 
 
-def score_table(cases: pd.DataFrame, lat_bands: list[float], n_samples: int, seed: int) -> pd.DataFrame:
+def flag_is(flags: pd.Series, value: bool) -> pd.Series:
+    """Where a nullable flag equals `value`; a missing flag never does."""
+    return flags.astype("boolean").eq(value).fillna(False)
+
+
+def bin_name(low: float, high: float) -> str:
+    """Group name of the bin `low <= x < high`, like "<-100", "-100-100" or ">=100"."""
+    if low == -np.inf:
+        return f"<{high:g}"
+    if high == np.inf:
+        return f">={low:g}"
+    return f"{low:g}-{high:g}"
+
+
+def split_views(pooled: pd.DataFrame, n_folds: int) -> list[View]:
+    """The selection cases, the held-out cases, and the held-out cases by what is unseen in them."""
+    part = held_out_part(pooled, n_folds)
+    return [
+        View("split", "selection", pooled[part == "selection"]),
+        View("split", "held_out", pooled[part != "selection"]),
+        View("split", "held_out_nights", pooled[part == "nights"]),
+        View("split", "held_out_stations", pooled[part == "stations"]),
+        View("split", "held_out_both", pooled[part == "both"]),
+    ]
+
+
+def score_table(cases: pd.DataFrame, stations_cfg: dict, n_samples: int, seed: int) -> pd.DataFrame:
     """POD, FAR, CSI and bias with bootstrap intervals, one row per view of the case table.
 
-    Besides the pooled `main` row there are rows per source, threshold source, latitude band and slot,
-    one against the fog-only truth, and one that keeps the hidden cases.
+    Besides the pooled `main` row there are rows per source, threshold source, latitude band, slot,
+    METAR `auto` flag (SYNOP has none), ceiling amount of the cases that are fog or low stratus by their
+    ceiling, shallow fog and elevation difference; one row against the fog-only truth and one that keeps
+    the hidden cases. Cases with folds also get the `split` rows.
     """
     pooled = deduplicate(cases)
     views = [View("main", "all", pooled)]
@@ -349,11 +459,31 @@ def score_table(cases: pd.DataFrame, lat_bands: list[float], n_samples: int, see
     ]
     views += [
         View("lat_band", f"{low:g}-{high:g}", pooled[(pooled["lat"] >= low) & (pooled["lat"] < high)])
-        for low, high in itertools.pairwise(lat_bands)
+        for low, high in itertools.pairwise(stations_cfg["lat_bands"])
     ]
     views += [View("slot", slot, pooled[pooled["slot"] == slot]) for slot in sorted(pooled["slot"].unique())]
+
+    views += [
+        View("auto", "true", pooled[flag_is(pooled["auto"], True)]),
+        View("auto", "false", pooled[flag_is(pooled["auto"], False)]),
+    ]
+    fls_by_ceiling = pooled[pooled["ceiling_m"] < stations_cfg["truth_limit_m"]]
+    views += [
+        View("ceiling_amount", amount, fls_by_ceiling[fls_by_ceiling["ceiling_amount"] == amount])
+        for amount in sorted(CEILING_AMOUNTS)
+    ]
+    views += [View("shallow_fog", "true", pooled[flag_is(pooled["shallow_fog"], True)])]
+    elevation_edges = [-np.inf, *stations_cfg["elevation_diff_bins"], np.inf]
+    elevation_diff = pooled["elevation_diff_m"]
+    views += [
+        View("elevation_diff", bin_name(low, high), pooled[(elevation_diff >= low) & (elevation_diff < high)])
+        for low, high in itertools.pairwise(elevation_edges)
+    ]
+
     views += [
         View("fog_only", "all", pooled, truth_column="truth_fog"),
         View("with_hidden", "all", pooled, keep_hidden=True),
     ]
+    if "night_fold" in pooled:
+        views += split_views(pooled, stations_cfg["n_folds"])
     return pd.DataFrame([score_row(view, n_samples, seed) for view in views])

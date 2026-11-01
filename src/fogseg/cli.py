@@ -121,6 +121,71 @@ def cmd_label(args: argparse.Namespace) -> None:
     log.info("Mean fog fraction over scenes with decided pixels: %.4f", mean_fog_fraction)
 
 
+def cmd_dem(args: argparse.Namespace) -> None:
+    import xarray as xr
+
+    from fogseg.dem import build_dem_store, http_fetch
+
+    cfg = load_config(args.config)
+    out_path = Path(cfg["dem"]["out_path"])
+    if out_path.exists() and not args.overwrite:
+        raise FileExistsError(f"{out_path} exists; use --overwrite to rebuild it")
+
+    started = time.time()
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        build_dem_store(data, Path(cfg["dem"]["raw_dir"]), out_path, http_fetch)
+    log.info("Wrote the DEM to %s in %.0f s", out_path, time.time() - started)
+
+
+def cmd_era5(args: argparse.Namespace) -> None:
+    import xarray as xr
+
+    from fogseg.era5 import (
+        build_era5_store,
+        download_months,
+        era5_area,
+        has_cds_credentials,
+        month_requests,
+    )
+
+    cfg = load_config(args.config)
+    era5_cfg = cfg["era5"]
+    out_path = Path(era5_cfg["out_path"])
+    if out_path.exists() and not args.overwrite:
+        raise FileExistsError(f"{out_path} exists; use --overwrite to rebuild it")
+    if not has_cds_credentials():
+        raise SystemExit(
+            "No CDS key found. Create an account and put your key in ~/.cdsapirc as described at "
+            "https://cds.climate.copernicus.eu/how-to-api"
+        )
+
+    import cdsapi
+
+    client = cdsapi.Client()
+
+    def retrieve(request: dict, path: Path) -> None:
+        client.retrieve("reanalysis-era5-single-levels", request, str(path))
+
+    started = time.time()
+    raw_dir = Path(era5_cfg["raw_dir"])
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        times = data["time"].values
+        lon, lat, y, x = (data[name].values for name in ("lon", "lat", "y", "x"))
+
+    requests = month_requests(times, era5_area(lon, lat), era5_cfg["variables"])
+    failed = download_months(requests, raw_dir, retrieve)
+    if failed:
+        log.error(
+            "%d of %d months failed: %s. No store written; run `fogseg era5` again (cached months are kept)",
+            len(failed),
+            len(requests),
+            failed,
+        )
+        return
+    build_era5_store(times, lon, lat, y, x, raw_dir, out_path)
+    log.info("Wrote ERA5 to %s in %.0f s", out_path, time.time() - started)
+
+
 def cmd_stations(args: argparse.Namespace) -> None:
     import xarray as xr
 
@@ -146,16 +211,20 @@ def cmd_stations(args: argparse.Namespace) -> None:
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
+    import pandas as pd
     import xarray as xr
 
+    from fogseg.dem import read_dem
     from fogseg.dynamic_threshold import DynamicParams
     from fogseg.label_store import label_store_path, stored_params
+    from fogseg.splits import assign_folds, splits_path
     from fogseg.validation import (
         check_season_allowed,
         observation_paths,
         read_observations,
         score_table,
         season_cases,
+        season_start,
     )
 
     cfg = load_config(args.config)
@@ -165,6 +234,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
 
     data_dir = Path(stations_cfg["data_dir"])
     observations = read_observations(data_dir)
+    dem = read_dem(Path(cfg["dem"]["out_path"]))
 
     store_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
     with (
@@ -173,7 +243,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
     ):
         # The hidden test must use the thresholds the labels were made with, even after a config edit.
         params, _ = stored_params(labels.attrs, DynamicParams.from_config(labels_cfg["dynamic"]))
-        cases = season_cases(data, labels, observations, cfg, args.season, params)
+        cases = season_cases(data, labels, observations, cfg, args.season, params, dem)
 
     if cases.empty:
         log.warning(
@@ -182,9 +252,16 @@ def cmd_validate(args: argparse.Namespace) -> None:
             ", ".join(str(path) for path in observation_paths(data_dir)),
         )
 
-    scores = score_table(
-        cases, stations_cfg["lat_bands"], stations_cfg["bootstrap_samples"], stations_cfg["seed"]
-    )
+    split_path = splits_path(data_dir, args.season)
+    if args.season == stations_cfg["tune_season"]:
+        if split_path.exists():
+            splits = pd.read_csv(split_path)
+            start = season_start(cfg, args.season)
+            cases = assign_folds(cases, splits, start, cfg["region"]["bbox"], stations_cfg)
+        else:
+            log.info("%s not found, so the cases get no folds; run `fogseg split` first", split_path)
+
+    scores = score_table(cases, stations_cfg, stations_cfg["bootstrap_samples"], stations_cfg["seed"])
     cases_path = data_dir / f"cases_{mode}_{args.season}.csv"
     scores_path = data_dir / f"scores_{mode}_{args.season}.csv"
     cases.to_csv(cases_path, index=False)
@@ -201,7 +278,99 @@ def cmd_validate(args: argparse.Namespace) -> None:
         main["csi"],
         main["bias"],
     )
+    log.info("Full count, all cases: POD %.3f, FAR %.3f", main["pod_full"], main["far_full"])
+    held_out = scores[(scores["view"] == "split") & (scores["group"] == "held_out")]
+    if not held_out.empty:
+        log.info(
+            "Full count, held-out cases: POD %.3f, FAR %.3f",
+            held_out["pod_full"].iloc[0],
+            held_out["far_full"].iloc[0],
+        )
     log.info("Wrote %s and %s", cases_path, scores_path)
+
+
+def require_tune_season(stations_cfg: dict, season: str, verb: str) -> None:
+    """Refuse every season but the tuning season, so the test season stays unseen."""
+    if season != stations_cfg["tune_season"]:
+        raise PermissionError(
+            f"Season {season} is not the tuning season {stations_cfg['tune_season']}; only that season is {verb}"
+        )
+
+
+def cmd_split(args: argparse.Namespace) -> None:
+    from fogseg.splits import make_splits, splits_path
+    from fogseg.validation import season_days
+
+    cfg = load_config(args.config)
+    stations_cfg = cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "split")
+
+    out_path = splits_path(Path(stations_cfg["data_dir"]), season)
+    if out_path.exists() and not args.overwrite:
+        raise FileExistsError(f"{out_path} exists and fixes the folds; use --overwrite to redraw them")
+
+    first_day, last_day = season_days(cfg, season)
+    splits = make_splits(first_day, last_day, cfg["region"]["bbox"], stations_cfg)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    splits.to_csv(out_path, index=False)
+    log.info("Wrote %d night blocks and station cells to %s", len(splits), out_path)
+
+
+def cmd_diagnose(args: argparse.Namespace) -> None:
+    from contextlib import ExitStack
+
+    import xarray as xr
+
+    from fogseg.diagnosis import case_features, check_fixed_mode, diagnosis_table, read_selection_cases
+    from fogseg.label_store import check_labels_match, label_store_path
+    from fogseg.labels import LabelParams
+    from fogseg.splits import splits_path
+    from fogseg.validation import season_start
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "diagnosed")
+
+    mode = labels_cfg["mode"]
+    check_fixed_mode(mode)
+    data_dir = Path(stations_cfg["data_dir"])
+    cases = read_selection_cases(
+        data_dir / f"cases_{mode}_{season}.csv",
+        splits_path(data_dir, season),
+        season_start(cfg, season),
+        cfg["region"]["bbox"],
+        stations_cfg,
+    )
+
+    era5_path = Path(cfg["era5"]["out_path"])
+    if not era5_path.exists():
+        log.warning("%s is missing; the ERA5 columns stay empty", era5_path)
+    with ExitStack() as stack:
+        data = stack.enter_context(xr.open_zarr(cfg["data"]["processed_path"], consolidated=False))
+        labels = stack.enter_context(
+            xr.open_zarr(label_store_path(Path(labels_cfg["output_dir"]), mode), consolidated=False)
+        )
+        era5 = (
+            stack.enter_context(xr.open_zarr(era5_path, consolidated=False)) if era5_path.exists() else None
+        )
+        check_labels_match(data, labels)
+        cases = case_features(data, labels, era5, cases)
+        params = LabelParams.from_config(labels.attrs)
+
+    table = diagnosis_table(cases, params)
+    out_path = data_dir / f"diagnosis_{season}.csv"
+    table.to_csv(out_path, index=False)
+
+    shares = table[(table["section"] == "first_cause") & (table["statistic"] == "share")]
+    log.info(
+        "Season %s, %d selection cases; first cause of the visible FLS misses: %s",
+        season,
+        len(cases),
+        ", ".join(f"{row.variable} {row.fls_missed:.1%}" for row in shares.itertuples()),
+    )
+    log.info("Wrote %s", out_path)
 
 
 def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:
@@ -235,6 +404,7 @@ def cmd_tune(args: argparse.Namespace) -> None:
     from fogseg.dynamic_threshold import DynamicParams
     from fogseg.label_store import label_store_path
     from fogseg.labels import LabelParams
+    from fogseg.splits import read_splits, selection_cases, splits_path
     from fogseg.tuning import tune_parameter
     from fogseg.validation import (
         TRUTH_NO,
@@ -243,6 +413,7 @@ def cmd_tune(args: argparse.Namespace) -> None:
         observation_paths,
         read_observations,
         season_cases,
+        season_start,
     )
 
     cfg = load_config(args.config)
@@ -252,6 +423,8 @@ def cmd_tune(args: argparse.Namespace) -> None:
     dynamic = DynamicParams.from_config(labels_cfg["dynamic"])
 
     data_dir = Path(stations_cfg["data_dir"])
+    split_path = splits_path(data_dir, season)
+    splits = read_splits(split_path)
     observations = read_observations(data_dir)
 
     store_path = label_store_path(Path(labels_cfg["output_dir"]), "dynamic")
@@ -259,13 +432,21 @@ def cmd_tune(args: argparse.Namespace) -> None:
         xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
         xr.open_zarr(store_path, consolidated=False) as labels,
     ):
-        cases = deduplicate(season_cases(data, labels, observations, cfg, season, params))
+        # Only the selection cases choose: the held-out fold never reaches the tuning
+        cases = selection_cases(
+            deduplicate(season_cases(data, labels, observations, cfg, season, params)),
+            splits,
+            season_start(cfg, season),
+            cfg["region"]["bbox"],
+            stations_cfg,
+        )
         cases = cases[cases["truth_fls"].isin([TRUTH_NO, TRUTH_YES]) & ~cases["hidden"]]
         if cases.empty:
             log.warning(
-                "No station observation with a known truth matches a scene of season %s; check %s",
+                "No selection case with a known truth in season %s; check %s and %s",
                 season,
                 ", ".join(str(path) for path in observation_paths(data_dir)),
+                split_path,
             )
             return
 
@@ -457,6 +638,19 @@ def main() -> None:
     label.add_argument("--overwrite", action="store_true", help="replace the label store if it exists")
     label.set_defaults(func=cmd_label)
 
+    dem_cmd = sub.add_parser("dem", help="average the Copernicus DEM onto the SEVIRI grid (resumable)")
+    dem_cmd.add_argument("--config", default="configs/default.yaml")
+    dem_cmd.add_argument("--overwrite", action="store_true", help="replace the DEM store if it exists")
+    dem_cmd.set_defaults(func=cmd_dem)
+
+    era5_cmd = sub.add_parser(
+        "era5",
+        help="download ERA5 surface fields and put them on the SEVIRI grid (resumable, needs a CDS key)",
+    )
+    era5_cmd.add_argument("--config", default="configs/default.yaml")
+    era5_cmd.add_argument("--overwrite", action="store_true", help="replace the ERA5 store if it exists")
+    era5_cmd.set_defaults(func=cmd_era5)
+
     stations = sub.add_parser(
         "stations", help="download METAR and SYNOP observations of the dataset nights (resumable)"
     )
@@ -472,6 +666,21 @@ def main() -> None:
         "--final", action="store_true", help="allow the test season, which is scored once at the end"
     )
     validate.set_defaults(func=cmd_validate)
+
+    split = sub.add_parser(
+        "split", help="draw the night blocks and station cells of the tuning season into the folds"
+    )
+    split.add_argument("--config", default="configs/default.yaml")
+    split.add_argument("--season", help="default: stations.tune_season of the config")
+    split.add_argument("--overwrite", action="store_true", help="redraw the folds if the file exists")
+    split.set_defaults(func=cmd_split)
+
+    diagnose = sub.add_parser(
+        "diagnose", help="find why visible station fog is missed, on the selection cases of the tuning season"
+    )
+    diagnose.add_argument("--config", default="configs/default.yaml")
+    diagnose.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
+    diagnose.set_defaults(func=cmd_diagnose)
 
     tune = sub.add_parser(
         "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"

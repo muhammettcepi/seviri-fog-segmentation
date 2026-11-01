@@ -40,10 +40,11 @@ its own clear-ground level. The measurements are in
 
 ## Fog labels
 
-Every pixel of every scene gets one of three labels: `1` fog or low stratus, `0` not fog, `255`
-ignore (twilight, missing data, or too close to the threshold to call). A pixel is fog if its BTD
-is above a threshold, its cloud top is warm, it is not thin cirrus and the top is smooth; small
-patches and the pixels within 0.5 K of the threshold (on either side) are ignored. Two modes exist:
+Every pixel of every scene gets one of four labels: `1` fog or low stratus, `0` not fog, `2` obscured
+(a cold top or thin cirrus hides what is below), `255` ignore (twilight, missing data, or too close to
+the threshold to call). A pixel is fog if its BTD is above a threshold, its cloud top is warm, it is
+not thin cirrus and the top is smooth; small patches and the pixels within 0.5 K of the threshold (on
+either side) are ignored. Two modes exist:
 
 - `fixed` (the default): the threshold is 4.0 K for every scene.
 - `dynamic`: the threshold is the scene's clear-ground peak plus 1.5 K, and 4.0 K when no peak can
@@ -58,8 +59,8 @@ The rule, the thresholds, and per-season statistics are in the
 15 training-season scenes is in [`docs/notes/label_check.md`](docs/notes/label_check.md).
 
 These are **weak labels**: a rule on satellite data, not an observation on the ground. A satellite
-sees cloud tops, so fog and low stratus cannot be told apart, and fog under higher cloud is
-labelled `0`.
+sees cloud tops, so fog and low stratus cannot be told apart, and fog under higher cloud cannot be
+seen: it is labelled `2`, obscured.
 
 ## Validation against stations
 
@@ -83,10 +84,15 @@ Some limits:
   cloud-free ground in the north is labelled fog, so 4.0 K was chosen instead.
 - **Clear ground in the north still gets false fog.** A quarter of it is labelled fog at 4.0 K, against 5 % in the
   south (viewing-angle drift).
-- **Half of the reported fog lies under high cloud**, where the labels say `0`.
+- **Half of the reported fog lies under high cloud**, where the labels say `2`, obscured.
 
 Everything, including the test-season result, is in
 [`docs/notes/station_validation.md`](docs/notes/station_validation.md).
+
+The work on better labels before a model is trained is in
+[`docs/notes/better_labels.md`](docs/notes/better_labels.md): a held-out set of nights and stations, a full count in
+which an ignored pixel under a fog report is a miss (POD 0.43 at FAR 0.25 on the held-out cases for the 4.0 K
+labels), and why the visible fog is missed (half of it has a BTD where clear ground sits, mostly broken decks).
 
 ## How the parts fit together
 
@@ -113,6 +119,17 @@ flowchart LR
     dynamic --> validate
     data --> validate
     validate --> scores["scores, cases, tuning grids"]
+    glo["Copernicus GLO-90 (AWS)"] --> dem["fogseg dem"]
+    dem --> demstore["dem_ceu.zarr"]
+    demstore --> validate
+    cds["Copernicus CDS, ERA5"] --> era5["fogseg era5"]
+    era5 --> era5store["era5_ceu.zarr"]
+    split["fogseg split"] --> folds["splits_2023-24.csv"]
+    folds --> validate
+    scores --> diagnose["fogseg diagnose"]
+    folds --> diagnose
+    era5store --> diagnose
+    diagnose --> diagnosis["diagnosis_2023-24.csv"]
 ```
 
 ## What exists so far
@@ -124,13 +141,18 @@ flowchart LR
 | Quick access test (token, search, 1 KB download) | `fogseg check` |
 | Stack all scenes into one ML-ready Zarr store | `fogseg build` ([`src/fogseg/build.py`](src/fogseg/build.py)) |
 | Where clear ground and low cloud sit in the BTD, and the thresholds measured from it | [`notebooks/02_explore_btd.ipynb`](notebooks/02_explore_btd.ipynb), [`docs/notes/btd_exploration.md`](docs/notes/btd_exploration.md) |
-| Weak fog labels (`0` / `1` / `255`), one Zarr store per mode, `fixed` or `dynamic` threshold | `fogseg label` ([`src/fogseg/label_store.py`](src/fogseg/label_store.py), [`labels.py`](src/fogseg/labels.py), [`dynamic_threshold.py`](src/fogseg/dynamic_threshold.py)) |
+| Weak fog labels (`0` / `1` / `2` / `255`), one Zarr store per mode, `fixed` or `dynamic` threshold | `fogseg label` ([`src/fogseg/label_store.py`](src/fogseg/label_store.py), [`labels.py`](src/fogseg/labels.py), [`dynamic_threshold.py`](src/fogseg/dynamic_threshold.py)) |
 | Check figure of one scene: RGB, labels, BTD histogram, solar zenith angle | `fogseg inspect` ([`src/fogseg/inspect.py`](src/fogseg/inspect.py)) |
 | Pick the 15 training-season scenes to check by eye, with a fixed rule | `fogseg select-scenes` → [`configs/check_scenes.yaml`](configs/check_scenes.yaml) |
 | The visual check of the labels | [`docs/notes/label_check.md`](docs/notes/label_check.md) |
 | Download METAR and SYNOP reports for the stations in the domain (resumable) | `fogseg stations` ([`observations.py`](src/fogseg/observations.py), [`metar.py`](src/fogseg/metar.py), [`synop.py`](src/fogseg/synop.py)) |
 | Score a label store against the stations: POD, FAR, CSI with bootstrap intervals over nights | `fogseg validate` ([`validation.py`](src/fogseg/validation.py), [`scores.py`](src/fogseg/scores.py)) |
 | Tune the BTD threshold on the training season | `fogseg tune` ([`tuning.py`](src/fogseg/tuning.py)) |
+| Held-out nights and stations of the training season, and the cross-validation folds | `fogseg split` ([`splits.py`](src/fogseg/splits.py)) |
+| Pixel-mean terrain height from Copernicus GLO-90 | `fogseg dem` ([`dem.py`](src/fogseg/dem.py)) |
+| ERA5 2 m temperature, skin temperature, dewpoint and snow depth at each scene, on the grid | `fogseg era5` ([`era5.py`](src/fogseg/era5.py)) |
+| Why visible station fog is missed, on the selection cases | `fogseg diagnose` ([`diagnosis.py`](src/fogseg/diagnosis.py)) |
+| The protocol, the re-scored baseline and the miss diagnosis | [`docs/notes/better_labels.md`](docs/notes/better_labels.md) |
 | The station check, the tuning decisions and where the labels fail | [`docs/notes/station_validation.md`](docs/notes/station_validation.md) |
 | All settings (region, channels, seasons, night slots, label thresholds, paths) | [`configs/default.yaml`](configs/default.yaml) |
 | Tests on tiny synthetic scenes (no data or credentials needed) | `pytest` ([`tests/`](tests/)) |
@@ -160,8 +182,12 @@ fogseg select-scenes                  # write configs/check_scenes.yaml (uses la
 fogseg inspect --time 2024-02-29T03:00 --labels dynamic   # one check figure, a PNG in labels.figures_dir
 
 fogseg stations                       # METAR and SYNOP reports (no account needed; SYNOP takes many hours)
+fogseg dem                            # terrain height per pixel (public AWS bucket, ~3 min)
+fogseg era5                           # ERA5 fields per scene; needs a CDS key in ~/.cdsapirc
+fogseg split                          # held-out nights and stations, written once
 fogseg validate --season 2023-24      # score labels.mode against the stations
-fogseg tune                           # tuning grids on the training season
+fogseg diagnose                       # why visible fog is missed, selection cases only
+fogseg tune                           # tuning grids on the selection cases of the training season
 
 pip install -e ".[dev]" && pytest     # run the tests
 ```
