@@ -15,11 +15,15 @@ Everything is measured on the 2023-24 training season. The 2024-25 test season w
   so every fold holds early and late winter.
 - **Station cells:** 2° × 2° cells from the south-west corner of the region, dealt to folds 1–5 in a random order fixed
   by `stations.seed`.
-- **Held-out:** every case whose night or station is in fold 5, 37 % of the visible cases. It is never used to choose
-  anything, and each phase opens it once, for its one winner. It is reported in three parts: unseen nights only,
-  unseen stations only, both.
+- **Held-out:** every case whose night or station is in fold 5, 36 % of the cases. From now on nothing is chosen on
+  it, and each phase opens it once, for its one winner. It is reported in three parts: unseen nights only, unseen
+  stations only, both.
 - **Selection:** nights and stations both in folds 1–4. Every threshold and variant of phases B and C is chosen here,
-  with a blocked four-fold cross-validation.
+  with a blocked four-fold cross-validation. `fogseg tune` and `fogseg diagnose` read only these cases and refuse to
+  run without the split file.
+
+One caveat: the baseline's 4.0 K was chosen in PR #5 on all 2023-24 cases, before the split existed, so the held-out
+cases have seen that choice. This favours the baseline, which makes a later gain over it harder to show, not easier.
 
 The main score is the **full count**: label `1` is "fog", and `0`, `2` and `255` are all "no fog". An ignored pixel
 under a fog report is then a miss, which the old decided-only count did not see. Phases B and C compare at the same
@@ -41,23 +45,24 @@ shift is a fraction of a pixel.
 
 ## Baseline: fixed 4.0 K
 
-The rule of PR #5, re-scored with this protocol. Visible cases only (the pixel passes the warm-top and cirrus tests);
-95 % intervals from a bootstrap over nights.
+The rule of PR #5, re-scored with this protocol. Visible cases only (the pixel passes the warm-top and cirrus tests),
+one case per pixel and scene; 95 % intervals from a bootstrap over nights. "Cases" is the full count; the decided-only
+POD, FAR and CSI leave out the cases labelled `255`.
 
-| Cases | Visible cases | POD | FAR | CSI | Full-count POD | Full-count FAR | Full-count CSI |
+| Set | Cases | POD | FAR | CSI | Full-count POD | Full-count FAR | Full-count CSI |
 |---|---|---|---|---|---|---|---|
-| all | 57,966 | 0.50 | 0.28 | 0.42 | 0.41 (0.35–0.46) | 0.28 (0.24–0.32) | 0.35 |
-| selection | 36,552 | 0.49 | 0.29 | 0.41 | 0.39 (0.33–0.44) | 0.29 (0.24–0.36) | 0.33 |
-| **held-out** | 21,414 | 0.52 | 0.26 | 0.44 | **0.43 (0.36–0.50)** | **0.26 (0.20–0.31)** | 0.38 |
-| held-out, unseen nights only | 7,807 | 0.56 | 0.27 | 0.46 | 0.49 (0.38–0.57) | 0.27 (0.19–0.36) | 0.41 |
-| held-out, unseen stations only | 11,142 | 0.46 | 0.25 | 0.40 | 0.37 (0.30–0.43) | 0.25 (0.19–0.31) | 0.33 |
-| held-out, both | 2,465 | 0.61 | 0.23 | 0.52 | 0.54 (0.41–0.64) | 0.23 (0.17–0.32) | 0.46 |
+| all | 75,680 | 0.50 | 0.28 | 0.42 | 0.40 (0.35–0.46) | 0.28 (0.24–0.32) | 0.35 |
+| selection | 48,669 | 0.49 | 0.29 | 0.41 | 0.39 (0.33–0.44) | 0.29 (0.24–0.36) | 0.33 |
+| **held-out** | 27,011 | 0.52 | 0.25 | 0.44 | **0.43 (0.36–0.50)** | **0.25 (0.20–0.31)** | 0.38 |
+| held-out, unseen nights only | 9,480 | 0.56 | 0.27 | 0.46 | 0.48 (0.38–0.57) | 0.27 (0.19–0.36) | 0.41 |
+| held-out, unseen stations only | 14,603 | 0.46 | 0.25 | 0.40 | 0.37 (0.30–0.43) | 0.25 (0.19–0.31) | 0.33 |
+| held-out, both | 2,928 | 0.61 | 0.23 | 0.52 | 0.54 (0.41–0.64) | 0.23 (0.17–0.32) | 0.46 |
 
 The held-out full-count POD interval is 0.14 wide. A later phase has to gain more than a few hundredths before the
 paired interval clears zero; a smaller gain is reported but not claimed.
 
 Counted with the hidden cases (fog under a pixel that fails the high-cloud tests, now label `2`), POD falls to 0.20:
-57 % of the fog and low-stratus reports lie under such a pixel. No IR rule can see them, so the visible cases remain
+51 % of the fog and low-stratus reports lie under such a pixel. No IR rule can see them, so the visible cases remain
 the main score.
 
 ### Strata
@@ -85,13 +90,13 @@ Full-count scores per fixed stratum, all cases:
 
 ## Why visible fog is missed
 
-`fogseg diagnose` on the selection cases. A miss is a visible fog or low-stratus report whose pixel is not labelled
-`1`; its first cause, in this order:
+`fogseg diagnose` on the selection cases, one case per pixel and scene as in the score table (11,727 misses). A miss
+is a visible fog or low-stratus report whose pixel is not labelled `1`; its first cause, in this order:
 
 | First cause | Rule | Share of misses |
 |---|---|---|
 | twilight | solar zenith angle 95° or less | 5 % |
-| low BTD | BTD ≤ 3.5 K | **50 %** |
+| low BTD | BTD ≤ 3.5 K | **49 %** |
 | band | BTD below 4.5 K, smooth top | 28 % |
 | texture | 3 × 3 standard deviation of IR10.8 at least 1.5 K | 15 % |
 | small blob or other | | 2 % |
@@ -101,12 +106,13 @@ reports at the same BTD (selection cases, night) compare as follows:
 
 | Variable | Missed fog, BTD ≤ 3.5 K | No fog, BTD ≤ 3.5 K |
 |---|---|---|
-| lowest ceiling `BKN` | 20 % | 7 % |
-| lowest ceiling `OVC` | 9 % | 2 % |
-| lowest ceiling unknown (SYNOP, or no ceiling) | 68 % | 91 % |
+| lowest ceiling `BKN` | 26 % | 8 % |
+| lowest ceiling `OVC` | 12 % | 2 % |
+| lowest ceiling `VV` | 3 % | 0 % |
+| lowest ceiling unknown (SYNOP, or no ceiling) | 59 % | 89 % |
 | fog at the same pixel in another slot of the night | 26 % | 10 % |
-| IR10.8 − WV6.2, median (middle half) | 33 K (30–37) | 37 K (33–42) |
-| station minus pixel terrain, median (10th–90th percentile) | 4 m (−26 to 39) | 2 m (−63 to 35) |
+| IR10.8 − WV6.2, median (middle half) | 33 K (30–37) | 37 K (32–42) |
+| station minus pixel terrain, median (10th–90th percentile) | 4 m (−34 to 47) | 1 m (−75 to 36) |
 | ERA5 T2m − IR10.8 | pending | pending |
 
 - **Partial cover dominates.** A low-BTD miss is three times as likely as a cloud-free report to have a broken
@@ -129,7 +135,7 @@ run: it needs a Copernicus CDS key on the machine. `fogseg era5` then `fogseg di
 - The target is the full-count POD at FAR 0.28 on the held-out cases: 0.43 now.
 - The band and the texture causes (43 % of the misses) are what a better rule can reach. The low-BTD half is mostly
   partial cover, which only extra information (time, water vapour, ERA5, the stations themselves) can help with.
-- Unseen stations score lower than unseen nights (POD 0.37 against 0.49). The station-trained teacher of phase C has to
+- Unseen stations score lower than unseen nights (POD 0.37 against 0.48). The station-trained teacher of phase C has to
   be judged on that part, since it is the one where fitting to the stations shows.
 
 ## Reproduce

@@ -91,7 +91,7 @@ Everything, including the test-season result, is in
 
 The work on better labels before a model is trained is in
 [`docs/notes/better_labels.md`](docs/notes/better_labels.md): a held-out set of nights and stations, a full count in
-which an ignored pixel under a fog report is a miss (POD 0.43 at FAR 0.26 on the held-out cases for the 4.0 K
+which an ignored pixel under a fog report is a miss (POD 0.43 at FAR 0.25 on the held-out cases for the 4.0 K
 labels), and why the visible fog is missed (half of it has a BTD where clear ground sits, mostly broken decks).
 
 ## How the parts fit together
@@ -182,13 +182,12 @@ fogseg select-scenes                  # write configs/check_scenes.yaml (uses la
 fogseg inspect --time 2024-02-29T03:00 --labels dynamic   # one check figure, a PNG in labels.figures_dir
 
 fogseg stations                       # METAR and SYNOP reports (no account needed; SYNOP takes many hours)
-fogseg validate --season 2023-24      # score labels.mode against the stations
-fogseg tune                           # tuning grids on the training season
-
 fogseg dem                            # terrain height per pixel (public AWS bucket, ~3 min)
 fogseg era5                           # ERA5 fields per scene; needs a CDS key in ~/.cdsapirc
 fogseg split                          # held-out nights and stations, written once
-fogseg diagnose                       # why visible fog is missed (run validate first)
+fogseg validate --season 2023-24      # score labels.mode against the stations
+fogseg diagnose                       # why visible fog is missed, selection cases only
+fogseg tune                           # tuning grids on the selection cases of the training season
 
 pip install -e ".[dev]" && pytest     # run the tests
 ```
