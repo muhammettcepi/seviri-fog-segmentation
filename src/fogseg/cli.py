@@ -386,6 +386,11 @@ def teacher_held_out_paths(data_dir: Path) -> list[Path]:
     return [data_dir / "teacher_held_out.csv", data_dir / "teacher_held_out.json"]
 
 
+def unet_held_out_paths(data_dir: Path) -> list[Path]:
+    """The table and the record of the U-Net's held-out run: either one closes the held-out set."""
+    return [data_dir / "unet_held_out.csv", data_dir / "unet_held_out.json"]
+
+
 def held_out_paths(data_dir: Path) -> list[Path]:
     """The table and the decision record of the held-out run: either one closes the held-out set."""
     return [data_dir / "experiment_B_held_out.csv", data_dir / "experiment_B_held_out.json"]
@@ -759,6 +764,153 @@ def log_decision(name: str, decision: Decision, report_only: bool = False) -> No
     )
 
 
+def cmd_train(args: argparse.Namespace) -> None:
+    import json
+
+    import torch
+    import xarray as xr
+
+    import fogseg
+    from fogseg.experiment import RULE_MODE, experiment_cases, pooled_scores, winner
+    from fogseg.features import read_static
+    from fogseg.label_store import check_labels_match, label_store_path
+    from fogseg.labels import LabelParams
+    from fogseg.splits import read_splits, splits_path
+    from fogseg.teacher import file_sha256
+    from fogseg.tracking import MlflowTracker
+    from fogseg.unet_cv import FitData, cross_validate_unet
+    from fogseg.unet_data import (
+        INPUT_CHANNELS,
+        fit_normalization,
+        model_inputs,
+        point_targets,
+        read_inputs,
+        read_targets,
+        scene_night_folds,
+        tune_season_scenes,
+    )
+    from fogseg.unet_train import UNetModel, UNetParams, choose_device, save_unet, train_model, unet_settings
+    from fogseg.validation import season_start
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "used to train the U-Net")
+
+    data_dir = Path(stations_cfg["data_dir"])
+    for path in unet_held_out_paths(data_dir):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; a new model would replace the one the held-out set scored")
+    config_path = data_dir / "unet_config.json"
+    config_path.unlink(missing_ok=True)
+    selection, _ = experiment_cases(cfg, season)
+
+    params, unet_params = LabelParams.from_config(labels_cfg), UNetParams.from_config(cfg["unet"])
+    settings = unet_settings(unet_params.point_weights)
+    store_path = label_store_path(Path(labels_cfg["output_dir"]), labels_cfg["mode"])
+    if not store_path.exists():
+        raise FileNotFoundError(f"{store_path} not found; run `fogseg label` first")
+    with (
+        xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
+        xr.open_zarr(store_path, consolidated=False) as labels,
+    ):
+        check_labels_match(data, labels)
+        label_attrs = dict(labels.attrs)
+        tuning = tune_season_scenes(data["time"].values, cfg)
+        folds = scene_night_folds(
+            data["time"].values[tuning],
+            read_splits(splits_path(data_dir, season)),
+            season_start(cfg, season),
+            stations_cfg["night_block_days"],
+        )
+        used = folds < stations_cfg["n_folds"]
+        scenes, night_folds = tuning[used], folds[used]
+        elevation = read_static(data, Path(cfg["dem"]["out_path"]), ["terrain"]).elevation_mean
+        raw, trusted, _ = read_inputs(data, scenes, elevation, params)
+        normalization = fit_normalization(raw, trusted)
+        inputs = model_inputs(raw, trusted, normalization)
+        del raw
+        target_names = sorted({options["target"] for _, options in settings})
+        targets = {name: read_targets(labels, scenes, name) for name in target_names}
+        times = data["time"].values[scenes]
+
+    fit = FitData(times, inputs, targets, night_folds, point_targets(selection, times))
+    device = choose_device(unet_params.device)
+    log.info("Training on %d scenes and %d station points on %s", len(times), len(fit.points), device)
+    tracker = MlflowTracker(unet_params.tracking_uri, Path(unet_params.artifact_dir), unet_params.experiment)
+    run_params = {
+        "unet": cfg["unet"],
+        "labels": {"mode": labels_cfg["mode"]},
+        "teacher_setting": label_attrs.get("teacher_setting"),
+        "teacher_p_star": label_attrs.get("teacher_p_star"),
+        "n_scenes": len(times),
+        "n_points": len(fit.points),
+        "device": str(device),
+    }
+    with tracker.run("train", run_params) as parent_run_id:
+        table, probabilities = cross_validate_unet(
+            fit, selection, settings, unet_params, stations_cfg, device, tracker
+        )
+        best = winner(table)
+        p_star = float(pooled_scores(table).loc[best, "value"])
+        log.info("U-Net winner %s: p* %g", best, p_star)
+
+        options = dict(settings)[best]
+        target, weight = fit.targets[options["target"]]
+        with tracker.run(
+            "final", {"setting": best, **options, "p_star": p_star}, nested=True
+        ) as final_run_id:
+            network = train_model(
+                fit.inputs,
+                target,
+                weight,
+                fit.points,
+                options,
+                unet_params,
+                stations_cfg["seed"],
+                device,
+                on_epoch=lambda epoch, train_loss, _: tracker.metrics({"train_loss": train_loss}, step=epoch),
+            )
+        model = UNetModel(
+            setting=best,
+            options=options,
+            state_dict=network.state_dict(),
+            normalization=normalization,
+            p_star=p_star,
+            input_channels=INPUT_CHANNELS,
+            base_channels=unet_params.base_channels,
+            depth=unet_params.depth,
+            label_attrs=label_attrs,
+            torch_version=str(torch.__version__),
+            fogseg_version=fogseg.__version__,
+        )
+        save_unet(model, Path(unet_params.model_path))
+
+        columns = ["case", "scene_time", "station", "night_fold", "station_fold", "truth_fls"]
+        oof = probabilities[best].merge(selection[columns], on="case").sort_values("case")
+        record = {
+            "season": season,
+            "labels_mode": labels_cfg["mode"],
+            "unet": cfg["unet"],
+            "inputs": {
+                "cases_sha256": file_sha256(data_dir / f"cases_{RULE_MODE}_{season}.csv"),
+                "splits_sha256": file_sha256(splits_path(data_dir, season)),
+                "labels_created": label_attrs.get("created"),
+            },
+            "winner": best,
+            "p_star": p_star,
+            "final_run_id": final_run_id,
+            "parent_run_id": parent_run_id,
+        }
+        cv_path, oof_path = data_dir / "unet_cv.csv", data_dir / "unet_oof.csv"
+        write_atomically(cv_path, table.to_csv(index=False))
+        write_atomically(oof_path, oof[[*columns, "p"]].to_csv(index=False))
+        write_atomically(config_path, json.dumps(record, indent=2))
+        for path in (cv_path, oof_path, config_path):
+            tracker.artifact(path)
+    log.info("Wrote %s, %s, %s and %s", cv_path, oof_path, config_path, unet_params.model_path)
+
+
 def cmd_tune(args: argparse.Namespace) -> None:
     import dataclasses
 
@@ -1071,6 +1223,13 @@ def main() -> None:
         help="score the saved teacher against the configured rule on the held-out cases, once",
     )
     teacher.set_defaults(func=cmd_teacher)
+
+    train = sub.add_parser(
+        "train", help="cross-validate the U-Net settings on the tuning season, then fit and save the winner"
+    )
+    train.add_argument("--config", default="configs/default.yaml")
+    train.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
+    train.set_defaults(func=cmd_train)
 
     tune = sub.add_parser(
         "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"

@@ -13,13 +13,13 @@ import torch
 
 from fogseg.experiment import CV_COLUMNS
 from fogseg.teacher import setting_rows
-from fogseg.tracking import NoTracker
+from fogseg.tracking import MlflowTracker, NoTracker
 from fogseg.tuning import grid_values
 from fogseg.unet_train import UNetParams, predict_probabilities, train_model
 
 log = logging.getLogger(__name__)
 
-Tracker = NoTracker
+Tracker = NoTracker | MlflowTracker
 
 
 def case_probabilities(probability: np.ndarray, times: np.ndarray, cases: pd.DataFrame) -> np.ndarray:
