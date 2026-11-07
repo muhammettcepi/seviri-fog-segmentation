@@ -526,6 +526,8 @@ def cmd_teacher(args: argparse.Namespace) -> None:
     from fogseg.teacher import (
         MODEL_SETTINGS,
         TeacherParams,
+        chosen_length,
+        cross_validate_correction,
         cross_validate_settings,
         fit_teacher,
         oof_table,
@@ -575,14 +577,42 @@ def cmd_teacher(args: argparse.Namespace) -> None:
         stations_cfg["seed"],
     )
 
+    oof = oof_table(probabilities[best], selection)
+    correction = cross_validate_correction(
+        probabilities[best],
+        selection,
+        oof,
+        teacher.p_star,
+        teacher_params.ignore_halfwidth,
+        teacher_params.idw_length_km,
+        stations_cfg["n_folds"],
+    )
+    length = chosen_length(correction)
+    teacher = dataclasses.replace(teacher, correction_km=length)
+    pooled_correction = correction[correction["fold"].astype(str) == "pooled"].set_index("length_km")
+    none, kept = (
+        pooled_correction.loc["none"],
+        pooled_correction.loc["none" if length is None else str(length)],
+    )
+    log.info(
+        "Station correction: %s, pooled POD %.3f, FAR %.3f against %.3f, %.3f without",
+        "no correction" if length is None else f"{length:g} km",
+        kept["pod"],
+        kept["far"],
+        none["pod"],
+        none["far"],
+    )
+
     cv_path, oof_path = data_dir / "teacher_cv.csv", data_dir / "teacher_oof.csv"
+    correction_path = data_dir / "teacher_correction_cv.csv"
     table.to_csv(cv_path, index=False)
-    oof_table(probabilities[best], selection).to_csv(oof_path, index=False)
+    oof.to_csv(oof_path, index=False)
+    correction.to_csv(correction_path, index=False)
     save_teacher(teacher, Path(teacher_params.model_path))
     record = config_record(season, labels_cfg["mode"], params, stations_cfg)
     record["teacher"] = dataclasses.asdict(teacher_params)
     write_atomically(data_dir / "teacher_config.json", json.dumps(record, indent=2))
-    log.info("Wrote %s, %s and %s", cv_path, oof_path, teacher_params.model_path)
+    log.info("Wrote %s, %s, %s and %s", cv_path, oof_path, correction_path, teacher_params.model_path)
 
 
 def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:

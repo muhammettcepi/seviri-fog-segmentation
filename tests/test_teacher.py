@@ -20,6 +20,7 @@ from fogseg.cli import cmd_teacher
 from fogseg.experiment import (
     CV_COLUMNS,
     RECORDED_STATIONS_KEYS,
+    SCORE_COLUMNS,
     check_same_config,
     config_record,
     matched_value,
@@ -29,10 +30,14 @@ from fogseg.labels import FOG, IGNORE, NO_FOG
 from fogseg.teacher import (
     MODEL_SETTINGS,
     TeacherParams,
+    chosen_length,
+    corrected_probability,
+    cross_validate_correction,
     cross_validate_settings,
     fit_calibrator,
     fit_teacher,
     fold_probabilities,
+    idw_shift,
     load_teacher,
     oof_table,
     pooled_value_scores,
@@ -389,6 +394,140 @@ def test_the_oof_table_keeps_the_case_columns():
     assert oof_table(fold_probs, cases)[OOF_COLUMNS[:-1]].equals(cases[OOF_COLUMNS[:-1]])
 
 
+def test_idw_shift_by_hand():
+    zero = np.array([0.0])
+    assert idw_shift(zero, zero, zero, zero, np.array([0.4]), 50.0)[0] == pytest.approx(0.2)
+    far_lon = np.array([3.0])  # ~334 km at the equator, beyond 3 L = 150 km
+    assert idw_shift(zero, zero, far_lon, zero, np.array([0.4]), 50.0)[0] == 0.0
+
+
+def test_two_feeders_by_hand():
+    zero = np.array([0.0])
+    d = 50.0 / 111.195  # one L in degrees at the equator
+    feed_lon, feed_lat = np.array([0.0, d]), np.array([0.0, 0.0])
+    shift = idw_shift(zero, zero, feed_lon, feed_lat, np.array([0.4, -0.2]), 50.0)
+    w = np.array([1.0, np.exp(-1.0)])
+    assert shift[0] == pytest.approx((w @ [0.4, -0.2]) / (1 + w.sum()), rel=1e-3)
+
+
+def test_idw_shift_is_zero_without_feeders():
+    empty = np.array([])
+    assert idw_shift(np.array([0.0, 1.0]), np.array([0.0, 1.0]), empty, empty, empty, 50.0).tolist() == [0, 0]
+
+
+def feeder_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One target of station A; feeders: A in the same scene, B in another scene."""
+    scene, other = pd.Timestamp("2023-11-20T21"), pd.Timestamp("2023-11-21T00")
+    targets = pd.DataFrame({"scene_time": [scene], "lon": [0.0], "lat": [0.0], "station": ["A"]})
+    feeders = pd.DataFrame(
+        {
+            "scene_time": [scene, other],
+            "lon": [0.0, 0.0],
+            "lat": [0.0, 0.0],
+            "station": ["A", "B"],
+            "residual": [1.0, 1.0],
+        }
+    )
+    return targets, feeders
+
+
+def test_own_station_and_other_scenes_never_feed():
+    targets, feeders = feeder_tables()
+    assert corrected_probability(targets, np.array([0.3]), feeders, 50.0)[0] == pytest.approx(0.3)
+
+
+def test_a_feeder_of_another_station_in_the_scene_shifts_the_probability():
+    targets, feeders = feeder_tables()
+    feeders.loc[1, ["scene_time", "station"]] = [targets["scene_time"][0], "B"]
+    assert corrected_probability(targets, np.array([0.3]), feeders, 50.0)[0] == pytest.approx(0.8)
+
+
+def test_the_corrected_probability_is_clipped_and_a_missing_one_stays_missing():
+    targets, feeders = feeder_tables()
+    feeders.loc[0, ["station", "residual"]] = ["B", 0.1]
+    targets = pd.concat([targets, targets], ignore_index=True)
+    corrected = corrected_probability(targets, np.array([0.9, np.nan]), feeders.iloc[:1], 50.0)
+    assert corrected[0] == pytest.approx(0.95)
+    assert np.isnan(corrected[1])
+    feeders["residual"] = 100.0
+    assert corrected_probability(targets.iloc[:1], np.array([0.1]), feeders.iloc[:1], 50.0)[0] == 1.0
+    feeders["residual"] = -100.0
+    assert corrected_probability(targets.iloc[:1], np.array([0.9]), feeders.iloc[:1], 50.0)[0] == 0.0
+
+
+def correction_cases() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """One test case in fold 1 and three feeders: stations of folds 2, 1 and 5, in the same scene.
+
+    The allowed feeder has residual 0; the ones in the test fold and in the held-out fold have residual 1.
+    """
+    n = 4
+    cases = pd.DataFrame(
+        {
+            "case": np.arange(n),
+            "scene_time": pd.Timestamp("2023-11-20T21"),
+            "station": list("ABCD"),
+            "lat": 45.0,
+            "lon": 5.0 + 0.01 * np.arange(n),
+            "night_fold": 1,
+            "station_fold": [1, 2, 1, 5],
+            "truth_fls": [1, 1, 1, 1],
+        }
+    )
+    oof = cases.assign(p_oof=[0.45, 1.0, 0.0, 0.0])
+    fold_probs = pd.DataFrame({"fold": [1], "case": [0], "raw": [0.45], "p": [0.45]})
+    return fold_probs, cases, oof
+
+
+def test_fold_feeders_skip_the_test_fold_and_the_held_out_stations():
+    fold_probs, cases, oof = correction_cases()
+    table = cross_validate_correction(fold_probs, cases, oof, 0.5, 0.0, [50.0], 5)
+    pooled = table[table["fold"].astype(str) == "pooled"].set_index("length_km")
+    assert pooled.loc["50.0", "hits"] == pooled.loc["none", "hits"] == 0
+
+
+def test_a_feeder_with_a_missing_probability_never_feeds():
+    fold_probs, cases, oof = correction_cases()
+    oof["p_oof"] = [0.45, np.nan, np.nan, np.nan]
+    oof.loc[1, "station_fold"] = 2
+    table = cross_validate_correction(fold_probs, cases, oof, 0.5, 0.0, [50.0], 5)
+    assert table["hits"].tolist() == [0, 0, 0, 0]
+
+
+def test_a_feeder_of_an_allowed_fold_lifts_the_label():
+    fold_probs, cases, oof = correction_cases()
+    oof["p_oof"] = [0.45, 0.0, 0.0, 0.0]
+    table = cross_validate_correction(fold_probs, cases, oof, 0.5, 0.0, [50.0], 5)
+    assert table.columns.tolist() == ["length_km", "fold", *SCORE_COLUMNS[1:]]
+    assert table["length_km"].tolist() == ["none"] * 2 + ["50.0"] * 2
+    assert table["fold"].astype(str).tolist() == ["1", "pooled"] * 2
+    assert table["hits"].tolist() == [0, 0, 1, 1]
+
+
+def correction_table(pod: dict, far: dict) -> pd.DataFrame:
+    """Pooled rows of a correction table with the given POD and FAR per length."""
+    rows = [
+        {"length_km": name, "fold": "pooled", "pod": value, "far": far.get(name, far["none"])}
+        for name, value in pod.items()
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_no_length_is_chosen_without_a_gain():
+    table = correction_table(pod={"none": 0.40, "25.0": 0.39, "50.0": 0.40}, far={"none": 0.27, "25.0": 0.26})
+    assert chosen_length(table) is None
+
+
+def test_the_length_with_the_highest_pod_at_no_higher_far_is_chosen():
+    pod = {"none": 0.40, "25.0": 0.42, "50.0": 0.45, "100.0": 0.50}
+    table = correction_table(pod, far={"none": 0.27, "25.0": 0.27, "50.0": 0.27, "100.0": 0.30})
+    assert chosen_length(table) == 50.0
+
+
+def test_a_tie_in_pod_goes_to_the_shorter_length():
+    table = correction_table(pod={"none": 0.40, "100.0": 0.45, "25.0": 0.45}, far={"none": 0.27})
+    assert chosen_length(table) == 25.0
+
+
 def phase_b_record() -> dict:
     return config_record("2023-24", "fixed", TEST_PARAMS, dict.fromkeys(RECORDED_STATIONS_KEYS, 1))
 
@@ -469,6 +608,21 @@ def test_teacher_command_writes_the_winners_out_of_fold_table_and_the_record(tmp
     teacher = load_teacher(Path(cfg["teacher"]["model_path"]), cfg["teacher"]["feature_groups"])
     pooled = pd.read_csv(stations / "teacher_cv.csv").query("fold == 'pooled'")
     assert pooled.loc[pooled["variant"] == teacher.setting, "value"].iloc[0] == teacher.p_star
+
+
+def test_teacher_command_writes_the_correction_table_and_saves_the_chosen_length(tmp_path, caplog):
+    cfg = teacher_config(tmp_path)
+    with caplog.at_level(logging.INFO, logger="fogseg"):
+        cmd_teacher(teacher_args(cfg))
+    table = pd.read_csv(tmp_path / "stations" / "teacher_correction_cv.csv")
+    lengths = ["none", *map(str, map(float, cfg["teacher"]["idw_length_km"]))]
+    assert table["length_km"].drop_duplicates().tolist() == lengths
+    teacher = load_teacher(Path(cfg["teacher"]["model_path"]), cfg["teacher"]["feature_groups"])
+    pooled = table[table["fold"].astype(str) == "pooled"].set_index("length_km")
+    if teacher.correction_km is None:
+        assert "no correction" in caplog.text
+    else:
+        assert str(teacher.correction_km) in pooled.index
 
 
 def test_teacher_refuses_the_test_season_and_dynamic_labels(tmp_path):

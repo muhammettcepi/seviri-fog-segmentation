@@ -33,7 +33,7 @@ from fogseg.labels import FOG, IGNORE, NO_FOG
 from fogseg.scores import COUNT_NAMES
 from fogseg.splits import cv_folds
 from fogseg.tuning import grid_values
-from fogseg.validation import TRUTH_YES
+from fogseg.validation import TRUTH_YES, haversine_km
 
 log = logging.getLogger(__name__)
 
@@ -348,3 +348,115 @@ def oof_table(fold_probs: pd.DataFrame, cases: pd.DataFrame) -> pd.DataFrame:
     """The selection cases with their mean calibrated out-of-fold probability `p_oof`, NaN if unpredicted."""
     p_oof = fold_probs.groupby("case")["p"].mean()
     return cases[OOF_CASE_COLUMNS].assign(p_oof=cases["case"].map(p_oof).to_numpy())
+
+
+def idw_weights(
+    target_lon: np.ndarray,
+    target_lat: np.ndarray,
+    feed_lon: np.ndarray,
+    feed_lat: np.ndarray,
+    length_km: float,
+) -> np.ndarray:
+    """The weight exp(-d / L) of every feeder (columns) for every target (rows), 0 from 3 L on."""
+    distance = haversine_km(feed_lon[None, :], feed_lat[None, :], target_lon[:, None], target_lat[:, None])
+    return np.where(distance < 3 * length_km, np.exp(-distance / length_km), 0.0)
+
+
+def weighted_shift(weights: np.ndarray, residuals: np.ndarray) -> np.ndarray:
+    """Each target's shift: the weighted residuals over one plus the weights, which damps a lone feeder."""
+    return weights @ residuals / (1 + weights.sum(axis=1))
+
+
+def idw_shift(
+    target_lon: np.ndarray,
+    target_lat: np.ndarray,
+    feed_lon: np.ndarray,
+    feed_lat: np.ndarray,
+    residuals: np.ndarray,
+    length_km: float,
+) -> np.ndarray:
+    """The inverse-distance weighted shift of each target from the residuals of the feeders around it."""
+    return weighted_shift(idw_weights(target_lon, target_lat, feed_lon, feed_lat, length_km), residuals)
+
+
+def corrected_probability(
+    targets: pd.DataFrame, p: np.ndarray, feeders: pd.DataFrame, length_km: float
+) -> np.ndarray:
+    """`p` shifted by the residuals of other stations' feeders in the same scene, clipped to [0, 1]."""
+    shift = np.zeros(len(targets))
+    feeder_rows = feeders.groupby("scene_time").indices
+    for scene, rows in targets.groupby("scene_time").indices.items():
+        if scene not in feeder_rows:
+            continue
+        target, feeder = targets.iloc[rows], feeders.iloc[feeder_rows[scene]]
+        weights = idw_weights(
+            target["lon"].to_numpy(),
+            target["lat"].to_numpy(),
+            feeder["lon"].to_numpy(),
+            feeder["lat"].to_numpy(),
+            length_km,
+        )
+        weights[target["station"].to_numpy()[:, None] == feeder["station"].to_numpy()[None, :]] = 0.0
+        shift[rows] = weighted_shift(weights, feeder["residual"].to_numpy())
+    return np.clip(p + shift, 0.0, 1.0)
+
+
+def correction_feeders(oof: pd.DataFrame) -> pd.DataFrame:
+    """The cases of `oof` with a probability, with their residual `truth_fls - p_oof`."""
+    usable = oof[oof["p_oof"].notna()]
+    return usable.assign(residual=(usable["truth_fls"] == TRUTH_YES) - usable["p_oof"])
+
+
+def correction_fold_scores(
+    rows: pd.DataFrame, p: np.ndarray, cases: pd.DataFrame, p_star: float, halfwidth: float
+) -> pd.DataFrame:
+    """The scores at `p_star` of one fold's test cases labelled from the probabilities `p`."""
+    grid = teacher_grid(rows.assign(p=p), np.array([p_star]), halfwidth)
+    return value_scores(grid, cases, cases["case"].isin(rows["case"]))
+
+
+def cross_validate_correction(
+    fold_probs: pd.DataFrame,
+    cases: pd.DataFrame,
+    oof: pd.DataFrame,
+    p_star: float,
+    halfwidth: float,
+    lengths: list[float],
+    n_folds: int,
+) -> pd.DataFrame:
+    """The scores at `p_star` without a correction (`"none"`) and with each length, per fold and pooled.
+
+    A test case of fold k is corrected by the residuals of the other stations in its scene whose station
+    fold is neither k nor the held-out `n_folds`.
+    """
+    feeders = correction_feeders(oof)
+    scores = {"none": [], **{str(float(length)): [] for length in lengths}}
+    for fold, rows in fold_probs.groupby("fold"):
+        targets = cases.iloc[rows["case"].to_numpy()]
+        fold_feeders = feeders[~feeders["station_fold"].isin([fold, n_folds])]
+        p = {"none": rows["p"].to_numpy()}
+        for length in lengths:
+            p[str(float(length))] = corrected_probability(targets, p["none"], fold_feeders, length)
+        for name, probability in p.items():
+            fold_scores = correction_fold_scores(rows, probability, cases, p_star, halfwidth)
+            scores[name].append(fold_scores.assign(fold=fold))
+    tables = []
+    for name, fold_scores in scores.items():
+        pooled = summed_scores(fold_scores).assign(fold="pooled")
+        tables.append(pd.concat([*fold_scores, pooled], ignore_index=True).assign(length_km=name))
+    return pd.concat(tables, ignore_index=True)[["length_km", "fold", *SCORE_COLUMNS[1:]]]
+
+
+def chosen_length(table: pd.DataFrame) -> float | None:
+    """The length of the highest pooled POD at no higher FAR than without a correction, if it beats it.
+
+    The shorter length wins a tie.
+    """
+    pooled = table[table["fold"].astype(str) == "pooled"].set_index("length_km")
+    none = pooled.loc["none"]
+    allowed = pooled.drop(index="none")
+    allowed = allowed[allowed["far"] <= none["far"]]
+    allowed = allowed.loc[sorted(allowed.index, key=float)]
+    if allowed.empty or allowed["pod"].max() <= none["pod"]:
+        return None
+    return float(allowed["pod"].idxmax())
