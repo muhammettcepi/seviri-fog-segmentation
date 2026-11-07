@@ -290,6 +290,12 @@ def test_dynamic_mode_refuses_the_emissivity_index():
         check_mode("dynamic", TEST_DYNAMIC, params)
 
 
+def test_the_rule_store_refuses_the_teacher_mode(tmp_path):
+    with pytest.raises(ValueError, match="label_teacher_dataset"):
+        label_dataset(write_dataset(tmp_path), tmp_path / "labels.zarr", "teacher", TEST_PARAMS)
+    assert not list(tmp_path.glob("labels*"))
+
+
 def test_emissivity_index_needs_its_threshold():
     params = dataclasses.replace(TEST_PARAMS, fog_index="emissivity")
     with pytest.raises(ValueError, match=r"labels\.emissivity_max"):

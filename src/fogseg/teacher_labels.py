@@ -10,7 +10,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
-import shutil
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -28,6 +27,7 @@ from fogseg.label_store import (
     store_attrs,
     write_metadata,
     write_store,
+    write_store_atomically,
 )
 from fogseg.labels import IGNORE, OBSCURED, LabelParams
 from fogseg.teacher import (
@@ -181,8 +181,7 @@ def label_teacher_dataset(
 ) -> int:
     """Label every scene of the dataset with the teacher into the Zarr store `out_path`.
 
-    Returns the number of scenes. Written like the rule's stores: under a temporary name, renamed at the
-    end, and the temporary store is deleted if anything fails. The teacher is loaded and checked first.
+    Returns the number of scenes. Written like the rule's stores, after the teacher is loaded and checked.
     """
     params = LabelParams.from_config(cfg["labels"])
     teacher_params = TeacherParams.from_config(cfg["teacher"])
@@ -190,45 +189,35 @@ def label_teacher_dataset(
     teacher = load_teacher(model_path, teacher_params.feature_groups)
     if not dataset_path.exists():
         raise FileNotFoundError(f"Dataset not found: {dataset_path}")
-    if out_path.exists() and not overwrite:
-        raise FileExistsError(f"{out_path} exists; use overwrite=True (--overwrite) to replace it")
 
     groups = teacher_params.feature_groups
-    with ExitStack() as stack:
-        data = stack.enter_context(xr.open_zarr(dataset_path, consolidated=False))
-        check_dataset(data, dataset_path)
-        correction = read_correction(cfg, teacher)
-        static = read_static(data, Path(cfg["dem"]["out_path"]), groups)
-        era5_store = open_era5(Path(cfg["era5"]["out_path"]), groups)
-        if era5_store is not None:
-            stack.enter_context(era5_store)
 
-        def make_batch(start: int, stop: int) -> xr.Dataset:
-            return teacher_batch(data, start, stop, teacher, params, static, era5_store, correction)
+    def write(tmp_path: Path) -> int:
+        with ExitStack() as stack:
+            data = stack.enter_context(xr.open_zarr(dataset_path, consolidated=False))
+            check_dataset(data, dataset_path)
+            correction = read_correction(cfg, teacher)
+            static = read_static(data, Path(cfg["dem"]["out_path"]), groups)
+            era5_store = open_era5(Path(cfg["era5"]["out_path"]), groups)
+            if era5_store is not None:
+                stack.enter_context(era5_store)
 
-        shape = (CHUNK_TIME, data.sizes["y"], data.sizes["x"])
-        encoding = {
-            "label": {"chunks": shape},
-            "fog_probability": {"chunks": shape},
-            "threshold_source": {"chunks": (CHUNK_TIME,)},
-            "fog_fraction": {"chunks": (CHUNK_TIME,)},
-            "ignore_fraction": {"chunks": (CHUNK_TIME,)},
-            "obscured_fraction": {"chunks": (CHUNK_TIME,)},
-            "time": TIME_ENCODING,
-        }
-        tmp_path = out_path.with_name(out_path.name + ".part")
-        shutil.rmtree(tmp_path, ignore_errors=True)
-        tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
+            def make_batch(start: int, stop: int) -> xr.Dataset:
+                return teacher_batch(data, start, stop, teacher, params, static, era5_store, correction)
+
+            shape = (CHUNK_TIME, data.sizes["y"], data.sizes["x"])
+            encoding = {
+                "label": {"chunks": shape},
+                "fog_probability": {"chunks": shape},
+                "threshold_source": {"chunks": (CHUNK_TIME,)},
+                "fog_fraction": {"chunks": (CHUNK_TIME,)},
+                "ignore_fraction": {"chunks": (CHUNK_TIME,)},
+                "obscured_fraction": {"chunks": (CHUNK_TIME,)},
+                "time": TIME_ENCODING,
+            }
             write_store(data, tmp_path, make_batch, encoding, batch)
             rule_attrs = store_attrs(data, dataset_path, "teacher", params, None)
             write_metadata(tmp_path, teacher_attrs(teacher, model_path, correction, rule_attrs))
-        except BaseException:
-            shutil.rmtree(tmp_path, ignore_errors=True)
-            raise
-        n_scenes = data.sizes["time"]
+            return data.sizes["time"]
 
-    if out_path.exists():
-        shutil.rmtree(out_path)
-    tmp_path.rename(out_path)
-    return n_scenes
+    return write_store_atomically(out_path, overwrite, write)

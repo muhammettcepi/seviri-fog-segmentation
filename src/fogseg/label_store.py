@@ -37,6 +37,8 @@ def label_store_path(output_dir: Path, mode: str) -> Path:
 
 def check_mode(mode: str, dynamic: DynamicParams | None, params: LabelParams) -> None:
     """The mode must be known, the dynamic mode needs its settings, and the fog index must fit the mode."""
+    if mode == "teacher":
+        raise ValueError("mode 'teacher' is written by label_teacher_dataset (fogseg label --mode teacher)")
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     if mode == "dynamic" and dynamic is None:
@@ -289,6 +291,30 @@ def stored_params(attrs: dict, config_dynamic: DynamicParams) -> tuple[LabelPara
     return params, DynamicParams.from_config(dynamic_cfg)
 
 
+def write_store_atomically(out_path: Path, overwrite: bool, write: Callable[[Path], int]) -> int:
+    """Run `write` on a temporary store and rename it to `out_path` when it is complete.
+
+    Written like the dataset itself: the temporary store is deleted if anything fails, and an existing
+    store stays untouched until the new one is complete. Returns what `write` returns.
+    """
+    if out_path.exists() and not overwrite:
+        raise FileExistsError(f"{out_path} exists; use overwrite=True (--overwrite) to replace it")
+
+    tmp_path = out_path.with_name(out_path.name + ".part")
+    shutil.rmtree(tmp_path, ignore_errors=True)
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        n_scenes = write(tmp_path)
+    except BaseException:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+        raise
+
+    if out_path.exists():
+        shutil.rmtree(out_path)
+    tmp_path.rename(out_path)
+    return n_scenes
+
+
 def label_dataset(
     dataset_path: Path,
     out_path: Path,
@@ -298,35 +324,19 @@ def label_dataset(
     overwrite: bool = False,
     batch: int = 32,
 ) -> int:
-    """Label every scene of the dataset into the Zarr store `out_path`. Returns the number of scenes.
-
-    Written like the dataset itself: under a temporary name, renamed at the end, and the temporary
-    store is deleted if anything fails. An existing store stays untouched until the new one is complete.
-    """
+    """Label every scene of the dataset into the Zarr store `out_path`. Returns the number of scenes."""
     check_mode(mode, dynamic, params)
     if not dataset_path.exists():
         raise FileNotFoundError(f"Dataset not found: {dataset_path}")
-    if out_path.exists() and not overwrite:
-        raise FileExistsError(f"{out_path} exists; use overwrite=True (--overwrite) to replace it")
 
-    with xr.open_zarr(dataset_path, consolidated=False) as data:
-        check_dataset(data, dataset_path)
-
-        tmp_path = out_path.with_name(out_path.name + ".part")
-        shutil.rmtree(tmp_path, ignore_errors=True)
-        tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
+    def write(tmp_path: Path) -> int:
+        with xr.open_zarr(dataset_path, consolidated=False) as data:
+            check_dataset(data, dataset_path)
             write_batches(data, tmp_path, mode, params, dynamic, batch)
             write_metadata(tmp_path, store_attrs(data, dataset_path, mode, params, dynamic))
-        except BaseException:
-            shutil.rmtree(tmp_path, ignore_errors=True)
-            raise
-        n_scenes = data.sizes["time"]
+            return data.sizes["time"]
 
-    if out_path.exists():
-        shutil.rmtree(out_path)
-    tmp_path.rename(out_path)
-    return n_scenes
+    return write_store_atomically(out_path, overwrite, write)
 
 
 def summarize_store(store: Path) -> tuple[dict[str, int], float]:
