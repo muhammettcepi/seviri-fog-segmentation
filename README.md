@@ -210,6 +210,8 @@ fogseg label --mode teacher           # labels_teacher.zarr, a benchmark store (
 fogseg tune                           # tuning grids on the selection cases of the training season
 
 pip install -e ".[dev]" && pytest     # run the tests
+
+# the U-Net needs torch and mlflow: pip install -e ".[model]" (with CUDA, install torch from pytorch.org first)
 ```
 
 Paths in `configs/default.yaml` point to `/mnt/d/...` (a Windows D: drive seen from WSL); change
