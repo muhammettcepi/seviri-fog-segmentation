@@ -45,11 +45,15 @@ def raw_inputs(
 ) -> tuple[np.ndarray, np.ndarray]:
     """The 13 channels before standardization, `(n, 13, y, x)`, and the trusted mask `(n, y, x)`."""
     by_name = {name: bt[:, index] for index, name in enumerate(CHANNELS)}
-    differences = [by_name[first] - by_name[second] for first, second in DIFFERENCES]
-    elevation_stack = np.broadcast_to(elevation, sza.shape)
-    raw = np.stack([*bt.transpose(1, 0, 2, 3), *differences, elevation_stack, sza], axis=1)
+    raw = np.empty((bt.shape[0], len(INPUT_CHANNELS) - 1, *bt.shape[2:]), dtype="float32")
+    for index in range(len(CHANNELS)):
+        raw[:, index] = bt[:, index]
+    for index, (first, second) in enumerate(DIFFERENCES, start=len(CHANNELS)):
+        raw[:, index] = by_name[first] - by_name[second]
+    raw[:, -2] = elevation
+    raw[:, -1] = sza
     trusted = trusted_mask(by_name["IR_039"], by_name["IR_108"], by_name["IR_120"], sza, night_min_sza)
-    return raw.astype("float32"), trusted
+    return raw, trusted
 
 
 def fit_normalization(raw: np.ndarray, trusted: np.ndarray) -> Normalization:
@@ -66,9 +70,15 @@ def fit_normalization(raw: np.ndarray, trusted: np.ndarray) -> Normalization:
 
 def model_inputs(raw: np.ndarray, trusted: np.ndarray, normalization: Normalization) -> np.ndarray:
     """Standardized `(n, 14, y, x)` float32 channels, 0 where untrusted or not finite, then the trusted flag."""
-    standardized = (raw - normalization.mean[None, :, None, None]) / normalization.std[None, :, None, None]
-    inputs = np.where(trusted[:, None] & np.isfinite(raw), standardized, 0.0)
-    return np.concatenate([inputs, trusted[:, None]], axis=1).astype("float32")
+    inputs = np.zeros((raw.shape[0], raw.shape[1] + 1, *raw.shape[2:]), dtype="float32")
+    mean, std = normalization.mean.astype("float32"), normalization.std.astype("float32")
+    for channel in range(raw.shape[1]):
+        values = raw[:, channel]
+        inputs[:, channel] = np.where(
+            trusted & np.isfinite(values), (values - mean[channel]) / std[channel], 0.0
+        )
+    inputs[:, -1] = trusted
+    return inputs
 
 
 def obscured_mask(bt: np.ndarray, trusted: np.ndarray, params: LabelParams) -> np.ndarray:
@@ -122,13 +132,19 @@ def point_targets(cases: pd.DataFrame, times: np.ndarray) -> pd.DataFrame:
 
 
 def read_inputs(
-    data: xr.Dataset, scenes: np.ndarray, elevation: np.ndarray, params: LabelParams
+    data: xr.Dataset, scenes: np.ndarray, elevation: np.ndarray, params: LabelParams, batch: int = 32
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Raw channels, trusted mask and obscured mask of the dataset scenes `scenes`."""
-    chosen = data.isel(time=scenes)
-    bt = chosen["bt"].sel(channel=CHANNELS).values
-    raw, trusted = raw_inputs(bt, chosen["sza"].values, elevation, params.night_min_sza)
-    return raw, trusted, obscured_mask(bt, trusted, params)
+    """Raw channels, trusted mask and obscured mask of the dataset scenes `scenes`, read `batch` at a time."""
+    shape = (len(scenes), *elevation.shape)
+    raw = np.empty((shape[0], len(INPUT_CHANNELS) - 1, *shape[1:]), dtype="float32")
+    trusted, obscured = np.empty(shape, dtype=bool), np.empty(shape, dtype=bool)
+    for start in range(0, len(scenes), batch):
+        part = slice(start, start + batch)
+        chosen = data.isel(time=scenes[part])
+        bt = chosen["bt"].sel(channel=CHANNELS).values
+        raw[part], trusted[part] = raw_inputs(bt, chosen["sza"].values, elevation, params.night_min_sza)
+        obscured[part] = obscured_mask(bt, trusted[part], params)
+    return raw, trusted, obscured
 
 
 def read_targets(labels: xr.Dataset, scenes: np.ndarray, target: str) -> tuple[np.ndarray, np.ndarray]:

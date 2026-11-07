@@ -44,7 +44,7 @@ class MlflowTracker:
         import mlflow
 
         for name in ("mlflow", "alembic"):
-            logging.getLogger(name).setLevel(logging.ERROR)
+            logging.getLogger(name).setLevel(logging.WARNING)
         self.mlflow = mlflow
         mlflow.set_tracking_uri(tracking_uri)
         if mlflow.get_experiment_by_name(experiment) is None:

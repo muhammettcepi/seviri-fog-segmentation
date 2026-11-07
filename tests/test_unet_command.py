@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
@@ -16,6 +17,7 @@ from fogseg.cli import cmd_train
 from fogseg.label_store import label_dataset, label_store_path
 from fogseg.labels import LabelParams
 from fogseg.unet_train import load_unet
+from fogseg.validation import night_of
 
 
 def teacher_store(cfg: dict) -> Path:
@@ -133,3 +135,24 @@ def test_train_refuses_soft_settings_without_fog_probability(tmp_path, mlflow_ur
     del zarr.open_group(store, mode="r+")["fog_probability"]
     with pytest.raises(ValueError, match="fog_probability"):
         cmd_train(train_args(cfg))
+
+
+def test_train_fits_only_scenes_of_the_selection_night_folds(tmp_path, mlflow_uri, monkeypatch):
+    cfg = unet_config(tmp_path, mlflow_uri)
+    seen = {}
+
+    def capture(fit, *_):
+        seen["fit"] = fit
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("fogseg.unet_cv.cross_validate_unet", capture)
+    with pytest.raises(KeyboardInterrupt):
+        cmd_train(train_args(cfg))
+    fit = seen["fit"]
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        everything = data["time"].values
+    held_out_night = night_of(everything) == np.datetime64("2023-11-22")
+    assert held_out_night.any()
+    assert not np.isin(fit.times, everything[held_out_night]).any()
+    assert set(fit.night_folds) == {1, 2}
+    assert len(fit.times) == (~held_out_night).sum()

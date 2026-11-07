@@ -48,5 +48,5 @@ line-length = 110
 testpaths = ["tests"]
 pythonpath = ["tests"]
 filterwarnings = [
-    "ignore:The ``noload`` loader strategy is deprecated:sqlalchemy.exc.SADeprecationWarning",
+    "ignore:The ``noload`` loader strategy is deprecated",
 ]

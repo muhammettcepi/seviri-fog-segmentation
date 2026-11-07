@@ -158,3 +158,17 @@ def test_read_targets_from_a_label_store():
     hard, hard_weight = read_targets(labels[["label"]], np.array([0]), "hard")
     assert hard_weight.tolist() == [[[1, 1, 0]]]
     assert hard[0, 0, :2].tolist() == [0.0, 1.0]
+
+
+def test_model_inputs_are_float32_and_standardized_like_the_float64_formula():
+    rng = np.random.default_rng(1)
+    raw = rng.normal(5.0, 3.0, size=(3, 13, 4, 5)).astype("float32")
+    raw[1, 2, 0, 0] = np.nan
+    trusted = rng.random((3, 4, 5)) > 0.2
+    normalization = fit_normalization(raw, trusted)
+    inputs = model_inputs(raw, trusted, normalization)
+    standardized = (raw - normalization.mean[None, :, None, None]) / normalization.std[None, :, None, None]
+    expected = np.where(trusted[:, None] & np.isfinite(raw), standardized, 0.0)
+    assert inputs.dtype == np.float32
+    np.testing.assert_allclose(inputs[:, :-1], expected, rtol=1e-5, atol=1e-6)
+    np.testing.assert_array_equal(inputs[:, -1], trusted)

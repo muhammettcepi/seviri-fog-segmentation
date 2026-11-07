@@ -764,23 +764,20 @@ def log_decision(name: str, decision: Decision, report_only: bool = False) -> No
     )
 
 
-def cmd_train(args: argparse.Namespace) -> None:
-    import json
+def read_fit_data(cfg: dict, season: str, selection, settings: list, store_path: Path):
+    """The fit data of `fogseg train`, the input normalization and the attributes of the label store.
 
-    import torch
+    The scenes are those of the tuning season in night folds 1 to n_folds - 1; the normalization is
+    fitted on all of them and shared by every cross-validation fold.
+    """
     import xarray as xr
 
-    import fogseg
-    from fogseg.experiment import RULE_MODE, experiment_cases, pooled_scores, winner
     from fogseg.features import read_static
-    from fogseg.label_store import check_labels_match, label_store_path
+    from fogseg.label_store import check_labels_match
     from fogseg.labels import LabelParams
     from fogseg.splits import read_splits, splits_path
-    from fogseg.teacher import file_sha256
-    from fogseg.tracking import MlflowTracker
-    from fogseg.unet_cv import FitData, cross_validate_unet
+    from fogseg.unet_cv import FitData
     from fogseg.unet_data import (
-        INPUT_CHANNELS,
         fit_normalization,
         model_inputs,
         point_targets,
@@ -789,8 +786,56 @@ def cmd_train(args: argparse.Namespace) -> None:
         scene_night_folds,
         tune_season_scenes,
     )
-    from fogseg.unet_train import UNetModel, UNetParams, choose_device, save_unet, train_model, unet_settings
     from fogseg.validation import season_start
+
+    stations_cfg = cfg["stations"]
+    target_names = sorted({options["target"] for _, options in settings})
+    with (
+        xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
+        xr.open_zarr(store_path, consolidated=False) as labels,
+    ):
+        check_labels_match(data, labels)
+        if "soft" in target_names and "fog_probability" not in labels:
+            raise ValueError(
+                f"{store_path} has no fog_probability, which the soft settings need; "
+                "use a teacher label store (`fogseg label --mode teacher`)"
+            )
+        times = data["time"].values
+        tuning = tune_season_scenes(times, cfg)
+        folds = scene_night_folds(
+            times[tuning],
+            read_splits(splits_path(Path(stations_cfg["data_dir"]), season)),
+            season_start(cfg, season),
+            stations_cfg["night_block_days"],
+        )
+        used = folds < stations_cfg["n_folds"]
+        scenes, night_folds = tuning[used], folds[used]
+        elevation = read_static(data, Path(cfg["dem"]["out_path"]), ["terrain"]).elevation_mean
+        raw, trusted, _ = read_inputs(data, scenes, elevation, LabelParams.from_config(cfg["labels"]))
+        normalization = fit_normalization(raw, trusted)
+        inputs = model_inputs(raw, trusted, normalization)
+        del raw
+        targets = {name: read_targets(labels, scenes, name) for name in target_names}
+        label_attrs = dict(labels.attrs)
+    scene_times = times[scenes]
+    fit = FitData(scene_times, inputs, targets, night_folds, point_targets(selection, scene_times))
+    return fit, normalization, label_attrs
+
+
+def cmd_train(args: argparse.Namespace) -> None:
+    import json
+
+    import torch
+
+    import fogseg
+    from fogseg.experiment import RULE_MODE, experiment_cases, pooled_scores, winner
+    from fogseg.label_store import label_store_path
+    from fogseg.splits import splits_path
+    from fogseg.teacher import file_sha256
+    from fogseg.tracking import MlflowTracker
+    from fogseg.unet_cv import cross_validate_unet
+    from fogseg.unet_data import INPUT_CHANNELS
+    from fogseg.unet_train import UNetModel, UNetParams, choose_device, save_unet, train_model, unet_settings
 
     cfg = load_config(args.config)
     labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
@@ -802,47 +847,22 @@ def cmd_train(args: argparse.Namespace) -> None:
         if path.exists():
             raise FileExistsError(f"{path} exists; a new model would replace the one the held-out set scored")
     config_path = data_dir / "unet_config.json"
-    config_path.unlink(missing_ok=True)
     selection, _ = experiment_cases(cfg, season)
 
-    params, unet_params = LabelParams.from_config(labels_cfg), UNetParams.from_config(cfg["unet"])
+    unet_params = UNetParams.from_config(cfg["unet"])
     settings = unet_settings(unet_params.point_weights)
     store_path = label_store_path(Path(labels_cfg["output_dir"]), labels_cfg["mode"])
     if not store_path.exists():
         raise FileNotFoundError(f"{store_path} not found; run `fogseg label` first")
-    with (
-        xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
-        xr.open_zarr(store_path, consolidated=False) as labels,
-    ):
-        check_labels_match(data, labels)
-        label_attrs = dict(labels.attrs)
-        tuning = tune_season_scenes(data["time"].values, cfg)
-        folds = scene_night_folds(
-            data["time"].values[tuning],
-            read_splits(splits_path(data_dir, season)),
-            season_start(cfg, season),
-            stations_cfg["night_block_days"],
-        )
-        used = folds < stations_cfg["n_folds"]
-        scenes, night_folds = tuning[used], folds[used]
-        elevation = read_static(data, Path(cfg["dem"]["out_path"]), ["terrain"]).elevation_mean
-        raw, trusted, _ = read_inputs(data, scenes, elevation, params)
-        normalization = fit_normalization(raw, trusted)
-        inputs = model_inputs(raw, trusted, normalization)
-        del raw
-        target_names = sorted({options["target"] for _, options in settings})
-        targets = {name: read_targets(labels, scenes, name) for name in target_names}
-        times = data["time"].values[scenes]
-
-    fit = FitData(times, inputs, targets, night_folds, point_targets(selection, times))
+    fit, normalization, label_attrs = read_fit_data(cfg, season, selection, settings, store_path)
+    times = fit.times
     device = choose_device(unet_params.device)
     log.info("Training on %d scenes and %d station points on %s", len(times), len(fit.points), device)
     tracker = MlflowTracker(unet_params.tracking_uri, Path(unet_params.artifact_dir), unet_params.experiment)
     run_params = {
         "unet": cfg["unet"],
         "labels": {"mode": labels_cfg["mode"]},
-        "teacher_setting": label_attrs.get("teacher_setting"),
-        "teacher_p_star": label_attrs.get("teacher_p_star"),
+        **{key: label_attrs[key] for key in ("teacher_setting", "teacher_p_star") if key in label_attrs},
         "n_scenes": len(times),
         "n_points": len(fit.points),
         "device": str(device),
@@ -884,6 +904,7 @@ def cmd_train(args: argparse.Namespace) -> None:
             torch_version=str(torch.__version__),
             fogseg_version=fogseg.__version__,
         )
+        config_path.unlink(missing_ok=True)
         save_unet(model, Path(unet_params.model_path))
 
         columns = ["case", "scene_time", "station", "night_fold", "station_fold", "truth_fls"]
