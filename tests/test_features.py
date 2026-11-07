@@ -138,14 +138,19 @@ def test_pixel_missing_in_every_scene_has_no_night_maximum_and_no_warning(recwar
     assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
 
 
-def tiny_teacher_season(tmp_path) -> tuple[xr.Dataset, pd.DataFrame, StaticFields]:
-    """`tiny_season` with all eight channels and a lon / lat grid, and its `read_static` fields."""
-    season, cases = tiny_season(tmp_path)
+def teacher_dataset(season: xr.Dataset) -> xr.Dataset:
+    """A `tiny_season` dataset with all eight channels and a lon / lat grid."""
     bt = season["bt"].load().reindex(channel=CHANNELS)
     for index, channel in enumerate(CHANNELS):
         if channel not in LABEL_CHANNELS:
             bt.loc[{"channel": channel}] = 265.0 + index
-    data = add_station_grid(xr.Dataset({"bt": bt, "sza": season["sza"].load()}))
+    return add_station_grid(xr.Dataset({"bt": bt, "sza": season["sza"].load()}))
+
+
+def tiny_teacher_season(tmp_path) -> tuple[xr.Dataset, pd.DataFrame, StaticFields]:
+    """`tiny_season` with all eight channels and a lon / lat grid, and its `read_static` fields."""
+    season, cases = tiny_season(tmp_path)
+    data = teacher_dataset(season)
     return data, cases, read_static(data, tmp_path / "no_dem.zarr", ["bt"])
 
 

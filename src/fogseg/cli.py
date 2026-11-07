@@ -375,6 +375,11 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     log.info("Wrote %s", out_path)
 
 
+def teacher_held_out_paths(data_dir: Path) -> list[Path]:
+    """The table and the decision record of the teacher's held-out run: either one closes the held-out set."""
+    return [data_dir / "teacher_held_out.csv", data_dir / "teacher_held_out.json"]
+
+
 def held_out_paths(data_dir: Path) -> list[Path]:
     """The table and the decision record of the held-out run: either one closes the held-out set."""
     return [data_dir / "experiment_B_held_out.csv", data_dir / "experiment_B_held_out.json"]
@@ -506,6 +511,78 @@ def cmd_held_out(args: argparse.Namespace) -> None:
     write_atomically(table_path, table.to_csv(index=False))
     write_atomically(record_path, json.dumps(record, indent=2))
     log.info("Wrote %s and %s", table_path, record_path)
+
+
+def cmd_teacher(args: argparse.Namespace) -> None:
+    import dataclasses
+    import json
+    from contextlib import ExitStack
+
+    import xarray as xr
+
+    from fogseg.experiment import config_record, experiment_cases, pooled_scores, winner
+    from fogseg.features import case_features, open_era5, read_static
+    from fogseg.labels import LabelParams
+    from fogseg.teacher import (
+        MODEL_SETTINGS,
+        TeacherParams,
+        cross_validate_settings,
+        fit_teacher,
+        oof_table,
+        save_teacher,
+    )
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "used to fit the teacher")
+    if labels_cfg["mode"] != "fixed":
+        raise ValueError(f"The teacher needs labels.mode fixed, not {labels_cfg['mode']!r}")
+
+    data_dir = Path(stations_cfg["data_dir"])
+    for path in teacher_held_out_paths(data_dir):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; a rerun would overwrite the record of the held-out result")
+    selection, _ = experiment_cases(cfg, season)
+
+    params, teacher_params = LabelParams.from_config(labels_cfg), TeacherParams.from_config(cfg["teacher"])
+    groups = teacher_params.feature_groups
+    with ExitStack() as stack:
+        data = stack.enter_context(xr.open_zarr(cfg["data"]["processed_path"], consolidated=False))
+        static = read_static(data, Path(cfg["dem"]["out_path"]), groups)
+        era5_store = open_era5(Path(cfg["era5"]["out_path"]), groups)
+        if era5_store is not None:
+            stack.enter_context(era5_store)
+        features = case_features(data, selection, static, era5_store, params, groups)
+
+    table, probabilities = cross_validate_settings(features, selection, teacher_params, stations_cfg)
+    best = winner(table)
+    pooled = pooled_scores(table).loc[best]
+    log.info(
+        "Teacher winner %s: p* %g, pooled POD %.3f, FAR %.3f",
+        best,
+        pooled["value"],
+        pooled["pod"],
+        pooled["far"],
+    )
+    teacher = fit_teacher(
+        features,
+        selection,
+        (best, dict(MODEL_SETTINGS)[best]),
+        probabilities[best],
+        float(pooled["value"]),
+        teacher_params,
+        stations_cfg["seed"],
+    )
+
+    cv_path, oof_path = data_dir / "teacher_cv.csv", data_dir / "teacher_oof.csv"
+    table.to_csv(cv_path, index=False)
+    oof_table(probabilities[best], selection).to_csv(oof_path, index=False)
+    save_teacher(teacher, Path(teacher_params.model_path))
+    record = config_record(season, labels_cfg["mode"], params, stations_cfg)
+    record["teacher"] = dataclasses.asdict(teacher_params)
+    write_atomically(data_dir / "teacher_config.json", json.dumps(record, indent=2))
+    log.info("Wrote %s, %s and %s", cv_path, oof_path, teacher_params.model_path)
 
 
 def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:
@@ -830,6 +907,14 @@ def main() -> None:
         help="score the winner of experiment_B.csv against the configured rule on the held-out cases, once",
     )
     experiment.set_defaults(func=cmd_experiment)
+
+    teacher = sub.add_parser(
+        "teacher",
+        help="cross-validate the teacher settings on the tuning season, then fit and save the winner",
+    )
+    teacher.add_argument("--config", default="configs/default.yaml")
+    teacher.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
+    teacher.set_defaults(func=cmd_teacher)
 
     tune = sub.add_parser(
         "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"

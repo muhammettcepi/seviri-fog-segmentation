@@ -383,10 +383,12 @@ def flat_record(record: dict) -> dict:
     """A configuration record with one key per setting, like `labels.btd_fixed`."""
     settings = {
         f"{section}.{key}": value
-        for section in ("labels", "stations")
-        for key, value in record[section].items()
+        for section, values in record.items()
+        if isinstance(values, dict)
+        for key, value in values.items()
     }
-    return {"season": record["season"], "mode": record["mode"], **settings}
+    plain = {key: value for key, value in record.items() if not isinstance(value, dict)}
+    return {**plain, **settings}
 
 
 def check_same_config(recorded: dict, current: dict) -> None:

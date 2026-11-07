@@ -5,7 +5,11 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
+import time
+from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -24,6 +28,7 @@ from fogseg.experiment import (
     value_scores,
     warn_at_grid_edge,
 )
+from fogseg.features import feature_names
 from fogseg.labels import FOG, IGNORE, NO_FOG
 from fogseg.scores import COUNT_NAMES
 from fogseg.splits import cv_folds
@@ -33,6 +38,18 @@ from fogseg.validation import TRUTH_YES
 log = logging.getLogger(__name__)
 
 NOT_INPUTS = ["has_era5", "trusted"]
+OOF_CASE_COLUMNS = [
+    "case",
+    "scene_time",
+    "station",
+    "lat",
+    "lon",
+    "iy",
+    "ix",
+    "night_fold",
+    "station_fold",
+    "truth_fls",
+]
 HGB_SETTINGS = [(0.05, 15), (0.05, 31), (0.05, 63), (0.1, 15), (0.1, 31), (0.1, 63)]
 MODEL_SETTINGS: list[tuple[str, dict]] = [
     ("1 logistic C=0.1", {"model": "logistic", "C": 0.1}),
@@ -84,6 +101,16 @@ def teacher_labels(p: np.ndarray, p_star: float, halfwidth: float) -> np.ndarray
     return np.where(p >= p_star + halfwidth, FOG, no_fog_or_ignore).astype(np.uint8)
 
 
+def model_columns(features: pd.DataFrame) -> pd.Index:
+    """The columns a model takes as input: every feature column."""
+    return features.columns.difference(NOT_INPUTS, sort=False)
+
+
+def usable_rows(features: pd.DataFrame) -> np.ndarray:
+    """Whether each row has ERA5 and a trusted pixel, the only rows a model is fitted or scored on."""
+    return (features["has_era5"] & features["trusted"]).to_numpy()
+
+
 def fitted_model(features: pd.DataFrame, is_fog: np.ndarray, options: dict, seed: int, where: str):
     """A model of `options` fitted on the rows of `features`; both truth classes must be present."""
     if is_fog.all() or not is_fog.any():
@@ -103,8 +130,7 @@ def fold_probabilities(
 
     Only cases with ERA5 and a trusted pixel are fitted and predicted; any other case has a NaN `raw`.
     """
-    inputs = features.columns.difference(NOT_INPUTS, sort=False)
-    is_usable = (features["has_era5"] & features["trusted"]).to_numpy()
+    inputs, is_usable = model_columns(features), usable_rows(features)
     is_fog = (cases["truth_fls"] == TRUTH_YES).to_numpy()
     parts = []
     for fold, train, test in cv_folds(cases, n_folds):
@@ -225,10 +251,100 @@ def cross_validate_settings(
     """
     tables, probabilities = [], {}
     for name, options in MODEL_SETTINGS:
+        started = time.perf_counter()
         table, probabilities[name] = cross_validate_setting(
             features, cases, options, teacher_params, stations_cfg, name
         )
         pooled = table.iloc[-1]
-        log.info("Setting %s: p* %g, pooled POD %.3f, FAR %.3f", name, pooled.value, pooled.pod, pooled.far)
+        log.info(
+            "Setting %s: p* %g, pooled POD %.3f, FAR %.3f, %.1f s",
+            name,
+            pooled.value,
+            pooled.pod,
+            pooled.far,
+            time.perf_counter() - started,
+        )
         tables.append(table.assign(variant=name, options=json.dumps(options)))
     return pd.concat(tables, ignore_index=True)[["variant", "options", *CV_COLUMNS]], probabilities
+
+
+@dataclasses.dataclass(frozen=True)
+class TeacherModel:
+    """A fitted teacher: classifier, calibrator and what labelling needs of them.
+
+    `correction_km` is the station-correction length, None until one is chosen.
+    """
+
+    setting: str
+    options: dict
+    model: object
+    calibrator: IsotonicRegression
+    feature_names: list[str]
+    feature_groups: list[str]
+    p_star: float
+    ignore_halfwidth: float
+    correction_km: float | None = None
+
+
+def fit_teacher(
+    features: pd.DataFrame,
+    cases: pd.DataFrame,
+    setting: tuple[str, dict],
+    fold_probs: pd.DataFrame,
+    p_star: float,
+    teacher_params: TeacherParams,
+    seed: int,
+) -> TeacherModel:
+    """The teacher of a setting fitted on every selection case with ERA5 and a trusted pixel.
+
+    The calibrator is the one of the setting's out-of-fold probabilities `fold_probs`.
+    """
+    name, options = setting
+    columns = model_columns(features)
+    fit_rows = usable_rows(features)
+    is_fog = (cases["truth_fls"] == TRUTH_YES).to_numpy()
+    model = fitted_model(features.loc[fit_rows, columns], is_fog[fit_rows], options, seed, f"Setting {name}")
+    return TeacherModel(
+        setting=name,
+        options=options,
+        model=model,
+        calibrator=fit_calibrator(fold_probs, cases),
+        feature_names=list(columns),
+        feature_groups=list(teacher_params.feature_groups),
+        p_star=p_star,
+        ignore_halfwidth=teacher_params.ignore_halfwidth,
+    )
+
+
+def predict_probability(teacher: TeacherModel, rows: np.ndarray) -> np.ndarray:
+    """The calibrated probability of FLS of every row, which has the teacher's features as columns."""
+    raw = teacher.model.predict_proba(pd.DataFrame(rows, columns=teacher.feature_names))[:, 1]
+    return teacher.calibrator.predict(raw)
+
+
+def save_teacher(teacher: TeacherModel, path: Path) -> None:
+    """Write the teacher to a `.part` file and move it into place, so a crash leaves no partial `path`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(f"{path.name}.part")
+    joblib.dump(teacher, part)
+    os.replace(part, path)
+
+
+def load_teacher(path: Path, groups: list[str]) -> TeacherModel:
+    """The teacher saved at `path`, which must have been fitted on the features of `groups`."""
+    if not path.exists():
+        raise FileNotFoundError(f"{path} is missing; run `fogseg teacher` first")
+    teacher = joblib.load(path)
+    expected = feature_names(groups)
+    if teacher.feature_names != expected:
+        raise ValueError(
+            f"The teacher in {path} was fitted on the features {teacher.feature_names}, but the feature "
+            f"groups {groups} give {expected}; run `fogseg teacher` again"
+        )
+    return teacher
+
+
+def oof_table(fold_probs: pd.DataFrame, cases: pd.DataFrame) -> pd.DataFrame:
+    """The selection cases with their mean calibrated out-of-fold probability `p_oof`, NaN if unpredicted."""
+    p_oof = fold_probs.groupby("case")["p"].mean()
+    return cases[OOF_CASE_COLUMNS].assign(p_oof=cases["case"].map(p_oof).to_numpy())
