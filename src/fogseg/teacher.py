@@ -220,22 +220,16 @@ def pooled_value_scores(
     return summed_scores(list(fold_value_scores(fold_probs, cases, values, halfwidth).values()))
 
 
-def cross_validate_setting(
-    features: pd.DataFrame,
+def setting_rows(
+    fold_probs: pd.DataFrame,
     cases: pd.DataFrame,
-    options: dict,
-    teacher_params: TeacherParams,
-    stations_cfg: dict,
+    values: np.ndarray,
+    halfwidth: float,
+    far_target: float,
     name: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """The rows of one setting at its pooled p*, and its fold probabilities."""
-    n_folds, halfwidth = stations_cfg["n_folds"], teacher_params.ignore_halfwidth
-    raw = fold_probabilities(features, cases, options, n_folds, stations_cfg["seed"], name)
-    fold_probs = calibrated(raw, fit_calibrator(raw, cases))
-
-    values = grid_values(teacher_params.probability_grid)
+) -> pd.DataFrame:
+    """The rows of a setting at its pooled p*: one per fold on its test part, then the pooled row."""
     fold_scores = fold_value_scores(fold_probs, cases, values, halfwidth)
-    far_target = stations_cfg["matched_far"]
     p_star, matched = matched_value(summed_scores(list(fold_scores.values())), far_target)
     if matched:
         warn_at_grid_edge(f"Setting {name}", p_star, values)
@@ -249,7 +243,23 @@ def cross_validate_setting(
     ]
     pooled = summed_scores(list(at_p_star.values())).to_dict("records")[0]
     rows.append({"fold": "pooled", "matched": matched, **pooled})
-    return pd.DataFrame(rows, columns=CV_COLUMNS), fold_probs
+    return pd.DataFrame(rows, columns=CV_COLUMNS)
+
+
+def cross_validate_setting(
+    features: pd.DataFrame,
+    cases: pd.DataFrame,
+    options: dict,
+    teacher_params: TeacherParams,
+    stations_cfg: dict,
+    name: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The rows of one setting at its pooled p*, and its fold probabilities."""
+    raw = fold_probabilities(features, cases, options, stations_cfg["n_folds"], stations_cfg["seed"], name)
+    fold_probs = calibrated(raw, fit_calibrator(raw, cases))
+    values = grid_values(teacher_params.probability_grid)
+    halfwidth = teacher_params.ignore_halfwidth
+    return setting_rows(fold_probs, cases, values, halfwidth, stations_cfg["matched_far"], name), fold_probs
 
 
 def cross_validate_settings(
