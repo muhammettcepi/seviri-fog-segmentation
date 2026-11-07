@@ -12,6 +12,7 @@ import dataclasses
 import datetime as dt
 import itertools
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +24,7 @@ from fogseg.build import CHUNK_TIME
 from fogseg.dynamic_threshold import DynamicParams, ThresholdChoice, dynamic_threshold
 from fogseg.labels import FOG, IGNORE, NO_FOG, OBSCURED, LabelParams, histogram_pixels, label_night
 
-MODES = ("fixed", "dynamic")
+MODES = ("fixed", "dynamic", "teacher")
 LABEL_CHANNELS = ["IR_039", "IR_108", "IR_120"]
 # Same fixed time units as the dataset, so appended batches are stored exactly like the first one.
 TIME_ENCODING = {"units": "minutes since 2000-01-01", "dtype": "int64"}
@@ -180,6 +181,29 @@ def label_batch(
     )
 
 
+def write_store(
+    data: xr.Dataset,
+    store: Path,
+    make_batch: Callable[[int, int], xr.Dataset],
+    encoding: dict,
+    batch: int,
+) -> None:
+    """Write the label batches of whole nights to `store`, about `batch` scenes at a time.
+
+    `make_batch(start, stop)` labels scenes `start` to `stop` of the dataset.
+    """
+    for start, stop in night_batches(data["time"].values, batch):
+        labelled = make_batch(start, stop)
+
+        is_first_batch = start == 0
+        if is_first_batch:
+            labelled.to_zarr(store, mode="w", encoding=encoding, zarr_format=3, consolidated=False)
+        else:
+            # x and y are already in the store; appending them again would overwrite them
+            labelled = labelled.drop_vars(["x", "y"])
+            labelled.to_zarr(store, append_dim="time", consolidated=False)
+
+
 def write_batches(
     data: xr.Dataset,
     store: Path,
@@ -199,16 +223,10 @@ def write_batches(
         "time": TIME_ENCODING,
     }
 
-    for start, stop in night_batches(data["time"].values, batch):
-        labelled = label_batch(data, start, stop, mode, params, dynamic)
+    def make_batch(start: int, stop: int) -> xr.Dataset:
+        return label_batch(data, start, stop, mode, params, dynamic)
 
-        is_first_batch = start == 0
-        if is_first_batch:
-            labelled.to_zarr(store, mode="w", encoding=encoding, zarr_format=3, consolidated=False)
-        else:
-            # x and y are already in the store; appending them again would overwrite them
-            labelled = labelled.drop_vars(["x", "y"])
-            labelled.to_zarr(store, append_dim="time", consolidated=False)
+    write_store(data, store, make_batch, encoding, batch)
 
 
 def store_attrs(

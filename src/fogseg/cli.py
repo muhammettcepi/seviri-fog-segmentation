@@ -105,6 +105,7 @@ def cmd_label(args: argparse.Namespace) -> None:
     from fogseg.dynamic_threshold import DynamicParams
     from fogseg.label_store import label_dataset, label_store_path, summarize_store
     from fogseg.labels import LabelParams
+    from fogseg.teacher_labels import label_teacher_dataset
 
     cfg = load_config(args.config)
     labels_cfg = cfg["labels"]
@@ -115,7 +116,10 @@ def cmd_label(args: argparse.Namespace) -> None:
     dataset_path = Path(cfg["data"]["processed_path"])
     out_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
     started = time.time()
-    n = label_dataset(dataset_path, out_path, mode, params, dynamic, overwrite=args.overwrite)
+    if mode == "teacher":
+        n = label_teacher_dataset(dataset_path, out_path, cfg, overwrite=args.overwrite)
+    else:
+        n = label_dataset(dataset_path, out_path, mode, params, dynamic, overwrite=args.overwrite)
     log.info("Wrote %d scenes to %s in %.0f s", n, out_path, time.time() - started)
 
     source_counts, mean_fog_fraction = summarize_store(out_path)
@@ -985,7 +989,9 @@ def main() -> None:
 
     label = sub.add_parser("label", help="write fog / low-stratus labels for every scene")
     label.add_argument("--config", default="configs/default.yaml")
-    label.add_argument("--mode", choices=["fixed", "dynamic"], help="default: labels.mode of the config")
+    label.add_argument(
+        "--mode", choices=["fixed", "dynamic", "teacher"], help="default: labels.mode of the config"
+    )
     label.add_argument("--overwrite", action="store_true", help="replace the label store if it exists")
     label.set_defaults(func=cmd_label)
 
