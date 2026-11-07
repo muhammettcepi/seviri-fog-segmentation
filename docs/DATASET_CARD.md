@@ -96,7 +96,8 @@ The four solar channels (VIS006, VIS008, IR_016, HRV) are left out: they carry n
 ## Labels
 
 Weak labels for fog and low stratus, made by `fogseg label` from the dataset above. There is one
-Zarr store per mode, next to the dataset: `labels_fixed.zarr` and `labels_dynamic.zarr` (folder
+Zarr store per mode, next to the dataset: `labels_fixed.zarr` and `labels_dynamic.zarr`, and the benchmark
+`labels_teacher.zarr` ([below](#teacher-labels-benchmark)) (folder
 `labels.output_dir` in [`configs/default.yaml`](../configs/default.yaml)). They have the same
 `time`, `y` and `x` as the dataset, so `xr.merge([dataset, labels])` lines them up. The default mode
 is `fixed`.
@@ -235,6 +236,41 @@ The `labels` section also has options for other versions of the rule: `texture` 
 combination (no smoothness test, the emissivity index at 0.80, a 0.5 K relax) gained 0.04 POD at a lower FAR on the
 held-out cases, but the 95 % interval of the gain reached below zero, so it did not replace the default.
 
+### Teacher labels (benchmark)
+
+`fogseg label --mode teacher` writes a third store, `labels_teacher.zarr`, with a per-pixel classifier trained on the
+station truth instead of a rule. It is a **benchmark store, not the configured labels**: `labels.mode` stays `fixed`.
+The store has `label`, with the same values as above, and one more variable:
+
+| Variable | Dimensions | Content |
+|---|---|---|
+| `label` | time, y, x | `uint8`: `0`, `1`, `2` or `255` |
+| `fog_probability` | time, y, x | `uint8`: round(p × 250), so 0 to 250 for p from 0 to 1; `255` where p is undefined (untrusted pixel, no ERA5 when that group is used, or obscured) |
+
+`label` is `1` where p is above p* = 0.41 by more than 0.1 and `0` where it is below p* by more than 0.1. Untrusted
+pixels are `255` and obscured pixels `2`, as in the rule; `255` also marks the band of ±0.1 around p*. No local
+correction is applied. The store attributes hold the setting, p*, the half-width, the feature groups, the model path, the
+scikit-learn version and the label options.
+
+How it was made: a histogram-based gradient boosting classifier (learning rate 0.05, 31 leaves) on 27 features (the
+brightness temperatures, their differences, texture, geometry, terrain, time and the rule label; **no ERA5**, the ERA5
+store was not built), trained on the visible station cases of the selection nights and stations of the 2023-24 season
+and calibrated with isotonic regression; p* is where the out-of-fold FAR is 0.28. On the held-out nights and stations
+(full count) it has POD 0.769 at FAR 0.266, against 0.433 and 0.255 for the fixed 4.0 K rule. It was not kept as the
+default because its FAR is 0.011 higher, which the pre-registered keep rule does not allow; the owner may still switch.
+On stations it has not seen, POD is 0.722 against the rule's 0.366, so the gain is not only a learned fog rate per
+location. The geometry and terrain features can learn such rates, so a model scored on stations that fed this teacher
+would not be a clean test. Details are in [`docs/notes/better_labels.md`](notes/better_labels.md#phase-c-station-trained-teacher).
+
+Share of all pixels, 608 scenes:
+
+| Store | 0 | 1 | 2 | 255 | Fog among decided |
+|---|---|---|---|---|---|
+| `labels_fixed` (the rule, configured) | 0.301 | 0.151 | 0.394 | 0.154 | 0.334 |
+| `labels_teacher` (benchmark) | 0.279 | 0.215 | 0.394 | 0.112 | 0.436 |
+
+7.9 % of all pixels are in the teacher's ignore band. The obscured share is the same by construction.
+
 ### Limitations
 
 - **Weak labels are not ground truth.** They come from a rule on satellite data. Against stations they
@@ -301,4 +337,6 @@ fogseg split                 # held-out nights and stations of the training seas
 fogseg validate --season 2023-24
 fogseg diagnose              # why visible fog is missed, selection cases only
 fogseg experiment --phase B  # label variants, cross-validated on the selection cases
+fogseg teacher               # phase C: the station-trained model, processed/teacher.joblib
+fogseg label --mode teacher  # labels_teacher.zarr, ~5 min
 ```

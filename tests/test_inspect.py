@@ -3,6 +3,7 @@
 import argparse
 import dataclasses
 import logging
+import sys
 import warnings
 from pathlib import Path
 
@@ -12,9 +13,9 @@ import pandas as pd
 import pytest
 import xarray as xr
 import yaml
-from helpers import TEST_DYNAMIC, TEST_PARAMS, make_label_dataset
+from helpers import TEST_DYNAMIC, TEST_PARAMS, make_label_dataset, write_teacher_style_store
 
-from fogseg.cli import cmd_inspect
+from fogseg.cli import cmd_inspect, main
 from fogseg.config import load_config
 from fogseg.inspect import (
     draw_labels_panel,
@@ -90,6 +91,10 @@ def test_missing_time_lists_exactly_three_nearest_times():
     for listed in ["2023-11-20 06:00", "2023-11-20 09:00", "2023-11-20 03:00"]:
         assert listed in message
     assert "2023-11-20 12:00" not in message
+
+
+def test_histogram_title_without_a_threshold_says_so():
+    assert histogram_title(None, "teacher") == "BTD histogram, no threshold (teacher)"
 
 
 def test_histogram_title_names_threshold_and_source():
@@ -208,6 +213,52 @@ def test_cli_labels_option_overrides_the_config(tmp_path):
     cmd_inspect(argparse.Namespace(config=config, time="2023-11-21T00:00", labels="fixed"))
 
     assert (tmp_path / "figures" / "inspect_fixed_20231121T0000.png").exists()
+
+
+def make_teacher_style_store(tmp_path: Path) -> tuple[Path, Path]:
+    dataset_path, fixed_path = make_stores(tmp_path)
+    teacher_path = label_store_path(tmp_path / "labels", "teacher")
+    write_teacher_style_store(fixed_path, teacher_path)
+    return dataset_path, teacher_path
+
+
+def test_inspect_draws_a_store_without_a_btd_threshold(tmp_path):
+    dataset_path, store_path = make_teacher_style_store(tmp_path)
+    with open_zarr(dataset_path) as data, open_zarr(store_path) as labels:
+        png = inspect_figure(data, labels, WANTED, TEST_PARAMS, TEST_DYNAMIC, tmp_path / "figures")
+    assert png.name == "inspect_teacher_20231121T0000.png" and png.stat().st_size > 0
+
+
+def test_cli_inspects_the_teacher_store(tmp_path):
+    dataset_path, _ = make_teacher_style_store(tmp_path)
+    config = write_config(tmp_path, dataset_path, mode="fixed")
+
+    cmd_inspect(argparse.Namespace(config=config, time="2023-11-21T00:00", labels="teacher"))
+
+    assert (tmp_path / "figures" / "inspect_teacher_20231121T0000.png").exists()
+
+
+@pytest.mark.parametrize(
+    "command, function",
+    [
+        (["validate", "--season", "2023-24"], "cmd_validate"),
+        (["inspect", "--time", "2023-11-21T00:00"], "cmd_inspect"),
+        (["select-scenes"], "cmd_select_scenes"),
+    ],
+)
+def test_the_label_commands_accept_the_teacher_store(tmp_path, monkeypatch, command, function):
+    cfg = load_config("configs/default.yaml")
+    cfg["data"]["log_dir"] = str(tmp_path / "logs")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    called = []
+    monkeypatch.setattr(f"fogseg.cli.{function}", called.append)
+    argv = ["fogseg", command[0], "--config", str(config_path), *command[1:], "--labels", "teacher"]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    main()
+
+    assert [args.labels for args in called] == ["teacher"]
 
 
 def test_cli_time_with_a_utc_zone_finds_the_scene(tmp_path):

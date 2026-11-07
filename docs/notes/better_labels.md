@@ -1,10 +1,12 @@
 # Better fog labels from the station network
 
-Phases A and B of [the design](../superpowers/specs/2026-10-31-better-labels-design.md). Phase A built an evaluation
+Phases A, B and C of [the design](../superpowers/specs/2026-10-31-better-labels-design.md). Phase A built an evaluation
 protocol that can tell a real gain from noise, cleaner matching between stations and pixels, an `obscured` label, the
 terrain and ERA5 data the later phases need, and a diagnosis of the missed fog. Phase B tried ten repairs of the label
 rule against that protocol ([below](#phase-b-rule-repair-and-time)); none passed the keep rule, so the labels are still
-the fixed 4.0 K baseline. Phase C (a station-trained teacher) comes next.
+the fixed 4.0 K baseline. Phase C trained a teacher on the station truth
+([below](#phase-c-station-trained-teacher)): it finds far more fog, but the FAR clause of the keep rule stopped it, so
+the configured labels stay as they were.
 
 Everything is measured on the 2023-24 training season. The 2024-25 test season was not opened.
 
@@ -17,7 +19,7 @@ Everything is measured on the 2023-24 training season. The 2024-25 test season w
 - **Station cells:** 2° × 2° cells from the south-west corner of the region, dealt to folds 1–5 in a random order fixed
   by `stations.seed`.
 - **Held-out:** every case whose night or station is in fold 5, 36 % of the cases. From now on nothing is chosen on
-  it, and each phase opens it once, for its one winner. It is reported in three parts: unseen nights only, unseen
+  it, and each phase opens it once, for its one winner (phase C was the last). It is reported in three parts: unseen nights only, unseen
   stations only, both.
 - **Selection:** nights and stations both in folds 1–4. Every threshold and variant of phases B and C is chosen here,
   with a blocked four-fold cross-validation. `fogseg tune` and `fogseg diagnose` read only these cases and refuse to
@@ -206,17 +208,142 @@ small for eleven night blocks to confirm; it is reported, not claimed. It sits m
 hardly on unseen stations (+0.01), where the winner trades its gain for fewer false alarms.
 
 The baseline rows repeat the phase A held-out table exactly, so the two phases score the same cases the same way. The
-held-out set has now been opened twice: for the phase A baseline and for this one winner. Phase C gets the last look.
+held-out set has now been opened twice: for the phase A baseline and for this one winner. Phase C took the last look.
 
-## What this means for phase C
+## What phase B meant for phase C
 
-- The target is still the full-count POD at FAR 0.28 on the held-out cases: 0.43.
+- The target was the full-count POD at FAR 0.28 on the held-out cases: 0.43.
 - A rule change buys about 0.04 at best. The low-BTD half of the misses is mostly partial cover, which only extra
   information (time, water vapour, ERA5, the stations themselves) can help with; the teacher should get the emissivity
   index, the neighbouring slots and no smoothness test as inputs rather than as fixed rules.
 - Unseen stations score lower than unseen nights (POD 0.37 against 0.48), and phase B's rule barely moved them. The
   station-trained teacher of phase C has to be judged on that part, since it is the one where fitting to the stations
   shows.
+
+## Phase C: station-trained teacher
+
+`fogseg teacher` trains a per-pixel classifier on the station truth of the selection cases and scores it with the same
+blocked four-fold cross-validation. The cases are the 48,669 selection cases (2,000 of them never usable: untrusted
+pixel, no prediction), one per pixel and scene. A case that lies in a night fold and a station fold is tested twice, as
+in phase B, so the pooled out-of-fold set has 85,521 rows.
+
+**Features (27).** The groups `bt`, `differences`, `texture`, `geometry`, `terrain`, `time` and `rule` (the phase B rule
+label). **ERA5 is left out.** The ERA5 store does not exist (there is
+no CDS key yet), so `teacher.feature_groups` drops `era5`. Adding it later means rerunning `fogseg teacher`; the
+held-out set is spent, so a new teacher could only be compared on the 2024-25 test season, once.
+
+**Models and threshold.** Eight settings: logistic regression on standardized features (C 0.1 and 1) and
+`HistGradientBoostingClassifier` (learning rate 0.05 and 0.1, 15, 31 and 63 leaves). The out-of-fold probabilities are
+calibrated with isotonic regression, and p* is the probability at which the out-of-fold full-count FAR is 0.28. Pixels
+within `teacher.ignore_halfwidth` (0.1) of p* get 255 and count as misses.
+
+### Cross-validation
+
+| Setting | p* | Pooled POD | Pooled FAR | Pooled CSI |
+|---|---|---|---|---|
+| 1 logistic C 0.1 | 0.49 | 0.563 | 0.275 | 0.464 |
+| 2 logistic C 1 | 0.47 | 0.575 | 0.278 | 0.471 |
+| 3 hgb lr 0.05, 15 leaves | 0.40 | 0.688 | 0.274 | 0.546 |
+| **4 hgb lr 0.05, 31 leaves** | **0.41** | **0.696** | **0.276** | **0.550** |
+| 5 hgb lr 0.05, 63 leaves | 0.42 | 0.696 | 0.276 | 0.550 |
+| 6 hgb lr 0.1, 15 leaves | 0.41 | 0.696 | 0.278 | 0.549 |
+| 7 hgb lr 0.1, 31 leaves | 0.42 | 0.690 | 0.277 | 0.546 |
+| 8 hgb lr 0.1, 63 leaves | 0.45 | 0.661 | 0.271 | 0.530 |
+
+**These scores are not comparable with phase B's.** p* is chosen on the same out-of-fold rows the table scores, so they
+lean optimistic; phase B matched the threshold on the training part of each fold. For reference, phase B's
+cross-validation baseline (fixed 4.0 K) was POD 0.33 at FAR 0.27. The table ranks the settings; the held-out table below
+is the honest comparison.
+
+- **Boosted trees beat logistic regression by 0.11 to 0.13 POD** at the same FAR.
+- **Among the trees the settings are close.** Settings 4, 5 and 6 tie on POD; ties go to the lower number, so setting 4
+  is the winner.
+
+### Local correction
+
+The correction spreads the residuals truth − p at the selection stations of the same scene: Δ = Σ wᵢ rᵢ / (1 + Σ wᵢ)
+with w = exp(−d / L) within 3 L, added to p and re-thresholded at p* (0.41). The residual uses the out-of-fold p. In the
+cross-validation the feeding stations exclude the test fold's and the held-out station folds, and any station within 5 km
+of the target (a METAR and a SYNOP at the same site would otherwise feed each other).
+
+| L | POD | FAR | CSI |
+|---|---|---|---|
+| none | 0.696 | 0.276 | 0.550 |
+| 25 km | 0.724 | 0.250 | 0.583 |
+| 50 km | 0.740 | 0.232 | 0.605 |
+| **100 km (chosen)** | **0.747** | **0.223** | **0.615** |
+
+100 km is the edge of the grid (25, 50, 100). The grid was not widened after seeing this table, so a longer scale was
+never tried.
+
+### Held-out comparison
+
+`fogseg teacher --held-out` scored the winner (setting 4, p* 0.41) once on the held-out cases, with the 100 km correction
+on the unseen-stations part. Full count; the rule row is the phase A baseline, the fixed 4.0 K labels, and the phase B
+winner is shown for reference (it was not kept).
+
+| Labels | Part | POD | FAR | CSI | Cases |
+|---|---|---|---|---|---|
+| Rule, fixed 4.0 K (phase A baseline) | held-out | 0.433 | 0.255 | 0.377 | 27,011 |
+| Phase B winner (not kept) | held-out | 0.470 | 0.242 | 0.41 | 27,011 |
+| **Teacher** | **held-out** | **0.769** | **0.266** | **0.601** | 27,011 |
+| Teacher | unseen nights | 0.808 | 0.286 | 0.611 | 9,480 |
+| Teacher | unseen stations | 0.722 | 0.250 | 0.582 | 14,603 |
+| Teacher | both unseen | 0.834 | 0.262 | 0.643 | 2,928 |
+| Rule | unseen nights | 0.485 | 0.272 | 0.410 | 9,480 |
+| Rule | unseen stations | 0.366 | 0.246 | 0.327 | 14,603 |
+| Rule | both unseen | 0.540 | 0.233 | 0.464 | 2,928 |
+| Corrected teacher | unseen stations | 0.758 | 0.212 | 0.629 | 14,603 |
+
+Only the unseen-stations part can be corrected: on unseen nights and on both-unseen, no selection station shares the
+scene, so the corrected teacher there is the teacher. Intervals are from a paired bootstrap over the 14-day night
+blocks.
+
+- **Teacher against the rule:** POD gain **+0.336**, 95 % interval +0.289 to +0.400. FAR 0.266 against 0.255; the
+  difference has an interval of −0.049 to +0.044.
+- **Corrected teacher against teacher, unseen stations:** POD gain +0.035, 95 % interval −0.003 to +0.069. FAR 0.212
+  against 0.250; the difference has an interval of −0.060 to −0.019.
+
+**The teacher is not kept, because of the FAR clause alone.** The keep rule needs the POD-gain interval above zero,
+which it clears by far, and a held-out FAR that is not higher than the rule's. The teacher's point estimate is 0.011
+higher (not significant, and both are under the 0.28 target). The pre-registered rule is applied as written, so
+`labels.mode` stays `fixed` at 4.0 K. Whether to switch to `labels.mode: teacher` despite the FAR clause is the owner's
+decision; the store is already written (below).
+
+**The correction is not kept.** Its FAR is significantly lower, but the POD interval reaches below zero, so the keep
+rule fails. Dense labels carry no correction.
+
+The held-out set has now been opened three times: for the phase A baseline, for the phase B winner and for this teacher.
+This was the last look.
+
+**A caveat about location.** The geometry and terrain features let the model learn the base rate of fog at each
+location, which would help on stations it has seen and say nothing about new ones. The unseen-stations row is the test
+of that: POD 0.722 against the rule's 0.366, at FAR 0.250 against 0.246. The gain holds there.
+
+### Dense labels
+
+`fogseg label --mode teacher` writes `labels_teacher.zarr`, a benchmark store, not the configured labels. 608 scenes took
+293 s, with a peak memory of about 1.1 GB. `label` is `0`, `1`, `2` or `255`: untrusted pixels are `255` and obscured
+pixels `2` as in the rule, and `255` also marks the band of ±0.1 around p* = 0.41. `fog_probability` is `uint8`,
+round(p × 250), and 255 where p is undefined (untrusted, obscured, or no ERA5 when that group is used). No correction
+is applied. Share of all pixels:
+
+| Store | 0 | 1 | 2 | 255 | Fog among decided |
+|---|---|---|---|---|---|
+| `labels_fixed` (rule, configured) | 0.301 | 0.151 | 0.394 | 0.154 | 0.334 |
+| `labels_teacher` (benchmark) | 0.279 | 0.215 | 0.394 | 0.112 | 0.436 |
+
+7.9 % of all pixels fall in the teacher's ignore band. The obscured share is identical by construction.
+
+## What this means next
+
+- The teacher raises the held-out POD from 0.433 to 0.769 at a FAR within noise of the rule's. Only the FAR clause of
+  the keep rule stops it; waiving it is the owner's call.
+- ERA5 is still missing from the teacher. With the key, `fogseg era5` and a new `fogseg teacher` run would add its
+  group; the result could be compared with this one only on the 2024-25 season, once.
+- The correction's best length scale is the edge of its grid; nothing was tried beyond 100 km.
+- A model trained on `labels_teacher.zarr` and scored on the held-out stations would start from labels that find most of
+  the visible fog, with the location caveat above.
 
 ## Reproduce
 
@@ -230,4 +357,7 @@ fogseg validate --season 2023-24             # cases and scores, with folds and 
 fogseg diagnose                              # stations/diagnosis_2023-24.csv, selection cases only
 fogseg experiment --phase B                  # stations/experiment_B.csv, ~17 min, selection cases only
 fogseg experiment --phase B --held-out       # stations/experiment_B_held_out.csv and .json, once per phase
+fogseg teacher                               # phase C: cross-validation, correction grid, processed/teacher.joblib
+fogseg teacher --held-out                    # the teacher against the rule on the held-out cases, once (the last look)
+fogseg label --mode teacher                  # labels_teacher.zarr, 608 scenes in ~5 min
 ```

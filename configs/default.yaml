@@ -106,3 +106,11 @@ stations:
   temporal_relax_grid: [0.5, 1.0, 1.5]
   parallax_cloud_top_m: 500.0
   elevation_diff_bins: [-100.0, 100.0]
+
+# Per-pixel classifier trained on station truth (`fogseg teacher`), used by `fogseg label --mode teacher`
+teacher:
+  model_path: "/mnt/d/fogseg-data/processed/teacher.joblib"
+  ignore_halfwidth: 0.1   # labels are ignored within this probability of the matched-FAR threshold
+  idw_length_km: [25, 50, 100]
+  feature_groups: [bt, differences, texture, geometry, terrain, time, rule]   # add era5 once `fogseg era5` has run
+  probability_grid: [0.10, 0.90, 0.01]   # start, stop (included), step

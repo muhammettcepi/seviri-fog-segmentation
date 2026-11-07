@@ -12,6 +12,7 @@ import dataclasses
 import datetime as dt
 import itertools
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +24,7 @@ from fogseg.build import CHUNK_TIME
 from fogseg.dynamic_threshold import DynamicParams, ThresholdChoice, dynamic_threshold
 from fogseg.labels import FOG, IGNORE, NO_FOG, OBSCURED, LabelParams, histogram_pixels, label_night
 
-MODES = ("fixed", "dynamic")
+MODES = ("fixed", "dynamic", "teacher")
 LABEL_CHANNELS = ["IR_039", "IR_108", "IR_120"]
 # Same fixed time units as the dataset, so appended batches are stored exactly like the first one.
 TIME_ENCODING = {"units": "minutes since 2000-01-01", "dtype": "int64"}
@@ -36,6 +37,8 @@ def label_store_path(output_dir: Path, mode: str) -> Path:
 
 def check_mode(mode: str, dynamic: DynamicParams | None, params: LabelParams) -> None:
     """The mode must be known, the dynamic mode needs its settings, and the fog index must fit the mode."""
+    if mode == "teacher":
+        raise ValueError("mode 'teacher' is written by label_teacher_dataset (fogseg label --mode teacher)")
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     if mode == "dynamic" and dynamic is None:
@@ -180,6 +183,29 @@ def label_batch(
     )
 
 
+def write_store(
+    data: xr.Dataset,
+    store: Path,
+    make_batch: Callable[[int, int], xr.Dataset],
+    encoding: dict,
+    batch: int,
+) -> None:
+    """Write the label batches of whole nights to `store`, about `batch` scenes at a time.
+
+    `make_batch(start, stop)` labels scenes `start` to `stop` of the dataset.
+    """
+    for start, stop in night_batches(data["time"].values, batch):
+        labelled = make_batch(start, stop)
+
+        is_first_batch = start == 0
+        if is_first_batch:
+            labelled.to_zarr(store, mode="w", encoding=encoding, zarr_format=3, consolidated=False)
+        else:
+            # x and y are already in the store; appending them again would overwrite them
+            labelled = labelled.drop_vars(["x", "y"])
+            labelled.to_zarr(store, append_dim="time", consolidated=False)
+
+
 def write_batches(
     data: xr.Dataset,
     store: Path,
@@ -199,16 +225,10 @@ def write_batches(
         "time": TIME_ENCODING,
     }
 
-    for start, stop in night_batches(data["time"].values, batch):
-        labelled = label_batch(data, start, stop, mode, params, dynamic)
+    def make_batch(start: int, stop: int) -> xr.Dataset:
+        return label_batch(data, start, stop, mode, params, dynamic)
 
-        is_first_batch = start == 0
-        if is_first_batch:
-            labelled.to_zarr(store, mode="w", encoding=encoding, zarr_format=3, consolidated=False)
-        else:
-            # x and y are already in the store; appending them again would overwrite them
-            labelled = labelled.drop_vars(["x", "y"])
-            labelled.to_zarr(store, append_dim="time", consolidated=False)
+    write_store(data, store, make_batch, encoding, batch)
 
 
 def store_attrs(
@@ -271,6 +291,30 @@ def stored_params(attrs: dict, config_dynamic: DynamicParams) -> tuple[LabelPara
     return params, DynamicParams.from_config(dynamic_cfg)
 
 
+def write_store_atomically(out_path: Path, overwrite: bool, write: Callable[[Path], int]) -> int:
+    """Run `write` on a temporary store and rename it to `out_path` when it is complete.
+
+    Written like the dataset itself: the temporary store is deleted if anything fails, and an existing
+    store stays untouched until the new one is complete. Returns what `write` returns.
+    """
+    if out_path.exists() and not overwrite:
+        raise FileExistsError(f"{out_path} exists; use overwrite=True (--overwrite) to replace it")
+
+    tmp_path = out_path.with_name(out_path.name + ".part")
+    shutil.rmtree(tmp_path, ignore_errors=True)
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        n_scenes = write(tmp_path)
+    except BaseException:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+        raise
+
+    if out_path.exists():
+        shutil.rmtree(out_path)
+    tmp_path.rename(out_path)
+    return n_scenes
+
+
 def label_dataset(
     dataset_path: Path,
     out_path: Path,
@@ -280,35 +324,19 @@ def label_dataset(
     overwrite: bool = False,
     batch: int = 32,
 ) -> int:
-    """Label every scene of the dataset into the Zarr store `out_path`. Returns the number of scenes.
-
-    Written like the dataset itself: under a temporary name, renamed at the end, and the temporary
-    store is deleted if anything fails. An existing store stays untouched until the new one is complete.
-    """
+    """Label every scene of the dataset into the Zarr store `out_path`. Returns the number of scenes."""
     check_mode(mode, dynamic, params)
     if not dataset_path.exists():
         raise FileNotFoundError(f"Dataset not found: {dataset_path}")
-    if out_path.exists() and not overwrite:
-        raise FileExistsError(f"{out_path} exists; use overwrite=True (--overwrite) to replace it")
 
-    with xr.open_zarr(dataset_path, consolidated=False) as data:
-        check_dataset(data, dataset_path)
-
-        tmp_path = out_path.with_name(out_path.name + ".part")
-        shutil.rmtree(tmp_path, ignore_errors=True)
-        tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
+    def write(tmp_path: Path) -> int:
+        with xr.open_zarr(dataset_path, consolidated=False) as data:
+            check_dataset(data, dataset_path)
             write_batches(data, tmp_path, mode, params, dynamic, batch)
             write_metadata(tmp_path, store_attrs(data, dataset_path, mode, params, dynamic))
-        except BaseException:
-            shutil.rmtree(tmp_path, ignore_errors=True)
-            raise
-        n_scenes = data.sizes["time"]
+            return data.sizes["time"]
 
-    if out_path.exists():
-        shutil.rmtree(out_path)
-    tmp_path.rename(out_path)
-    return n_scenes
+    return write_store_atomically(out_path, overwrite, write)
 
 
 def summarize_store(store: Path) -> tuple[dict[str, int], float]:

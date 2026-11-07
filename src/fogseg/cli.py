@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from fogseg.config import load_config, scene_filename, scene_times
 
 if TYPE_CHECKING:
+    from fogseg.experiment import KeepDecision
     from fogseg.tuning import Decision
 
 log = logging.getLogger("fogseg")
@@ -23,6 +24,7 @@ RAW_MB = 271  # size of one full-disk .nat file, measured on a real download
 MAX_TRIES = 3
 BLOCKED_WAITS_MIN = [5, 10, 20, 30, 60, 60]  # pauses while EUMETSAT refuses access: ~3 h in total
 _stop = threading.Event()  # set when access stays refused, so all workers stop
+LABEL_MODES = ["fixed", "dynamic", "teacher"]
 
 
 def fetch_one(slot: dt.datetime, collection, cfg: dict) -> str:
@@ -104,6 +106,7 @@ def cmd_label(args: argparse.Namespace) -> None:
     from fogseg.dynamic_threshold import DynamicParams
     from fogseg.label_store import label_dataset, label_store_path, summarize_store
     from fogseg.labels import LabelParams
+    from fogseg.teacher_labels import label_teacher_dataset
 
     cfg = load_config(args.config)
     labels_cfg = cfg["labels"]
@@ -114,7 +117,10 @@ def cmd_label(args: argparse.Namespace) -> None:
     dataset_path = Path(cfg["data"]["processed_path"])
     out_path = label_store_path(Path(labels_cfg["output_dir"]), mode)
     started = time.time()
-    n = label_dataset(dataset_path, out_path, mode, params, dynamic, overwrite=args.overwrite)
+    if mode == "teacher":
+        n = label_teacher_dataset(dataset_path, out_path, cfg, overwrite=args.overwrite)
+    else:
+        n = label_dataset(dataset_path, out_path, mode, params, dynamic, overwrite=args.overwrite)
     log.info("Wrote %d scenes to %s in %.0f s", n, out_path, time.time() - started)
 
     source_counts, mean_fog_fraction = summarize_store(out_path)
@@ -375,6 +381,11 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     log.info("Wrote %s", out_path)
 
 
+def teacher_held_out_paths(data_dir: Path) -> list[Path]:
+    """The table and the decision record of the teacher's held-out run: either one closes the held-out set."""
+    return [data_dir / "teacher_held_out.csv", data_dir / "teacher_held_out.json"]
+
+
 def held_out_paths(data_dir: Path) -> list[Path]:
     """The table and the decision record of the held-out run: either one closes the held-out set."""
     return [data_dir / "experiment_B_held_out.csv", data_dir / "experiment_B_held_out.json"]
@@ -506,6 +517,222 @@ def cmd_held_out(args: argparse.Namespace) -> None:
     write_atomically(table_path, table.to_csv(index=False))
     write_atomically(record_path, json.dumps(record, indent=2))
     log.info("Wrote %s and %s", table_path, record_path)
+
+
+def cmd_teacher(args: argparse.Namespace) -> None:
+    if args.held_out:
+        cmd_teacher_held_out(args)
+        return
+
+    import dataclasses
+    import json
+    from contextlib import ExitStack
+
+    import xarray as xr
+
+    from fogseg.experiment import experiment_cases, pooled_scores, winner
+    from fogseg.features import case_features, open_era5, read_static
+    from fogseg.labels import LabelParams
+    from fogseg.teacher import (
+        MODEL_SETTINGS,
+        TeacherParams,
+        chosen_length,
+        cross_validate_correction,
+        cross_validate_settings,
+        fit_teacher,
+        oof_table,
+        save_teacher,
+        teacher_record,
+    )
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "used to fit the teacher")
+    if labels_cfg["mode"] != "fixed":
+        raise ValueError(f"The teacher needs labels.mode fixed, not {labels_cfg['mode']!r}")
+
+    data_dir = Path(stations_cfg["data_dir"])
+    for path in teacher_held_out_paths(data_dir):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; a rerun would overwrite the record of the held-out result")
+    config_path = data_dir / "teacher_config.json"
+    config_path.unlink(missing_ok=True)
+    selection, _ = experiment_cases(cfg, season)
+
+    params, teacher_params = LabelParams.from_config(labels_cfg), TeacherParams.from_config(cfg["teacher"])
+    groups = teacher_params.feature_groups
+    with ExitStack() as stack:
+        data = stack.enter_context(xr.open_zarr(cfg["data"]["processed_path"], consolidated=False))
+        static = read_static(data, Path(cfg["dem"]["out_path"]), groups)
+        era5_store = open_era5(Path(cfg["era5"]["out_path"]), groups)
+        if era5_store is not None:
+            stack.enter_context(era5_store)
+        features = case_features(data, selection, static, era5_store, params, groups)
+
+    table, probabilities = cross_validate_settings(features, selection, teacher_params, stations_cfg)
+    best = winner(table)
+    pooled = pooled_scores(table).loc[best]
+    log.info(
+        "Teacher winner %s: p* %g, pooled POD %.3f, FAR %.3f",
+        best,
+        pooled["value"],
+        pooled["pod"],
+        pooled["far"],
+    )
+    teacher = fit_teacher(
+        features,
+        selection,
+        (best, dict(MODEL_SETTINGS)[best]),
+        probabilities[best],
+        float(pooled["value"]),
+        teacher_params,
+        params,
+        stations_cfg["seed"],
+    )
+
+    oof = oof_table(probabilities[best], selection)
+    correction = cross_validate_correction(
+        probabilities[best],
+        selection,
+        oof,
+        teacher.p_star,
+        teacher_params.ignore_halfwidth,
+        teacher_params.idw_length_km,
+        stations_cfg["n_folds"],
+    )
+    length = chosen_length(correction)
+    teacher = dataclasses.replace(teacher, correction_km=length)
+    pooled_correction = correction[correction["fold"].astype(str) == "pooled"].set_index("length_km")
+    none = pooled_correction.loc["none"]
+    kept = pooled_correction.loc["none" if length is None else str(length)]
+    log.info(
+        "Station correction: %s, pooled POD %.3f, FAR %.3f against %.3f, %.3f without",
+        "no correction" if length is None else f"{length:g} km",
+        kept["pod"],
+        kept["far"],
+        none["pod"],
+        none["far"],
+    )
+
+    cv_path, oof_path = data_dir / "teacher_cv.csv", data_dir / "teacher_oof.csv"
+    correction_path = data_dir / "teacher_correction_cv.csv"
+    write_atomically(cv_path, table.to_csv(index=False))
+    write_atomically(oof_path, oof.to_csv(index=False))
+    correction.to_csv(correction_path, index=False)
+    save_teacher(teacher, Path(teacher_params.model_path))
+    record = teacher_record(
+        season, labels_cfg["mode"], params, stations_cfg, dataclasses.asdict(teacher_params), data_dir
+    )
+    write_atomically(config_path, json.dumps(record, indent=2))
+    log.info("Wrote %s, %s, %s and %s", cv_path, oof_path, correction_path, teacher_params.model_path)
+
+
+def cmd_teacher_held_out(args: argparse.Namespace) -> None:
+    import dataclasses
+    import json
+    from contextlib import ExitStack
+
+    import pandas as pd
+    import xarray as xr
+
+    from fogseg.experiment import check_same_config, experiment_cases
+    from fogseg.features import open_era5, read_static
+    from fogseg.labels import LabelParams
+    from fogseg.teacher import TeacherParams, load_teacher, teacher_held_out, teacher_record
+    from fogseg.validation import season_start
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "used to fit the teacher")
+
+    data_dir = Path(stations_cfg["data_dir"])
+    table_path, record_path = teacher_held_out_paths(data_dir)
+    for path in (table_path, record_path):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; the held-out set is opened once per phase")
+    teacher_cfg = cfg["teacher"]
+    model_path, config_path = Path(teacher_cfg["model_path"]), data_dir / "teacher_config.json"
+    oof_path = data_dir / "teacher_oof.csv"
+    for path in (model_path, config_path, oof_path):
+        if not path.exists():
+            raise FileNotFoundError(f"{path} not found; run `fogseg teacher` first")
+
+    params, teacher_params = LabelParams.from_config(labels_cfg), TeacherParams.from_config(teacher_cfg)
+    recorded = json.loads(config_path.read_text(encoding="utf-8"))
+    current = teacher_record(
+        season, labels_cfg["mode"], params, stations_cfg, dataclasses.asdict(teacher_params), data_dir
+    )
+    check_same_config(recorded, current)
+    groups = teacher_params.feature_groups
+    teacher = load_teacher(model_path, groups)
+    oof = pd.read_csv(oof_path, dtype={"station": str}, parse_dates=["scene_time"])
+
+    selection, held_out = experiment_cases(cfg, season)
+    with ExitStack() as stack:
+        data = stack.enter_context(xr.open_zarr(cfg["data"]["processed_path"], consolidated=False))
+        static = read_static(data, Path(cfg["dem"]["out_path"]), groups)
+        era5_store = open_era5(Path(cfg["era5"]["out_path"]), groups)
+        if era5_store is not None:
+            stack.enter_context(era5_store)
+        table, teacher_decision, correction_decision = teacher_held_out(
+            data,
+            selection,
+            held_out,
+            teacher,
+            oof,
+            params,
+            stations_cfg,
+            season_start(cfg, season),
+            static,
+            era5_store,
+        )
+
+    record = {
+        "teacher": decision_record(teacher_decision),
+        "correction": decision_record(correction_decision),
+        "p_star": teacher.p_star,
+        "setting": teacher.setting,
+        "correction_km": teacher.correction_km,
+        "config_changes": {"labels.mode": "teacher"} if teacher_decision.keep else {},
+    }
+    for name, decision in {"teacher": teacher_decision, "correction": correction_decision}.items():
+        if decision is not None:
+            log_keep_decision(name, decision)
+    if teacher_decision.keep:
+        log.info("Keep the teacher: set labels.mode: teacher")
+    else:
+        log.info("Do not keep the teacher: the labels stay as configured")
+
+    write_atomically(table_path, table.to_csv(index=False))
+    write_atomically(record_path, json.dumps(record, indent=2))
+    log.info("Wrote %s and %s", table_path, record_path)
+
+
+def decision_record(decision: KeepDecision | None) -> dict | None:
+    """A keep decision as a JSON-ready dict, None for no decision."""
+    import dataclasses
+
+    if decision is None:
+        return None
+    return {**dataclasses.asdict(decision), "keep": bool(decision.keep)}
+
+
+def log_keep_decision(name: str, decision: KeepDecision) -> None:
+    log.info(
+        "Held-out, %s against its reference at p* %g: POD gain %+.3f (95%% interval %+.3f to %+.3f); "
+        "FAR %.3f against %.3f (difference %+.3f to %+.3f)",
+        name,
+        decision.value,
+        decision.pod_gain,
+        decision.pod_gain_low,
+        decision.pod_gain_high,
+        decision.far_winner,
+        decision.far_baseline,
+        decision.far_difference_low,
+        decision.far_difference_high,
+    )
 
 
 def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:
@@ -770,7 +997,7 @@ def main() -> None:
 
     label = sub.add_parser("label", help="write fog / low-stratus labels for every scene")
     label.add_argument("--config", default="configs/default.yaml")
-    label.add_argument("--mode", choices=["fixed", "dynamic"], help="default: labels.mode of the config")
+    label.add_argument("--mode", choices=LABEL_MODES, help="default: labels.mode of the config")
     label.add_argument("--overwrite", action="store_true", help="replace the label store if it exists")
     label.set_defaults(func=cmd_label)
 
@@ -796,7 +1023,7 @@ def main() -> None:
 
     validate = sub.add_parser("validate", help="score the label store against station observations")
     validate.add_argument("--config", default="configs/default.yaml")
-    validate.add_argument("--labels", choices=["fixed", "dynamic"], help="default: labels.mode of the config")
+    validate.add_argument("--labels", choices=LABEL_MODES, help="default: labels.mode of the config")
     validate.add_argument("--season", required=True, help="season name from the config, e.g. 2023-24")
     validate.add_argument(
         "--final", action="store_true", help="allow the test season, which is scored once at the end"
@@ -831,6 +1058,19 @@ def main() -> None:
     )
     experiment.set_defaults(func=cmd_experiment)
 
+    teacher = sub.add_parser(
+        "teacher",
+        help="cross-validate the teacher settings on the tuning season, then fit and save the winner",
+    )
+    teacher.add_argument("--config", default="configs/default.yaml")
+    teacher.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
+    teacher.add_argument(
+        "--held-out",
+        action="store_true",
+        help="score the saved teacher against the configured rule on the held-out cases, once",
+    )
+    teacher.set_defaults(func=cmd_teacher)
+
     tune = sub.add_parser(
         "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"
     )
@@ -842,18 +1082,14 @@ def main() -> None:
     )
     inspect_cmd.add_argument("--config", default="configs/default.yaml")
     inspect_cmd.add_argument("--time", required=True, help="scene time in UTC, e.g. 2023-11-21T00:00")
-    inspect_cmd.add_argument(
-        "--labels", choices=["fixed", "dynamic"], help="default: labels.mode of the config"
-    )
+    inspect_cmd.add_argument("--labels", choices=LABEL_MODES, help="default: labels.mode of the config")
     inspect_cmd.set_defaults(func=cmd_inspect)
 
     select_scenes = sub.add_parser(
         "select-scenes", help="choose the training-season scenes to check, into check_scenes.yaml"
     )
     select_scenes.add_argument("--config", default="configs/default.yaml")
-    select_scenes.add_argument(
-        "--labels", choices=["fixed", "dynamic"], help="default: labels.mode of the config"
-    )
+    select_scenes.add_argument("--labels", choices=LABEL_MODES, help="default: labels.mode of the config")
     select_scenes.add_argument(
         "--overwrite", action="store_true", help="replace check_scenes.yaml if it exists"
     )
