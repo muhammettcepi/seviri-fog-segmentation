@@ -12,6 +12,7 @@ import pytest
 import xarray as xr
 import yaml
 from helpers import TEST_PARAMS
+from sklearn.isotonic import IsotonicRegression
 from test_experiment import experiment_config
 from test_features import teacher_dataset
 
@@ -23,12 +24,15 @@ from fogseg.experiment import (
     SCORE_COLUMNS,
     check_same_config,
     config_record,
+    experiment_cases,
     matched_value,
 )
-from fogseg.features import feature_names
-from fogseg.labels import FOG, IGNORE, NO_FOG
+from fogseg.features import feature_names, read_static
+from fogseg.labels import FOG, IGNORE, NO_FOG, LabelParams
 from fogseg.teacher import (
     MODEL_SETTINGS,
+    OOF_CASE_COLUMNS,
+    TeacherModel,
     TeacherParams,
     chosen_length,
     corrected_probability,
@@ -43,9 +47,11 @@ from fogseg.teacher import (
     pooled_value_scores,
     predict_probability,
     save_teacher,
+    teacher_held_out,
     teacher_labels,
 )
 from fogseg.tuning import grid_values
+from fogseg.validation import season_start
 
 LOGISTIC = {"model": "logistic", "C": 1.0}
 STATIONS_CFG = {"matched_far": 0.3, "n_folds": 5, "seed": 0}
@@ -567,11 +573,13 @@ def teacher_config(tmp_path: Path) -> dict:
     return cfg
 
 
-def teacher_args(cfg: dict, season: str | None = None, mode: str = "fixed") -> argparse.Namespace:
+def teacher_args(
+    cfg: dict, season: str | None = None, mode: str = "fixed", held_out: bool = False
+) -> argparse.Namespace:
     cfg = {**cfg, "labels": {**cfg["labels"], "mode": mode}}
     config_path = Path(cfg["stations"]["data_dir"]).parent / "config.yaml"
     config_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    return argparse.Namespace(config=config_path, season=season)
+    return argparse.Namespace(config=config_path, season=season, held_out=held_out)
 
 
 def test_teacher_command_writes_its_outputs(tmp_path, caplog):
@@ -640,3 +648,164 @@ def test_teacher_refuses_a_rerun_after_the_held_out_set_was_opened(tmp_path, nam
     with pytest.raises(FileExistsError, match=name):
         cmd_teacher(teacher_args(cfg))
     assert not (tmp_path / "stations" / "teacher_cv.csv").exists()
+
+
+class ConstantModel:
+    """A classifier that gives every row the same probability of fog."""
+
+    def __init__(self, probability: float):
+        self.probability = probability
+
+    def predict_proba(self, rows: pd.DataFrame) -> np.ndarray:
+        fog = np.full(len(rows), self.probability)
+        return np.column_stack([1 - fog, fog])
+
+
+def held_out_run(tmp_path, teacher_hits_more=True, correction_km=None, probability=None):
+    """`teacher_held_out` on the toy season with a teacher that gives every case one probability.
+
+    By default it is 0.9 (all fog) or 0 (no fog); the rule is too strict to ever call fog.
+    """
+    cfg = teacher_config(tmp_path)
+    selection, held_out = experiment_cases(cfg, "2023-24")
+    groups = cfg["teacher"]["feature_groups"]
+    teacher = TeacherModel(
+        setting="toy",
+        options={},
+        model=ConstantModel(probability if probability is not None else 0.9 * teacher_hits_more),
+        calibrator=IsotonicRegression(out_of_bounds="clip").fit([0.0, 1.0], [0.0, 1.0]),
+        feature_names=feature_names(groups),
+        feature_groups=groups,
+        p_star=0.5,
+        ignore_halfwidth=0.1,
+        correction_km=correction_km,
+    )
+    oof = selection[OOF_CASE_COLUMNS].assign(p_oof=0.0)
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        static = read_static(data, Path(cfg["dem"]["out_path"]), groups)
+        return teacher_held_out(
+            data,
+            selection,
+            held_out,
+            teacher,
+            oof,
+            dataclasses.replace(LabelParams.from_config(cfg["labels"]), btd_fixed=10.0),
+            cfg["stations"],
+            season_start(cfg, "2023-24"),
+            static,
+            None,
+        )
+
+
+def test_teacher_gain_is_teacher_minus_rule(tmp_path):
+    table, decision, _ = held_out_run(tmp_path, teacher_hits_more=True)
+    rows = table.set_index(["rule", "part"])
+    gain = rows.loc[("teacher", "held_out"), "pod"] - rows.loc[("rule", "held_out"), "pod"]
+    assert decision.pod_gain == pytest.approx(gain) and gain > 0
+    assert decision.winner == "teacher" and decision.value == 0.5
+
+
+def test_the_table_scores_every_labelling_on_every_part(tmp_path):
+    table, _, _ = held_out_run(tmp_path, correction_km=50.0)
+    assert set(table["rule"]) == {"rule", "teacher", "corrected"}
+    assert set(table["part"]) == {"held_out", "nights", "stations", "both"}
+    n_cases = table.set_index(["rule", "part"])["n_cases"]
+    assert n_cases["teacher", "held_out"] == n_cases["teacher"].drop("held_out").sum()
+
+
+def test_a_teacher_that_calls_no_fog_scores_no_hits(tmp_path):
+    table, decision, _ = held_out_run(tmp_path, teacher_hits_more=False)
+    teacher = table[(table["rule"] == "teacher") & (table["part"] == "held_out")].iloc[0]
+    assert teacher["hits"] == 0 and teacher["misses"] > 0
+    assert not decision.keep
+
+
+def test_there_is_no_correction_decision_without_a_correction_length(tmp_path):
+    table, _, correction = held_out_run(tmp_path)
+    assert correction is None and "corrected" not in set(table["rule"])
+
+
+def test_correction_is_judged_on_unseen_stations_only(tmp_path):
+    table, _, correction = held_out_run(tmp_path, correction_km=50.0)
+    rows = table.set_index(["rule", "part"])
+    assert correction is not None and correction.winner == "corrected"
+    assert rows.loc[("corrected", "nights"), "hits"] == rows.loc[("teacher", "nights"), "hits"]
+    gain = rows.loc[("corrected", "stations"), "pod"] - rows.loc[("teacher", "stations"), "pod"]
+    assert correction.pod_gain == pytest.approx(gain)
+
+
+def test_feeders_lift_the_ignored_probabilities_of_unseen_stations_only(tmp_path):
+    table, _, correction = held_out_run(tmp_path, correction_km=5000.0, probability=0.45)
+    rows = table.set_index(["rule", "part"])
+    assert rows.loc[("teacher", "held_out"), "hits"] == 0
+    assert rows.loc[("corrected", "stations"), "hits"] > 0
+    assert rows.loc[("corrected", "nights"), "hits"] == 0
+    assert correction.pod_gain > 0
+
+
+def test_mixed_up_selection_and_held_out_cases_are_refused(tmp_path):
+    cfg = teacher_config(tmp_path)
+    selection, held_out = experiment_cases(cfg, "2023-24")
+    nothing = (None,) * 3
+    with pytest.raises(ValueError, match="held-out cases include"):
+        teacher_held_out(None, selection, selection, *nothing, cfg["stations"], None, None, None)
+    with pytest.raises(ValueError, match="selection cases include"):
+        teacher_held_out(None, held_out, held_out, *nothing, cfg["stations"], None, None, None)
+
+
+def test_held_out_runs_once(tmp_path):
+    cfg = teacher_config(tmp_path)
+    cmd_teacher(teacher_args(cfg))
+    cmd_teacher(teacher_args(cfg, held_out=True))
+    with pytest.raises(FileExistsError, match="once"):
+        cmd_teacher(teacher_args(cfg, held_out=True))
+
+
+def test_held_out_writes_the_table_and_the_decisions(tmp_path, caplog):
+    cfg = teacher_config(tmp_path)
+    cmd_teacher(teacher_args(cfg))
+    with caplog.at_level(logging.INFO, logger="fogseg"):
+        cmd_teacher(teacher_args(cfg, held_out=True))
+    table = pd.read_csv(tmp_path / "stations" / "teacher_held_out.csv")
+    assert {"rule", "teacher"} <= set(table["rule"])
+    record = json.loads((tmp_path / "stations" / "teacher_held_out.json").read_text(encoding="utf-8"))
+    teacher = load_teacher(Path(cfg["teacher"]["model_path"]), cfg["teacher"]["feature_groups"])
+    assert record["p_star"] == teacher.p_star and record["setting"] == teacher.setting
+    assert record["correction_km"] == teacher.correction_km
+    assert record["teacher"]["winner"] == "teacher"
+    assert record["config_changes"] == ({"labels.mode": "teacher"} if record["teacher"]["keep"] else {})
+    assert (record["correction"] is None) == (teacher.correction_km is None)
+    assert "Held-out" in caplog.text
+
+
+def test_the_second_opening_is_refused_before_any_labelling(tmp_path):
+    cfg = teacher_config(tmp_path)
+    (tmp_path / "stations" / "teacher_held_out.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="once"):
+        cmd_teacher(teacher_args(cfg, held_out=True))
+
+
+def test_held_out_refuses_the_test_season(tmp_path):
+    with pytest.raises(PermissionError):
+        cmd_teacher(teacher_args(teacher_config(tmp_path), season="2024-25", held_out=True))
+
+
+def test_held_out_needs_the_teacher_first(tmp_path):
+    with pytest.raises(FileNotFoundError, match="fogseg teacher"):
+        cmd_teacher(teacher_args(teacher_config(tmp_path), held_out=True))
+
+
+def test_held_out_needs_the_saved_model(tmp_path):
+    cfg = teacher_config(tmp_path)
+    cmd_teacher(teacher_args(cfg))
+    Path(cfg["teacher"]["model_path"]).unlink()
+    with pytest.raises(FileNotFoundError, match="fogseg teacher"):
+        cmd_teacher(teacher_args(cfg, held_out=True))
+
+
+def test_held_out_refuses_a_changed_config(tmp_path):
+    cfg = teacher_config(tmp_path)
+    cmd_teacher(teacher_args(cfg))
+    cfg["teacher"]["ignore_halfwidth"] = 0.2
+    with pytest.raises(ValueError, match="ignore_halfwidth"):
+        cmd_teacher(teacher_args(cfg, held_out=True))

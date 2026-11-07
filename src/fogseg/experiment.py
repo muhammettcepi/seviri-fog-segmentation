@@ -400,6 +400,23 @@ def check_same_config(recorded: dict, current: dict) -> None:
         raise ValueError(f"The configuration is not the one the cross-validation ran with: {differences}")
 
 
+def check_split(selection: pd.DataFrame, held_out: pd.DataFrame, n_folds: int) -> None:
+    """Refuse an empty held-out set, selection cases in it, or held-out cases among the selection."""
+    if held_out.empty:
+        raise ValueError("The held-out set has no scored cases")
+    if (held_out_part(held_out, n_folds) == "selection").any():
+        raise ValueError("The held-out cases include selection cases")
+    if (held_out_part(selection, n_folds) != "selection").any():
+        raise ValueError("The selection cases include held-out cases")
+
+
+def held_out_parts(held_out: pd.DataFrame, n_folds: int) -> dict[str, pd.Series]:
+    """The masks of the whole held-out set and of its `nights`, `stations` and `both` parts."""
+    where = held_out_part(held_out, n_folds)
+    masks = {"held_out": pd.Series(True, index=held_out.index)}
+    return masks | {part: where == part for part in ("nights", "stations", "both")}
+
+
 def held_out_comparison(
     data: xr.Dataset,
     selection: pd.DataFrame,
@@ -415,13 +432,8 @@ def held_out_comparison(
     ones. The winner's threshold is matched to `matched_far` on all selection cases; the baseline keeps the
     threshold of `params`. The intervals are paired bootstraps over the night blocks of the held-out cases.
     """
-    if held_out.empty:
-        raise ValueError("The held-out set has no scored cases")
     n_folds = stations_cfg["n_folds"]
-    if (held_out_part(held_out, n_folds) == "selection").any():
-        raise ValueError("The held-out cases include selection cases")
-    if (held_out_part(selection, n_folds) != "selection").any():
-        raise ValueError("The selection cases include held-out cases")
+    check_split(selection, held_out, n_folds)
     baseline_value = baseline_threshold(params)
 
     name, options = chosen
@@ -448,9 +460,7 @@ def held_out_comparison(
         rule: variant_grid(data, held_out, rule_params, np.array([rule_value]))
         for rule, (rule_params, rule_value) in rules.items()
     }
-    where = held_out_part(held_out, n_folds)
-    masks = {"held_out": pd.Series(True, index=held_out.index)}
-    masks |= {part: where == part for part in ("nights", "stations", "both")}
+    masks = held_out_parts(held_out, n_folds)
     rows = [
         {"rule": rule, "part": part, **value_scores(grids[rule], held_out, mask).to_dict("records")[0]}
         for rule in rules

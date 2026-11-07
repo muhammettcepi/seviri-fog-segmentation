@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from fogseg.config import load_config, scene_filename, scene_times
 
 if TYPE_CHECKING:
+    from fogseg.experiment import KeepDecision
     from fogseg.tuning import Decision
 
 log = logging.getLogger("fogseg")
@@ -514,13 +515,17 @@ def cmd_held_out(args: argparse.Namespace) -> None:
 
 
 def cmd_teacher(args: argparse.Namespace) -> None:
+    if args.held_out:
+        cmd_teacher_held_out(args)
+        return
+
     import dataclasses
     import json
     from contextlib import ExitStack
 
     import xarray as xr
 
-    from fogseg.experiment import config_record, experiment_cases, pooled_scores, winner
+    from fogseg.experiment import experiment_cases, pooled_scores, winner
     from fogseg.features import case_features, open_era5, read_static
     from fogseg.labels import LabelParams
     from fogseg.teacher import (
@@ -532,6 +537,7 @@ def cmd_teacher(args: argparse.Namespace) -> None:
         fit_teacher,
         oof_table,
         save_teacher,
+        teacher_record,
     )
 
     cfg = load_config(args.config)
@@ -609,10 +615,112 @@ def cmd_teacher(args: argparse.Namespace) -> None:
     oof.to_csv(oof_path, index=False)
     correction.to_csv(correction_path, index=False)
     save_teacher(teacher, Path(teacher_params.model_path))
-    record = config_record(season, labels_cfg["mode"], params, stations_cfg)
-    record["teacher"] = dataclasses.asdict(teacher_params)
+    record = teacher_record(
+        season, labels_cfg["mode"], params, stations_cfg, dataclasses.asdict(teacher_params)
+    )
     write_atomically(data_dir / "teacher_config.json", json.dumps(record, indent=2))
     log.info("Wrote %s, %s, %s and %s", cv_path, oof_path, correction_path, teacher_params.model_path)
+
+
+def cmd_teacher_held_out(args: argparse.Namespace) -> None:
+    import dataclasses
+    import json
+    from contextlib import ExitStack
+
+    import pandas as pd
+    import xarray as xr
+
+    from fogseg.experiment import check_same_config, experiment_cases
+    from fogseg.features import open_era5, read_static
+    from fogseg.labels import LabelParams
+    from fogseg.teacher import TeacherParams, load_teacher, teacher_held_out, teacher_record
+    from fogseg.validation import season_start
+
+    cfg = load_config(args.config)
+    labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "used to fit the teacher")
+
+    data_dir = Path(stations_cfg["data_dir"])
+    table_path, record_path = teacher_held_out_paths(data_dir)
+    for path in (table_path, record_path):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; the held-out set is opened once per phase")
+    teacher_cfg = cfg["teacher"]
+    model_path, config_path = Path(teacher_cfg["model_path"]), data_dir / "teacher_config.json"
+    oof_path = data_dir / "teacher_oof.csv"
+    for path in (model_path, config_path, oof_path):
+        if not path.exists():
+            raise FileNotFoundError(f"{path} not found; run `fogseg teacher` first")
+
+    params, teacher_params = LabelParams.from_config(labels_cfg), TeacherParams.from_config(teacher_cfg)
+    recorded = json.loads(config_path.read_text(encoding="utf-8"))
+    current = teacher_record(
+        season, labels_cfg["mode"], params, stations_cfg, dataclasses.asdict(teacher_params)
+    )
+    check_same_config(recorded, current)
+    groups = teacher_params.feature_groups
+    teacher = load_teacher(model_path, groups)
+    oof = pd.read_csv(oof_path, dtype={"station": str}, parse_dates=["scene_time"])
+
+    selection, held_out = experiment_cases(cfg, season)
+    with ExitStack() as stack:
+        data = stack.enter_context(xr.open_zarr(cfg["data"]["processed_path"], consolidated=False))
+        static = read_static(data, Path(cfg["dem"]["out_path"]), groups)
+        era5_store = open_era5(Path(cfg["era5"]["out_path"]), groups)
+        if era5_store is not None:
+            stack.enter_context(era5_store)
+        table, teacher_decision, correction_decision = teacher_held_out(
+            data,
+            selection,
+            held_out,
+            teacher,
+            oof,
+            params,
+            stations_cfg,
+            season_start(cfg, season),
+            static,
+            era5_store,
+        )
+
+    decisions = {"teacher": teacher_decision, "correction": correction_decision}
+    record = {
+        **{
+            name: None if decision is None else {**dataclasses.asdict(decision), "keep": bool(decision.keep)}
+            for name, decision in decisions.items()
+        },
+        "p_star": teacher.p_star,
+        "setting": teacher.setting,
+        "correction_km": teacher.correction_km,
+        "config_changes": {"labels.mode": "teacher"} if teacher_decision.keep else {},
+    }
+    for name, decision in decisions.items():
+        if decision is not None:
+            log_keep_decision(name, decision)
+    if teacher_decision.keep:
+        log.info("Keep the teacher: set labels.mode: teacher")
+    else:
+        log.info("Do not keep the teacher: the labels stay as configured")
+
+    write_atomically(table_path, table.to_csv(index=False))
+    write_atomically(record_path, json.dumps(record, indent=2))
+    log.info("Wrote %s and %s", table_path, record_path)
+
+
+def log_keep_decision(name: str, decision: KeepDecision) -> None:
+    log.info(
+        "Held-out, %s against its reference at p* %g: POD gain %+.3f (95%% interval %+.3f to %+.3f); "
+        "FAR %.3f against %.3f (difference %+.3f to %+.3f)",
+        name,
+        decision.value,
+        decision.pod_gain,
+        decision.pod_gain_low,
+        decision.pod_gain_high,
+        decision.far_winner,
+        decision.far_baseline,
+        decision.far_difference_low,
+        decision.far_difference_high,
+    )
 
 
 def log_decision(name: str, decision: Decision, report_only: bool = False) -> None:
@@ -944,6 +1052,11 @@ def main() -> None:
     )
     teacher.add_argument("--config", default="configs/default.yaml")
     teacher.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
+    teacher.add_argument(
+        "--held-out",
+        action="store_true",
+        help="score the saved teacher against the configured rule on the held-out cases, once",
+    )
     teacher.set_defaults(func=cmd_teacher)
 
     tune = sub.add_parser(

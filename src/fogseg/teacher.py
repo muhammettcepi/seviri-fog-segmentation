@@ -12,6 +12,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+import xarray as xr
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.isotonic import IsotonicRegression
@@ -23,14 +24,21 @@ from fogseg.experiment import (
     CV_COLUMNS,
     GRID_COLUMNS,
     SCORE_COLUMNS,
+    KeepDecision,
+    baseline_threshold,
+    block_counts,
+    check_split,
+    config_record,
+    held_out_parts,
     matched_value,
     score_columns,
     value_scores,
+    variant_grid,
     warn_at_grid_edge,
 )
-from fogseg.features import feature_names
-from fogseg.labels import FOG, IGNORE, NO_FOG
-from fogseg.scores import COUNT_NAMES
+from fogseg.features import StaticFields, case_features, feature_names
+from fogseg.labels import FOG, IGNORE, NO_FOG, LabelParams
+from fogseg.scores import COUNT_NAMES, paired_difference
 from fogseg.splits import cv_folds
 from fogseg.tuning import grid_values
 from fogseg.validation import TRUTH_YES, haversine_km
@@ -460,3 +468,100 @@ def chosen_length(table: pd.DataFrame) -> float | None:
     if allowed.empty or allowed["pod"].max() <= none["pod"]:
         return None
     return float(allowed["pod"].idxmax())
+
+
+def teacher_record(
+    season: str, mode: str, params: LabelParams, stations_cfg: dict, teacher_cfg: dict
+) -> dict:
+    """The configuration a teacher was fitted with: the phase B record and the `teacher:` section."""
+    return {**config_record(season, mode, params, stations_cfg), "teacher": teacher_cfg}
+
+
+def probability_of_cases(teacher: TeacherModel, features: pd.DataFrame) -> np.ndarray:
+    """The teacher's probability of each case, NaN where it has no ERA5 or no trusted pixel."""
+    p = np.full(len(features), np.nan)
+    usable = usable_rows(features)
+    if usable.any():
+        p[usable] = predict_probability(teacher, features.loc[usable, model_columns(features)].to_numpy())
+    return p
+
+
+def keep_decision(
+    candidate: str,
+    reference: str,
+    value: float,
+    scores: pd.DataFrame,
+    counts: dict[str, np.ndarray],
+    stations_cfg: dict,
+) -> KeepDecision:
+    """The candidate against the reference: `scores` has a row of each, `counts` their block counts."""
+    samples, seed = stations_cfg["bootstrap_samples"], stations_cfg["seed"]
+    pod_low, pod_high = paired_difference(counts[candidate], counts[reference], "pod", samples, seed)
+    far_low, far_high = paired_difference(counts[candidate], counts[reference], "far", samples, seed)
+    return KeepDecision(
+        winner=candidate,
+        value=value,
+        pod_gain=float(scores.loc[candidate, "pod"] - scores.loc[reference, "pod"]),
+        pod_gain_low=pod_low,
+        pod_gain_high=pod_high,
+        far_winner=float(scores.loc[candidate, "far"]),
+        far_baseline=float(scores.loc[reference, "far"]),
+        far_difference_low=far_low,
+        far_difference_high=far_high,
+    )
+
+
+def teacher_held_out(
+    data: xr.Dataset,
+    selection: pd.DataFrame,
+    held_out: pd.DataFrame,
+    teacher: TeacherModel,
+    oof: pd.DataFrame,
+    params: LabelParams,
+    stations_cfg: dict,
+    season_start: np.datetime64,
+    static: StaticFields,
+    era5_store: xr.Dataset | None,
+) -> tuple[pd.DataFrame, KeepDecision, KeepDecision | None]:
+    """Score the teacher, and the corrected teacher if it has a length, against the rule on held-out cases.
+
+    The rule keeps the threshold of `params`; the teacher labels at its p*. The first decision is the teacher
+    against the rule on all held-out cases. The second is the corrected teacher against the plain one on the
+    `stations` part, whose stations the correction never saw; it is None without a correction length.
+    The corrected teacher is shifted by the residuals of the selection cases of `oof`.
+    """
+    n_folds = stations_cfg["n_folds"]
+    check_split(selection, held_out, n_folds)
+
+    features = case_features(data, held_out, static, era5_store, params, teacher.feature_groups)
+    probabilities = {"teacher": probability_of_cases(teacher, features)}
+    if teacher.correction_km is not None:
+        probabilities["corrected"] = corrected_probability(
+            held_out, probabilities["teacher"], correction_feeders(oof), teacher.correction_km
+        )
+    rule_value = baseline_threshold(params)
+    labellings = {"rule": (variant_grid(data, held_out, params, np.array([rule_value])), rule_value)}
+    for name, p in probabilities.items():
+        grid = teacher_grid(held_out.assign(p=p), np.array([teacher.p_star]), teacher.ignore_halfwidth)
+        labellings[name] = (grid, teacher.p_star)
+
+    masks = held_out_parts(held_out, n_folds)
+    table = pd.DataFrame(
+        [
+            {"rule": name, "part": part, **value_scores(grid, held_out, mask).to_dict("records")[0]}
+            for name, (grid, _) in labellings.items()
+            for part, mask in masks.items()
+        ]
+    )
+
+    def decide(candidate: str, reference: str, part: str) -> KeepDecision:
+        counts = {}
+        for name in (candidate, reference):
+            grid, value = labellings[name]
+            block_days = stations_cfg["night_block_days"]
+            counts[name] = block_counts(grid, held_out, value, masks[part], season_start, block_days)
+        scores = table[table["part"] == part].set_index("rule")
+        return keep_decision(candidate, reference, teacher.p_star, scores, counts, stations_cfg)
+
+    correction = decide("corrected", "teacher", "stations") if "corrected" in labellings else None
+    return table, decide("teacher", "rule", "held_out"), correction
