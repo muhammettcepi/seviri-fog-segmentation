@@ -329,7 +329,8 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
 
     import xarray as xr
 
-    from fogseg.diagnosis import case_features, check_fixed_mode, diagnosis_table, read_selection_cases
+    from fogseg.diagnosis import case_features, diagnosis_table, read_selection_cases
+    from fogseg.experiment import RULE_MODE, check_rule_mode
     from fogseg.label_store import check_labels_match, label_store_path
     from fogseg.labels import LabelParams, check_default_rule
     from fogseg.splits import splits_path
@@ -340,11 +341,10 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     season = args.season or stations_cfg["tune_season"]
     require_tune_season(stations_cfg, season, "diagnosed")
 
-    mode = labels_cfg["mode"]
-    check_fixed_mode(mode)
+    check_rule_mode(labels_cfg["mode"], "fogseg diagnose")
     data_dir = Path(stations_cfg["data_dir"])
     cases = read_selection_cases(
-        data_dir / f"cases_{mode}_{season}.csv",
+        data_dir / f"cases_{RULE_MODE}_{season}.csv",
         splits_path(data_dir, season),
         season_start(cfg, season),
         cfg["region"]["bbox"],
@@ -357,7 +357,7 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     with ExitStack() as stack:
         data = stack.enter_context(xr.open_zarr(cfg["data"]["processed_path"], consolidated=False))
         labels = stack.enter_context(
-            xr.open_zarr(label_store_path(Path(labels_cfg["output_dir"]), mode), consolidated=False)
+            xr.open_zarr(label_store_path(Path(labels_cfg["output_dir"]), RULE_MODE), consolidated=False)
         )
         era5 = (
             stack.enter_context(xr.open_zarr(era5_path, consolidated=False)) if era5_path.exists() else None
@@ -410,6 +410,7 @@ def cmd_experiment(args: argparse.Namespace) -> None:
 
     from fogseg.experiment import (
         PHASE_B_VARIANTS,
+        RULE_MODE,
         combined_variants,
         config_record,
         experiment_cases,
@@ -441,7 +442,7 @@ def cmd_experiment(args: argparse.Namespace) -> None:
 
     out_path = data_dir / "experiment_B.csv"
     table.to_csv(out_path, index=False)
-    record = config_record(season, labels_cfg["mode"], params, stations_cfg)
+    record = config_record(season, RULE_MODE, params, stations_cfg)
     write_atomically(data_dir / "experiment_B_config.json", json.dumps(record, indent=2))
 
     log_winner(table, stations_cfg["matched_far"])
@@ -455,6 +456,7 @@ def cmd_held_out(args: argparse.Namespace) -> None:
     import xarray as xr
 
     from fogseg.experiment import (
+        RULE_MODE,
         check_same_config,
         config_record,
         decision_record,
@@ -482,7 +484,7 @@ def cmd_held_out(args: argparse.Namespace) -> None:
 
     params = LabelParams.from_config(labels_cfg)
     recorded = json.loads(config_path.read_text(encoding="utf-8"))
-    check_same_config(recorded, config_record(season, labels_cfg["mode"], params, stations_cfg))
+    check_same_config(recorded, config_record(season, RULE_MODE, params, stations_cfg))
     cv_table = pd.read_csv(cv_path)
     best = winner(cv_table)
     options = json.loads(cv_table.loc[cv_table["variant"] == best, "options"].iloc[0])
@@ -530,7 +532,7 @@ def cmd_teacher(args: argparse.Namespace) -> None:
 
     import xarray as xr
 
-    from fogseg.experiment import experiment_cases, pooled_scores, winner
+    from fogseg.experiment import RULE_MODE, check_rule_mode, experiment_cases, pooled_scores, winner
     from fogseg.features import case_features, open_era5, read_static
     from fogseg.labels import LabelParams
     from fogseg.teacher import (
@@ -549,8 +551,7 @@ def cmd_teacher(args: argparse.Namespace) -> None:
     labels_cfg, stations_cfg = cfg["labels"], cfg["stations"]
     season = args.season or stations_cfg["tune_season"]
     require_tune_season(stations_cfg, season, "used to fit the teacher")
-    if labels_cfg["mode"] != "fixed":
-        raise ValueError(f"The teacher needs labels.mode fixed, not {labels_cfg['mode']!r}")
+    check_rule_mode(labels_cfg["mode"], "fogseg teacher")
 
     data_dir = Path(stations_cfg["data_dir"])
     for path in teacher_held_out_paths(data_dir):
@@ -622,7 +623,7 @@ def cmd_teacher(args: argparse.Namespace) -> None:
     correction.to_csv(correction_path, index=False)
     save_teacher(teacher, Path(teacher_params.model_path))
     record = teacher_record(
-        season, labels_cfg["mode"], params, stations_cfg, dataclasses.asdict(teacher_params), data_dir
+        season, RULE_MODE, params, stations_cfg, dataclasses.asdict(teacher_params), data_dir
     )
     write_atomically(config_path, json.dumps(record, indent=2))
     log.info("Wrote %s, %s, %s and %s", cv_path, oof_path, correction_path, teacher_params.model_path)
@@ -636,7 +637,7 @@ def cmd_teacher_held_out(args: argparse.Namespace) -> None:
     import pandas as pd
     import xarray as xr
 
-    from fogseg.experiment import check_same_config, experiment_cases
+    from fogseg.experiment import RULE_MODE, check_same_config, experiment_cases
     from fogseg.features import open_era5, read_static
     from fogseg.labels import LabelParams
     from fogseg.teacher import TeacherParams, load_teacher, teacher_held_out, teacher_record
@@ -662,7 +663,7 @@ def cmd_teacher_held_out(args: argparse.Namespace) -> None:
     params, teacher_params = LabelParams.from_config(labels_cfg), TeacherParams.from_config(teacher_cfg)
     recorded = json.loads(config_path.read_text(encoding="utf-8"))
     current = teacher_record(
-        season, labels_cfg["mode"], params, stations_cfg, dataclasses.asdict(teacher_params), data_dir
+        season, RULE_MODE, params, stations_cfg, dataclasses.asdict(teacher_params), data_dir
     )
     check_same_config(recorded, current)
     groups = teacher_params.feature_groups

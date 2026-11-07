@@ -33,9 +33,9 @@ time:
 # Fog / low-stratus labels (0 not fog, 1 fog, 255 ignore).
 # Thresholds measured on the 2023-24 training season; evidence and reasons in docs/notes/btd_exploration.md.
 labels:
-  # fixed | dynamic; fixed 4.0 K scores best against the 2023-24 stations (Heidke and Peirce skill),
-  # see docs/notes/station_validation.md
-  mode: fixed
+  # fixed | dynamic | teacher; teacher labels are the station-trained teacher of docs/notes/better_labels.md
+  # (phase C); diagnose, experiment and teacher always study the fixed rule
+  mode: teacher
   output_dir: "/mnt/d/fogseg-data/processed"
   figures_dir: "/mnt/d/fogseg-data/figures/inspect"
   night_min_sza: 95.0

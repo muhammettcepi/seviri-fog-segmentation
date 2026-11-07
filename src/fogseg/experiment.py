@@ -26,6 +26,8 @@ SCORE_COLUMNS = ["value", *COUNT_NAMES, "pod", "far", "csi", "n_cases"]
 CV_COLUMNS = ["fold", "value", "matched", *SCORE_COLUMNS[1:]]
 UNSCORED = dict.fromkeys(SCORE_COLUMNS, np.nan)
 
+RULE_MODE = "fixed"
+
 PHASE_B_VARIANTS: list[tuple[str, dict]] = [
     ("1 baseline", {}),
     ("2 texture btd_std3", {"texture": "btd_std3"}),
@@ -58,12 +60,20 @@ def scored_cases(cases: pd.DataFrame) -> pd.DataFrame:
     return scored.assign(case=np.arange(len(scored)))
 
 
+def check_rule_mode(mode: str, command: str) -> None:
+    """Refuse a dynamic `labels.mode` for a command that studies the fixed rule, whatever else is configured."""
+    if mode not in (RULE_MODE, "teacher"):
+        raise ValueError(
+            f"{command} studies the fixed rule and needs labels.mode fixed or teacher, not {mode!r}"
+        )
+
+
 def experiment_cases(cfg: dict, season: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The scored selection cases and the scored held-out cases of a season, split by its frozen folds."""
     stations_cfg = cfg["stations"]
     data_dir = Path(stations_cfg["data_dir"])
     splits = read_splits(splits_path(data_dir, season))
-    cases = read_case_table(data_dir / f"cases_{cfg['labels']['mode']}_{season}.csv")
+    cases = read_case_table(data_dir / f"cases_{RULE_MODE}_{season}.csv")
     with_folds = assign_folds(cases, splits, season_start(cfg, season), cfg["region"]["bbox"], stations_cfg)
     is_selection = held_out_part(with_folds, stations_cfg["n_folds"]) == "selection"
     return scored_cases(with_folds[is_selection]), scored_cases(with_folds[~is_selection])

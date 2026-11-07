@@ -669,8 +669,14 @@ def test_teacher_refuses_the_test_season_and_dynamic_labels(tmp_path):
     cfg = teacher_config(tmp_path)
     with pytest.raises(PermissionError):
         cmd_teacher(teacher_args(cfg, season="2024-25"))
-    with pytest.raises(ValueError, match="labels.mode"):
+    with pytest.raises(ValueError, match="fixed or teacher"):
         cmd_teacher(teacher_args(cfg, mode="dynamic"))
+
+
+def test_teacher_command_runs_in_teacher_mode(tmp_path):
+    cmd_teacher(teacher_args(teacher_config(tmp_path), mode="teacher"))
+    record = json.loads((tmp_path / "stations" / "teacher_config.json").read_text(encoding="utf-8"))
+    assert record["mode"] == "fixed"
 
 
 @pytest.mark.parametrize("name", ["teacher_held_out.csv", "teacher_held_out.json"])

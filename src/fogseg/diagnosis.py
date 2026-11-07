@@ -22,15 +22,6 @@ TABLE_COLUMNS = ["section", "variable", "statistic", "fls_missed", "no_fls"]
 UNKNOWN = "unknown"
 
 
-def check_fixed_mode(mode: str) -> None:
-    """Refuse labels of any mode but fixed, which the cause bands are set for."""
-    if mode != "fixed":
-        raise ValueError(
-            f"The diagnosis needs the fixed labels, not {mode!r}: its cause bands at {LOW_BTD_K} and "
-            f"{BAND_HIGH_K} K are defined around the fixed 4.0 K threshold"
-        )
-
-
 def read_selection_cases(
     cases_path: Path, split_path: Path, season_start: np.datetime64, bbox: list[float], stations_cfg: dict
 ) -> pd.DataFrame:
