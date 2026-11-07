@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import sklearn
 import xarray as xr
 import yaml
 from helpers import COLD_PIXEL, GRID_LAT0, GRID_LON0, TEST_PARAMS
@@ -16,10 +18,19 @@ from test_experiment import experiment_config, tiny_season
 from test_features import era5_store, teacher_dataset
 
 from fogseg.cli import cmd_label
-from fogseg.features import night_features, read_static
+from fogseg.features import case_features, night_features, read_static
 from fogseg.label_store import night_runs
 from fogseg.labels import OBSCURED
-from fogseg.teacher import MODEL_SETTINGS, TeacherModel, feature_names, make_model, save_teacher
+from fogseg.teacher import (
+    MODEL_SETTINGS,
+    TeacherModel,
+    feature_names,
+    load_teacher,
+    make_model,
+    probability_of_cases,
+    save_teacher,
+    teacher_labels,
+)
 from fogseg.teacher_labels import label_teacher_dataset
 from fogseg.validation import season_bounds
 
@@ -72,6 +83,7 @@ def fitted_toy_teacher(
         feature_groups=groups,
         p_star=0.5,
         ignore_halfwidth=0.1,
+        label_params=dataclasses.asdict(TEST_PARAMS),
         correction_km=correction_km,
     )
 
@@ -185,6 +197,7 @@ def test_attrs_record_the_teacher(tmp_path):
     assert attrs["teacher_correction_km"] is None
     assert attrs["teacher_model_path"] == cfg["teacher"]["model_path"]
     assert attrs["btd_fixed"] == TEST_PARAMS.btd_fixed
+    assert attrs["teacher_sklearn_version"] == sklearn.__version__
 
 
 def test_probability_follows_the_label(tmp_path):
@@ -196,10 +209,12 @@ def test_probability_follows_the_label(tmp_path):
 
 def test_untrusted_and_obscured_follow_the_rule(tmp_path):
     cfg = teacher_label_config(tmp_path, nan_pixel=(2, 2))
-    labels = label_store(cfg, tmp_path / "labels_teacher.zarr")["label"].values
+    store = label_store(cfg, tmp_path / "labels_teacher.zarr")
+    labels = store["label"].values
     rule, trusted = rule_and_trust(cfg)
     assert (rule == OBSCURED).any() and not trusted.all()
     assert np.array_equal(labels == 2, rule == 2) and (labels[~trusted] == 255).all()
+    assert (store["fog_probability"].values[labels == 2] == 255).all()
 
 
 def test_missing_model_stops_before_labelling(tmp_path):
@@ -216,6 +231,34 @@ def test_mismatched_model_stops_before_labelling(tmp_path):
     with pytest.raises(ValueError, match="feature"):
         label_teacher_dataset(Path(cfg["data"]["processed_path"]), tmp_path / "labels_teacher.zarr", cfg)
     assert not list(tmp_path.glob("labels_teacher*"))
+
+
+def test_a_teacher_fitted_with_other_label_settings_stops_before_labelling(tmp_path):
+    cfg = teacher_label_config(tmp_path)
+    cfg["labels"]["btd_fixed"] += 1.0
+    with pytest.raises(ValueError, match="btd_fixed"):
+        label_teacher_dataset(Path(cfg["data"]["processed_path"]), tmp_path / "labels_teacher.zarr", cfg)
+    assert not list(tmp_path.glob("labels_teacher*"))
+
+
+def test_the_dense_label_of_a_case_is_the_label_the_case_level_path_gives(tmp_path):
+    cfg = teacher_label_config(tmp_path)
+    store = label_store(cfg, tmp_path / "labels_teacher.zarr")
+    times = store["time"].values
+    pixels = [(0, 0), (1, 3), (3, 1), (6, 0), (6, 6)]
+    cases = pd.DataFrame([{"scene_time": time, "iy": iy, "ix": ix} for time in times for iy, ix in pixels])
+    groups = cfg["teacher"]["feature_groups"]
+    teacher = load_teacher(Path(cfg["teacher"]["model_path"]), groups)
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        static = read_static(data, Path(cfg["dem"]["out_path"]), groups)
+        features = case_features(data, cases, static, None, TEST_PARAMS, groups)
+    p = probability_of_cases(teacher, features)
+    expected = teacher_labels(p, teacher.p_star, teacher.ignore_halfwidth)
+
+    scene = pd.Index(times).get_indexer(cases["scene_time"])
+    dense = store["label"].values[scene, cases["iy"].to_numpy(), cases["ix"].to_numpy()]
+    assert np.array_equal(dense, expected)
+    assert set(expected) >= {0, 1}
 
 
 def test_an_existing_store_needs_overwrite(tmp_path):

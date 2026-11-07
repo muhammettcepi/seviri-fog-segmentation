@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import sklearn
 import xarray as xr
 import yaml
 from helpers import TEST_PARAMS
@@ -32,6 +34,7 @@ from fogseg.labels import FOG, IGNORE, NO_FOG, LabelParams
 from fogseg.teacher import (
     MODEL_SETTINGS,
     OOF_CASE_COLUMNS,
+    TWIN_RADIUS_KM,
     TeacherModel,
     TeacherParams,
     chosen_length,
@@ -287,7 +290,7 @@ def fitted_teacher(features: pd.DataFrame | None = None, cases: pd.DataFrame | N
         features, cases = teacher_features()
     probs = fold_probabilities(features, cases, LOGISTIC, 5, 0)
     params = dataclasses.replace(TEACHER_PARAMS, feature_groups=TEACHER_GROUPS)
-    teacher = fit_teacher(features, cases, MODEL_SETTINGS[1], probs, 0.5, params, 0)
+    teacher = fit_teacher(features, cases, MODEL_SETTINGS[1], probs, 0.5, params, TEST_PARAMS, 0)
     return teacher, features[feature_names(TEACHER_GROUPS)].to_numpy()
 
 
@@ -300,6 +303,8 @@ def test_the_fitted_teacher_records_what_it_was_fitted_with():
     assert teacher.p_star == 0.5
     assert teacher.ignore_halfwidth == TEACHER_PARAMS.ignore_halfwidth
     assert teacher.correction_km is None
+    assert teacher.label_params == dataclasses.asdict(TEST_PARAMS)
+    assert teacher.sklearn_version == sklearn.__version__
 
 
 def test_the_probability_is_the_calibrated_one_and_follows_the_truth():
@@ -346,6 +351,15 @@ def test_saving_leaves_no_partial_file(tmp_path):
     teacher, _ = fitted_teacher()
     save_teacher(teacher, tmp_path / "models" / "teacher.joblib")
     assert [path.name for path in (tmp_path / "models").iterdir()] == ["teacher.joblib"]
+
+
+def test_loading_a_teacher_of_another_scikit_learn_version_warns(tmp_path, caplog):
+    teacher, _ = fitted_teacher()
+    save_teacher(dataclasses.replace(teacher, sklearn_version="0.0.1"), tmp_path / "teacher.joblib")
+    with caplog.at_level(logging.WARNING, logger="fogseg"):
+        loaded = load_teacher(tmp_path / "teacher.joblib", teacher.feature_groups)
+    assert loaded.sklearn_version == "0.0.1"
+    assert "0.0.1" in caplog.text and sklearn.__version__ in caplog.text
 
 
 def test_loading_needs_the_same_features(tmp_path):
@@ -465,6 +479,7 @@ def correction_cases() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """One test case in fold 1 and three feeders: stations of folds 2, 1 and 5, in the same scene.
 
     The allowed feeder has residual 0; the ones in the test fold and in the held-out fold have residual 1.
+    The stations are 15 km or more apart, beyond the twin radius.
     """
     n = 4
     cases = pd.DataFrame(
@@ -473,7 +488,7 @@ def correction_cases() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
             "scene_time": pd.Timestamp("2023-11-20T21"),
             "station": list("ABCD"),
             "lat": 45.0,
-            "lon": 5.0 + 0.01 * np.arange(n),
+            "lon": 5.0 + 0.2 * np.arange(n),
             "night_fold": 1,
             "station_fold": [1, 2, 1, 5],
             "truth_fls": [1, 1, 1, 1],
@@ -506,6 +521,23 @@ def test_a_feeder_of_an_allowed_fold_lifts_the_label():
     assert table.columns.tolist() == ["length_km", "fold", *SCORE_COLUMNS[1:]]
     assert table["length_km"].tolist() == ["none"] * 2 + ["50.0"] * 2
     assert table["fold"].astype(str).tolist() == ["1", "pooled"] * 2
+    assert table["hits"].tolist() == [0, 0, 1, 1]
+
+
+def test_a_twin_station_within_the_twin_radius_never_feeds_the_correction():
+    fold_probs, cases, oof = correction_cases()
+    oof["p_oof"] = [0.45, 0.0, 0.0, 0.0]
+    oof.loc[1, "lon"] = cases.loc[0, "lon"] + 0.01
+    assert TWIN_RADIUS_KM > 1.0
+    table = cross_validate_correction(fold_probs, cases, oof, 0.5, 0.0, [50.0], 5)
+    assert table["hits"].tolist() == [0, 0, 0, 0]
+
+
+def test_a_station_beyond_the_twin_radius_still_feeds_the_correction():
+    fold_probs, cases, oof = correction_cases()
+    oof["p_oof"] = [0.45, 0.0, 0.0, 0.0]
+    oof.loc[1, "lon"] = cases.loc[0, "lon"] + 0.1
+    table = cross_validate_correction(fold_probs, cases, oof, 0.5, 0.0, [50.0], 5)
     assert table["hits"].tolist() == [0, 0, 1, 1]
 
 
@@ -678,6 +710,7 @@ def held_out_run(tmp_path, teacher_hits_more=True, correction_km=None, probabili
         feature_groups=groups,
         p_star=0.5,
         ignore_halfwidth=0.1,
+        label_params=dataclasses.asdict(TEST_PARAMS),
         correction_km=correction_km,
     )
     oof = selection[OOF_CASE_COLUMNS].assign(p_oof=0.0)
@@ -809,3 +842,53 @@ def test_held_out_refuses_a_changed_config(tmp_path):
     cfg["teacher"]["ignore_halfwidth"] = 0.2
     with pytest.raises(ValueError, match="ignore_halfwidth"):
         cmd_teacher(teacher_args(cfg, held_out=True))
+
+
+def test_a_rerun_that_dies_leaves_no_record_for_held_out_to_trust(tmp_path, monkeypatch):
+    cfg = teacher_config(tmp_path)
+    cmd_teacher(teacher_args(cfg))
+    config_path = tmp_path / "stations" / "teacher_config.json"
+    assert config_path.exists()
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("the cross-validation died")
+
+    monkeypatch.setattr("fogseg.teacher.cross_validate_settings", fail)
+    with pytest.raises(RuntimeError, match="died"):
+        cmd_teacher(teacher_args(cfg))
+    assert not config_path.exists()
+    with pytest.raises(FileNotFoundError, match="fogseg teacher"):
+        cmd_teacher(teacher_args(cfg, held_out=True))
+
+
+def test_the_record_fingerprints_the_case_table_and_the_split_file(tmp_path):
+    cfg = teacher_config(tmp_path)
+    cmd_teacher(teacher_args(cfg))
+    record = json.loads((tmp_path / "stations" / "teacher_config.json").read_text(encoding="utf-8"))
+    cases = tmp_path / "stations" / "cases_fixed_2023-24.csv"
+    assert record["inputs"]["cases_sha256"] == hashlib.sha256(cases.read_bytes()).hexdigest()
+    assert len(record["inputs"]["splits_sha256"]) == 64
+
+
+@pytest.mark.parametrize("name", ["cases_fixed_2023-24.csv", "splits_2023-24.csv"])
+def test_held_out_refuses_inputs_changed_since_the_teacher(tmp_path, name):
+    cfg = teacher_config(tmp_path)
+    cmd_teacher(teacher_args(cfg))
+    path = tmp_path / "stations" / name
+    path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"inputs\.(cases|splits)_sha256"):
+        cmd_teacher(teacher_args(cfg, held_out=True))
+    assert not (tmp_path / "stations" / "teacher_held_out.json").exists()
+
+
+def test_held_out_corrects_with_the_saved_feeders_on_unseen_stations_only(tmp_path, monkeypatch):
+    cfg = teacher_config(tmp_path)
+    monkeypatch.setattr("fogseg.teacher.chosen_length", lambda table: 25.0)
+    cmd_teacher(teacher_args(cfg))
+    cmd_teacher(teacher_args(cfg, held_out=True))
+    stations = tmp_path / "stations"
+    record = json.loads((stations / "teacher_held_out.json").read_text(encoding="utf-8"))
+    assert record["correction_km"] == 25.0 and record["correction"]["winner"] == "corrected"
+    table = pd.read_csv(stations / "teacher_held_out.csv").set_index(["rule", "part"])
+    for part in ("nights", "both"):
+        assert table.loc[("corrected", part)].equals(table.loc[("teacher", part)])

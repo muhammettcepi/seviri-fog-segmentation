@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn
 import xarray as xr
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
@@ -39,13 +41,14 @@ from fogseg.experiment import (
 from fogseg.features import StaticFields, case_features, feature_names
 from fogseg.labels import FOG, IGNORE, NO_FOG, LabelParams
 from fogseg.scores import COUNT_NAMES, paired_difference
-from fogseg.splits import cv_folds
+from fogseg.splits import cv_folds, splits_path
 from fogseg.tuning import grid_values
 from fogseg.validation import TRUTH_YES, haversine_km
 
 log = logging.getLogger(__name__)
 
 NOT_INPUTS = ["has_era5", "trusted"]
+TWIN_RADIUS_KM = 5.0
 OOF_CASE_COLUMNS = [
     "case",
     "scene_time",
@@ -280,7 +283,8 @@ def cross_validate_settings(
 class TeacherModel:
     """A fitted teacher: classifier, calibrator and what labelling needs of them.
 
-    `correction_km` is the station-correction length, None until one is chosen.
+    `label_params` are the label settings its features were made with, `sklearn_version` the scikit-learn
+    that fitted it, and `correction_km` the station-correction length, None until one is chosen.
     """
 
     setting: str
@@ -291,6 +295,8 @@ class TeacherModel:
     feature_groups: list[str]
     p_star: float
     ignore_halfwidth: float
+    label_params: dict
+    sklearn_version: str = sklearn.__version__
     correction_km: float | None = None
 
 
@@ -301,6 +307,7 @@ def fit_teacher(
     fold_probs: pd.DataFrame,
     p_star: float,
     teacher_params: TeacherParams,
+    label_params: LabelParams,
     seed: int,
 ) -> TeacherModel:
     """The teacher of a setting fitted on every selection case with ERA5 and a trusted pixel.
@@ -321,6 +328,7 @@ def fit_teacher(
         feature_groups=list(teacher_params.feature_groups),
         p_star=p_star,
         ignore_halfwidth=teacher_params.ignore_halfwidth,
+        label_params=dataclasses.asdict(label_params),
     )
 
 
@@ -349,6 +357,13 @@ def load_teacher(path: Path, groups: list[str]) -> TeacherModel:
             f"The teacher in {path} was fitted on the features {teacher.feature_names}, but the feature "
             f"groups {groups} give {expected}; run `fogseg teacher` again"
         )
+    if teacher.sklearn_version != sklearn.__version__:
+        log.warning(
+            "The teacher in %s was fitted with scikit-learn %s, but %s is installed",
+            path,
+            teacher.sklearn_version,
+            sklearn.__version__,
+        )
     return teacher
 
 
@@ -364,10 +379,15 @@ def idw_weights(
     feed_lon: np.ndarray,
     feed_lat: np.ndarray,
     length_km: float,
+    min_km: float = 0.0,
 ) -> np.ndarray:
-    """The weight exp(-d / L) of every feeder (columns) for every target (rows), 0 from 3 L on."""
+    """The weight exp(-d / L) of every feeder (columns) for every target (rows).
+
+    It is 0 from 3 L on, and for a feeder closer than `min_km`.
+    """
     distance = haversine_km(feed_lon[None, :], feed_lat[None, :], target_lon[:, None], target_lat[:, None])
-    return np.where(distance < 3 * length_km, np.exp(-distance / length_km), 0.0)
+    near_enough = (distance >= min_km) & (distance < 3 * length_km)
+    return np.where(near_enough, np.exp(-distance / length_km), 0.0)
 
 
 def weighted_shift(weights: np.ndarray, residuals: np.ndarray) -> np.ndarray:
@@ -388,9 +408,12 @@ def idw_shift(
 
 
 def corrected_probability(
-    targets: pd.DataFrame, p: np.ndarray, feeders: pd.DataFrame, length_km: float
+    targets: pd.DataFrame, p: np.ndarray, feeders: pd.DataFrame, length_km: float, twin_km: float = 0.0
 ) -> np.ndarray:
-    """`p` shifted by the residuals of other stations' feeders in the same scene, clipped to [0, 1]."""
+    """`p` shifted by the residuals of other stations' feeders in the same scene, clipped to [0, 1].
+
+    Feeders closer than `twin_km` to a target never feed it.
+    """
     shift = np.zeros(len(targets))
     feeder_rows = feeders.groupby("scene_time").indices
     for scene, rows in targets.groupby("scene_time").indices.items():
@@ -403,6 +426,7 @@ def corrected_probability(
             feeder["lon"].to_numpy(),
             feeder["lat"].to_numpy(),
             length_km,
+            twin_km,
         )
         weights[target["station"].to_numpy()[:, None] == feeder["station"].to_numpy()[None, :]] = 0.0
         shift[rows] = weighted_shift(weights, feeder["residual"].to_numpy())
@@ -435,7 +459,7 @@ def cross_validate_correction(
     """The scores at `p_star` without a correction (`"none"`) and with each length, per fold and pooled.
 
     A test case of fold k is corrected by the residuals of the other stations in its scene whose station
-    fold is neither k nor the held-out `n_folds`.
+    fold is neither k nor the held-out `n_folds`, and that are not a twin within `TWIN_RADIUS_KM` of it.
     """
     feeders = correction_feeders(oof)
     scores = {"none": [], **{str(float(length)): [] for length in lengths}}
@@ -444,7 +468,9 @@ def cross_validate_correction(
         fold_feeders = feeders[~feeders["station_fold"].isin([fold, n_folds])]
         p = {"none": rows["p"].to_numpy()}
         for length in lengths:
-            p[str(float(length))] = corrected_probability(targets, p["none"], fold_feeders, length)
+            p[str(float(length))] = corrected_probability(
+                targets, p["none"], fold_feeders, length, TWIN_RADIUS_KM
+            )
         for name, probability in p.items():
             fold_scores = correction_fold_scores(rows, probability, cases, p_star, halfwidth)
             scores[name].append(fold_scores.assign(fold=fold))
@@ -470,11 +496,20 @@ def chosen_length(table: pd.DataFrame) -> float | None:
     return float(allowed["pod"].idxmax())
 
 
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def teacher_record(
-    season: str, mode: str, params: LabelParams, stations_cfg: dict, teacher_cfg: dict
+    season: str, mode: str, params: LabelParams, stations_cfg: dict, teacher_cfg: dict, data_dir: Path
 ) -> dict:
-    """The configuration a teacher was fitted with: the phase B record and the `teacher:` section."""
-    return {**config_record(season, mode, params, stations_cfg), "teacher": teacher_cfg}
+    """The configuration a teacher was fitted with: the phase B record, the `teacher:` section, and the
+    sha256 of the case table and the split file it used."""
+    inputs = {
+        "cases_sha256": file_sha256(data_dir / f"cases_{mode}_{season}.csv"),
+        "splits_sha256": file_sha256(splits_path(data_dir, season)),
+    }
+    return {**config_record(season, mode, params, stations_cfg), "teacher": teacher_cfg, "inputs": inputs}
 
 
 def probability_of_cases(teacher: TeacherModel, features: pd.DataFrame) -> np.ndarray:
@@ -554,11 +589,12 @@ def teacher_held_out(
         ]
     )
 
+    block_days = stations_cfg["night_block_days"]
+
     def decide(candidate: str, reference: str, part: str) -> KeepDecision:
         counts = {}
         for name in (candidate, reference):
             grid, value = labellings[name]
-            block_days = stations_cfg["night_block_days"]
             counts[name] = block_counts(grid, held_out, value, masks[part], season_start, block_days)
         scores = table[table["part"] == part].set_index("rule")
         return keep_decision(candidate, reference, teacher.p_star, scores, counts, stations_cfg)

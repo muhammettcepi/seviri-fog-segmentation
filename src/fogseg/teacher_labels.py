@@ -2,7 +2,8 @@
 
 The store has the layout of the rule's label stores, plus `fog_probability`: the teacher's calibrated
 probability of fog as an integer from 0 to 250, 255 where it is undefined. A pixel the rule cannot see
-(untrusted) or a scene without ERA5 gets no probability and is ignored; obscured pixels stay obscured.
+(untrusted) or a scene without ERA5 gets no probability and is ignored; an obscured pixel stays obscured and
+has no probability either.
 """
 
 from __future__ import annotations
@@ -37,8 +38,8 @@ from fogseg.teacher import (
     correction_feeders,
     load_teacher,
     predict_probability,
-    teacher_labels,
 )
+from fogseg.teacher import teacher_labels as label_probabilities
 from fogseg.validation import season_bounds
 
 log = logging.getLogger(__name__)
@@ -105,10 +106,12 @@ def label_scene(
             p = corrected_probability(
                 targets, p, correction.feeders[pd.Timestamp(time)], correction.length_km
             )
-        labels[usable] = teacher_labels(p, teacher.p_star, teacher.ignore_halfwidth)
+        labels[usable] = label_probabilities(p, teacher.p_star, teacher.ignore_halfwidth)
         probability[usable] = np.rint(p * PROBABILITY_SCALE)
 
-    labels[night.rule_labels[scene] == OBSCURED] = OBSCURED
+    obscured = night.rule_labels[scene] == OBSCURED
+    labels[obscured] = OBSCURED
+    probability[obscured] = UNDEFINED
     return labels, probability
 
 
@@ -173,7 +176,19 @@ def teacher_attrs(
         "teacher_feature_groups": list(teacher.feature_groups),
         "teacher_correction_km": None if correction is None else correction.length_km,
         "teacher_model_path": str(model_path),
+        "teacher_sklearn_version": teacher.sklearn_version,
     }
+
+
+def check_label_params(teacher: TeacherModel, params: LabelParams) -> None:
+    """Refuse labels whose settings differ from those the teacher's features were made with."""
+    fitted, now = teacher.label_params, dataclasses.asdict(params)
+    changed = sorted(key for key in fitted.keys() | now.keys() if fitted.get(key) != now.get(key))
+    if changed:
+        differences = ", ".join(f"{key} ({fitted.get(key)!r} then, {now.get(key)!r} now)" for key in changed)
+        raise ValueError(
+            f"The teacher was fitted with other label settings: {differences}; run `fogseg teacher` again"
+        )
 
 
 def label_teacher_dataset(
@@ -187,6 +202,7 @@ def label_teacher_dataset(
     teacher_params = TeacherParams.from_config(cfg["teacher"])
     model_path = Path(teacher_params.model_path)
     teacher = load_teacher(model_path, teacher_params.feature_groups)
+    check_label_params(teacher, params)
     if not dataset_path.exists():
         raise FileNotFoundError(f"Dataset not found: {dataset_path}")
 

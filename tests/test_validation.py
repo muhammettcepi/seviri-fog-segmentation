@@ -17,6 +17,7 @@ from helpers import (
     LABEL_NY,
     TEST_PARAMS,
     make_station_dataset,
+    write_teacher_style_store,
 )
 
 from fogseg.cli import cmd_validate
@@ -647,6 +648,20 @@ def test_validate_writes_cases_and_scores(tmp_path, caplog):
     assert main[["hits", "misses", "false_alarms", "correct_negatives"]].tolist() == [1, 0, 0, 1]
     assert "observations_synop.csv" in caplog.text
     assert "scores_fixed_2023-24.csv" in caplog.text
+
+
+def test_validate_scores_the_teacher_store(tmp_path):
+    args = validate_setup(tmp_path)
+    labels_dir = tmp_path / "labels"
+    write_teacher_style_store(label_store_path(labels_dir, "fixed"), label_store_path(labels_dir, "teacher"))
+    args.labels = "teacher"
+
+    cmd_validate(args)
+
+    data_dir = tmp_path / "stations"
+    scores = pd.read_csv(data_dir / "scores_teacher_2023-24.csv").set_index(["view", "group"])
+    assert (data_dir / "cases_teacher_2023-24.csv").exists()
+    assert scores.loc[("main", "all"), "hits"] == 1
 
 
 def test_validate_refuses_the_test_season_without_final(tmp_path):

@@ -73,8 +73,10 @@ def find_scene(times: pd.DatetimeIndex, wanted: pd.Timestamp) -> int:
     raise ValueError(f"No scene at {wanted.strftime(TIME_FORMAT)}. Nearest available times: {listed}")
 
 
-def histogram_title(threshold: float, source: str) -> str:
-    """Title of the histogram panel: the threshold used and where it came from."""
+def histogram_title(threshold: float | None, source: str) -> str:
+    """Title of the histogram panel: the threshold used and where it came from, if the labels have one."""
+    if threshold is None:
+        return f"BTD histogram, no threshold ({source})"
     return f"BTD histogram, threshold {threshold:.2f} K ({source})"
 
 
@@ -135,15 +137,16 @@ def histogram_edges(dynamic: DynamicParams) -> np.ndarray:
 
 
 def draw_histogram_panel(
-    ax: Axes, btd: np.ndarray, threshold: float, source: str, dynamic: DynamicParams
+    ax: Axes, btd: np.ndarray, threshold: float | None, source: str, dynamic: DynamicParams
 ) -> None:
     ax.hist(btd, bins=histogram_edges(dynamic), color="steelblue")
-    ax.axvline(threshold, color="red", linewidth=2, label=f"threshold {threshold:.2f} K")
+    if threshold is not None:
+        ax.axvline(threshold, color="red", linewidth=2, label=f"threshold {threshold:.2f} K")
+        ax.legend(fontsize=8)
     if btd.size == 0:
         ax.text(0.5, 0.5, "no histogram pixels", transform=ax.transAxes, ha="center", va="center")
     ax.set_xlabel("IR_108 - IR_039 (K)")
     ax.set_ylabel("pixels")
-    ax.legend(fontsize=8)
     ax.set_title(histogram_title(threshold, source))
 
 
@@ -183,7 +186,7 @@ def inspect_figure(
     ir039, ir108, ir120 = scene_channels(dataset, scene)
     sza = dataset["sza"].isel(time=scene).values
     label_image = labels["label"].isel(time=scene).values
-    threshold = float(labels["btd_threshold"].isel(time=scene).values)
+    threshold = float(labels["btd_threshold"].isel(time=scene).values) if "btd_threshold" in labels else None
     source = str(labels["threshold_source"].isel(time=scene).values)
     mode = str(labels.attrs["mode"])
 

@@ -176,3 +176,11 @@ def make_planted_dataset(path: Path, n_scenes: int = 3) -> Path:
         path, mode="w", zarr_format=3, consolidated=False
     )
     return path
+
+
+def write_teacher_style_store(rule_store: Path, teacher_store: Path) -> None:
+    """A copy of a rule's label store as the teacher writes it: no BTD threshold, mode teacher."""
+    with xr.open_zarr(rule_store, consolidated=False) as labels:
+        teacher = variable_length_strings(labels.drop_vars("btd_threshold").load())
+        teacher.attrs = {**labels.attrs, "mode": "teacher"}
+    teacher.to_zarr(teacher_store, zarr_format=3, consolidated=False)
