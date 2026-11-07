@@ -768,7 +768,8 @@ def read_fit_data(cfg: dict, season: str, selection, settings: list, store_path:
     """The fit data of `fogseg train`, the input normalization and the attributes of the label store.
 
     The scenes are those of the tuning season in night folds 1 to n_folds - 1; the normalization is
-    fitted on all of them and shared by every cross-validation fold.
+    fitted on all of them and shared by every cross-validation fold. The trusted and obscured masks follow
+    the label store's thresholds, as in `fogseg predict`.
     """
     import xarray as xr
 
@@ -811,15 +812,42 @@ def read_fit_data(cfg: dict, season: str, selection, settings: list, store_path:
         used = folds < stations_cfg["n_folds"]
         scenes, night_folds = tuning[used], folds[used]
         elevation = read_static(data, Path(cfg["dem"]["out_path"]), ["terrain"]).elevation_mean
-        raw, trusted, _ = read_inputs(data, scenes, elevation, LabelParams.from_config(cfg["labels"]))
+        label_attrs = dict(labels.attrs)
+        raw, trusted, obscured = read_inputs(data, scenes, elevation, LabelParams.from_config(label_attrs))
         normalization = fit_normalization(raw, trusted)
         inputs = model_inputs(raw, trusted, normalization)
         del raw
         targets = {name: read_targets(labels, scenes, name) for name in target_names}
-        label_attrs = dict(labels.attrs)
-    scene_times = times[scenes]
-    fit = FitData(scene_times, inputs, targets, night_folds, point_targets(selection, scene_times))
-    return fit, normalization, label_attrs
+    scene_times, usable = times[scenes], trusted & ~obscured
+    points = point_targets(selection, scene_times, usable)
+    return FitData(scene_times, inputs, targets, usable, night_folds, points), normalization, label_attrs
+
+
+def unet_input_files(data_dir: Path, season: str, store_path: Path) -> dict[str, Path]:
+    """The case table, split file and label store `fogseg train` fits on, by their `unet_config.json` key."""
+    from fogseg.experiment import RULE_MODE
+    from fogseg.splits import splits_path
+
+    return {
+        "cases_sha256": data_dir / f"cases_{RULE_MODE}_{season}.csv",
+        "splits_sha256": splits_path(data_dir, season),
+        "labels_created": store_path,
+    }
+
+
+def unet_inputs(files: dict[str, Path]) -> dict[str, str | None]:
+    """The sha256 of the case table and of the split file, and the creation time of the label store."""
+    import xarray as xr
+
+    from fogseg.teacher import file_sha256
+
+    with xr.open_zarr(files["labels_created"], consolidated=False) as labels:
+        created = labels.attrs.get("created")
+    return {
+        "cases_sha256": file_sha256(files["cases_sha256"]),
+        "splits_sha256": file_sha256(files["splits_sha256"]),
+        "labels_created": created,
+    }
 
 
 def cmd_train(args: argparse.Namespace) -> None:
@@ -828,10 +856,8 @@ def cmd_train(args: argparse.Namespace) -> None:
     import torch
 
     import fogseg
-    from fogseg.experiment import RULE_MODE, experiment_cases, pooled_scores, winner
+    from fogseg.experiment import experiment_cases, pooled_scores, winner
     from fogseg.label_store import label_store_path
-    from fogseg.splits import splits_path
-    from fogseg.teacher import file_sha256
     from fogseg.tracking import MlflowTracker
     from fogseg.unet_cv import cross_validate_unet
     from fogseg.unet_data import INPUT_CHANNELS
@@ -913,11 +939,7 @@ def cmd_train(args: argparse.Namespace) -> None:
             "season": season,
             "labels_mode": labels_cfg["mode"],
             "unet": cfg["unet"],
-            "inputs": {
-                "cases_sha256": file_sha256(data_dir / f"cases_{RULE_MODE}_{season}.csv"),
-                "splits_sha256": file_sha256(splits_path(data_dir, season)),
-                "labels_created": label_attrs.get("created"),
-            },
+            "inputs": unet_inputs(unet_input_files(data_dir, season, store_path)),
             "winner": best,
             "p_star": p_star,
             "final_run_id": final_run_id,
@@ -997,6 +1019,13 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     if not teacher_path.exists():
         raise FileNotFoundError(f"{teacher_path} not found; run `fogseg label --mode teacher` first")
     record = json.loads(config_path.read_text(encoding="utf-8"))
+    labels_cfg = cfg["labels"]
+    store_path = label_store_path(Path(labels_cfg["output_dir"]), labels_cfg["mode"])
+    files = unet_input_files(data_dir, season, store_path)
+    current = unet_inputs(files)
+    for key, path in files.items():
+        if record["inputs"].get(key) != current[key]:
+            raise ValueError(f"{path} is not the one the U-Net was trained on; run `fogseg train` again")
 
     selection, held_out = experiment_cases(cfg, season)
     n_folds = stations_cfg["n_folds"]

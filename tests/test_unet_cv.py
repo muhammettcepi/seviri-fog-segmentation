@@ -47,7 +47,9 @@ def synthetic(scene_folds=SCENE_FOLDS):
             )
     cases = pd.DataFrame(rows)
     targets = {name: (target, np.ones_like(target)) for name in TARGETS}
-    fit = FitData(times, inputs, targets, np.array(scene_folds), point_targets(cases, times))
+    usable = np.ones(target.shape, dtype=bool)
+    points = point_targets(cases, times, usable)
+    fit = FitData(times, inputs, targets, usable, np.array(scene_folds), points)
     selection = cases[cases["night_fold"] != 5].reset_index(drop=True)
     return fit, selection.assign(case=selection.index)
 
@@ -80,6 +82,7 @@ def test_subset_reindexes_points():
     assert (part.times == fit.times[chosen]).all()
     assert part.inputs.shape[0] == 3
     assert part.targets["soft"][0].shape[0] == 3
+    assert part.usable.shape == (3, HEIGHT, WIDTH)
     assert (part.night_folds == fit.night_folds[chosen]).all()
     assert part.points["scene"].isin([0, 1, 2]).all()
     expected = fit.points[fit.points["scene"].isin(chosen)]
@@ -117,6 +120,29 @@ def test_no_test_scene_and_no_held_out_scene_is_ever_fitted(monkeypatch):
     for fold, fitted, monitored in seen:
         assert {int(scene_folds[scene]) for scene in fitted} == {1, 2, 3} - {fold}
         assert {int(scene_folds[scene]) for scene in monitored} == {fold}
+
+
+def test_cases_at_obscured_or_untrusted_pixels_are_scored_as_no(monkeypatch):
+    fit, cases = synthetic()
+    in_first_scene = cases["scene_time"] == fit.times[0]
+    unusable, others = cases[in_first_scene], cases[~in_first_scene & (cases["night_fold"] == 1)]
+    fit.usable[0, unusable["iy"], unusable["ix"]] = False
+    monkeypatch.setattr(
+        "fogseg.unet_cv.train_model", lambda *args, **kwargs: torch.nn.Conv2d(len(INPUT_CHANNELS), 1, 1)
+    )
+    monkeypatch.setattr(
+        "fogseg.unet_cv.predict_probabilities",
+        lambda model, inputs, device, batch_size: np.full((len(inputs), HEIGHT, WIDTH), 0.95, "float32"),
+    )
+    table, probabilities = run(fit, cases)
+    p = probabilities["1 soft"].set_index("case")["p"]
+    assert p[unusable["case"]].isna().all()
+    assert (p[others["case"]] > 0.9).all()
+    fold_1 = table[table["fold"].astype(str) == "1"].iloc[0]
+    assert fold_1["hits"] == (others["truth_fls"] == 1).sum()
+    assert fold_1["false_alarms"] == (others["truth_fls"] == 0).sum()
+    assert fold_1["misses"] == (unusable["truth_fls"] == 1).sum()
+    assert fold_1["correct_negatives"] == (unusable["truth_fls"] == 0).sum()
 
 
 def test_cases_are_scored_only_in_their_night_fold():

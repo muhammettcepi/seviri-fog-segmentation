@@ -1,4 +1,4 @@
-"""The held-out comparison of the U-Net with the teacher and with the rule, on the cases of the held-out set."""
+"""The held-out comparison of the U-Net with the teacher and with the rule, on the held-out cases."""
 
 from __future__ import annotations
 

@@ -69,7 +69,7 @@ def fit_normalization(raw: np.ndarray, trusted: np.ndarray) -> Normalization:
 
 
 def model_inputs(raw: np.ndarray, trusted: np.ndarray, normalization: Normalization) -> np.ndarray:
-    """Standardized `(n, 14, y, x)` float32 channels, 0 where untrusted or not finite, then the trusted flag."""
+    """Standardized `(n, 14, y, x)` float32 channels, 0 if untrusted or not finite, then the trusted flag."""
     inputs = np.zeros((raw.shape[0], raw.shape[1] + 1, *raw.shape[2:]), dtype="float32")
     mean, std = normalization.mean.astype("float32"), normalization.std.astype("float32")
     for channel in range(raw.shape[1]):
@@ -116,16 +116,21 @@ def scene_night_folds(
     return fold_of(np.datetime_as_string(blocks, unit="D"), splits, NIGHT_BLOCK)
 
 
-def point_targets(cases: pd.DataFrame, times: np.ndarray) -> pd.DataFrame:
-    """The cases in a scene of `times` with a yes or no truth: scene position, pixel and 1 / 0 truth."""
+def point_targets(cases: pd.DataFrame, times: np.ndarray, usable: np.ndarray) -> pd.DataFrame:
+    """The cases in a scene of `times` with a yes or no truth at a `usable` pixel of their scene.
+
+    `usable` is `(scene, y, x)`, trusted and not obscured: the pixels the product decides. The columns are
+    the scene position, the pixel and the 1 / 0 truth.
+    """
     scene = pd.Index(times).get_indexer(pd.to_datetime(cases["scene_time"]))
     truth = cases["truth_fls"].to_numpy()
-    keep = (scene >= 0) & np.isin(truth, (TRUTH_YES, TRUTH_NO))
+    iy, ix = cases["iy"].to_numpy(), cases["ix"].to_numpy()
+    keep = (scene >= 0) & np.isin(truth, (TRUTH_YES, TRUTH_NO)) & usable[scene, iy, ix]
     return pd.DataFrame(
         {
             "scene": scene[keep],
-            "iy": cases["iy"].to_numpy()[keep],
-            "ix": cases["ix"].to_numpy()[keep],
+            "iy": iy[keep],
+            "ix": ix[keep],
             "truth": (truth[keep] == TRUTH_YES).astype("float32"),
         }
     )

@@ -139,12 +139,29 @@ def test_point_targets():
             "truth_fls": [TRUTH_YES, TRUTH_NO, -1, TRUTH_YES, TRUTH_YES],
         }
     )
-    points = point_targets(cases, times)
+    points = point_targets(cases, times, np.ones((2, 6, 11), dtype=bool))
     assert points.columns.tolist() == ["scene", "iy", "ix", "truth"]
     assert points["scene"].tolist() == [1, 0, 1]
     assert points["iy"].tolist() == [1, 2, 4]
     assert points["truth"].tolist() == [1.0, 0.0, 1.0]
     assert points["truth"].dtype == np.float32
+
+
+def test_point_targets_keep_only_trusted_pixels_that_are_not_obscured():
+    times = np.array(["2023-11-20T21:00", "2023-11-21T00:00"], dtype="datetime64[ns]")
+    cases = pd.DataFrame(
+        {
+            "scene_time": [times[0], times[1], times[1]],
+            "iy": [0, 1, 2],
+            "ix": [0, 1, 2],
+            "truth_fls": [TRUTH_YES, TRUTH_NO, TRUTH_YES],
+        }
+    )
+    trusted, obscured = np.ones((2, 3, 3), dtype=bool), np.zeros((2, 3, 3), dtype=bool)
+    trusted[0, 0, 0] = False
+    obscured[1, 1, 1] = True
+    points = point_targets(cases, times, trusted & ~obscured)
+    assert points[["scene", "iy", "ix"]].values.tolist() == [[1, 2, 2]]
 
 
 def test_read_targets_from_a_label_store():

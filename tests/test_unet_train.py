@@ -11,6 +11,7 @@ from fogseg.unet_data import INPUT_CHANNELS, Normalization
 from fogseg.unet_train import (
     UNetModel,
     UNetParams,
+    batch_points,
     load_unet,
     masked_bce,
     network,
@@ -108,6 +109,23 @@ def test_point_bce_reads_its_own_pixel():
     batch, iy, ix = torch.tensor([1]), torch.tensor([2]), torch.tensor([3])
     assert point_bce(logits, batch, iy, ix, torch.tensor([1.0])) < 0.01
     assert point_bce(logits, batch, iy, ix, torch.tensor([0.0])) > 5
+
+
+def test_batch_points_map_each_scene_to_its_position_in_the_shuffled_batch():
+    points = pd.DataFrame(
+        {
+            "scene": [0, 2, 5, 5, 3],
+            "iy": [1, 2, 3, 4, 5],
+            "ix": [6, 7, 8, 9, 0],
+            "truth": np.array([1, 0, 1, 0, 1], dtype="float32"),
+        }
+    )
+    batch, iy, ix, truth = batch_points(points, np.array([5, 0, 3]), CPU)
+    assert batch.tolist() == [1, 0, 0, 2]
+    assert iy.tolist() == [1, 3, 4, 5]
+    assert ix.tolist() == [6, 8, 9, 0]
+    assert truth.tolist() == [1.0, 1.0, 0.0, 1.0]
+    assert batch.dtype == torch.long and truth.dtype == torch.float32
 
 
 def test_point_bce_without_points_is_zero():

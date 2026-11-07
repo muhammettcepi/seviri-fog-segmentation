@@ -33,11 +33,15 @@ def case_probabilities(probability: np.ndarray, times: np.ndarray, cases: pd.Dat
 
 @dataclasses.dataclass(frozen=True)
 class FitData:
-    """The scenes of the tuning season: inputs, targets by name, night fold of each scene and station points."""
+    """The scenes of the tuning season: inputs, targets by name, usable pixels, night folds, station points.
+
+    `usable` marks the trusted pixels that are not obscured, the only ones the product labels fog or no fog.
+    """
 
     times: np.ndarray
     inputs: np.ndarray
     targets: dict[str, tuple[np.ndarray, np.ndarray]]
+    usable: np.ndarray
     night_folds: np.ndarray
     points: pd.DataFrame
 
@@ -50,6 +54,7 @@ class FitData:
             self.times[scenes],
             self.inputs[scenes],
             {name: (target[scenes], weight[scenes]) for name, (target, weight) in self.targets.items()},
+            self.usable[scenes],
             self.night_folds[scenes],
             points,
         )
@@ -90,6 +95,7 @@ def cross_validate_fold(
             ),
         )
         probability = predict_probabilities(model, test.inputs, device, params.batch_size)
+    probability[~test.usable] = np.nan
     p = case_probabilities(probability, test.times, in_fold)
     return pd.DataFrame({"fold": fold, "case": in_fold["case"].to_numpy(), "p": p})
 
@@ -108,6 +114,8 @@ def cross_validate_unet(
     Each night fold of the selection season in turn is the test part; the U-Net is fitted on the scenes of
     the other selection folds only, never on those of the held-out fold. The probabilities are those at the
     selection `cases` of the test fold, which are scored in the teacher's full-count way at the pooled p*.
+    They are NaN where the pixel is not usable, which the full count scores as no fog, as it scores the
+    product's obscured and ignored labels.
     """
     values = grid_values(params.probability_grid)
     folds = []

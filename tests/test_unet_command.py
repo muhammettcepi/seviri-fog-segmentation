@@ -156,3 +156,5 @@ def test_train_fits_only_scenes_of_the_selection_night_folds(tmp_path, mlflow_ur
     assert not np.isin(fit.times, everything[held_out_night]).any()
     assert set(fit.night_folds) == {1, 2}
     assert len(fit.times) == (~held_out_night).sum()
+    assert fit.usable.shape == fit.targets["soft"][0].shape and fit.usable.dtype == bool
+    assert fit.usable[fit.points["scene"], fit.points["iy"], fit.points["ix"]].all()

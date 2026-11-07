@@ -141,6 +141,15 @@ def test_evaluate_refuses_predictions_of_another_model(tmp_path, mlflow_uri):
     assert not (tmp_path / "stations" / "unet_held_out.csv").exists()
 
 
+def test_evaluate_refuses_a_split_file_changed_since_training(tmp_path, mlflow_uri):
+    cfg = prepare(tmp_path, mlflow_uri)
+    split_path = tmp_path / "stations" / "splits_2023-24.csv"
+    split_path.write_text(split_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"splits_2023-24\.csv.*fogseg train"):
+        cmd_evaluate(evaluate_args(cfg))
+    assert not (tmp_path / "stations" / "unet_held_out.csv").exists()
+
+
 def test_evaluate_warns_when_the_teacher_row_differs_from_phase_c(tmp_path, mlflow_uri, caplog):
     cfg = prepare(tmp_path, mlflow_uri)
     counts = {"hits": 999, "misses": 999, "false_alarms": 999, "correct_negatives": 999}

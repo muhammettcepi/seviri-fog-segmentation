@@ -167,7 +167,7 @@ flowchart LR
 | Why visible station fog is missed, on the selection cases | `fogseg diagnose` ([`diagnosis.py`](src/fogseg/diagnosis.py)) |
 | Label-rule variants cross-validated at matched FAR, then the winner against the configured rule on the held-out cases, once | `fogseg experiment --phase B` ([`experiment.py`](src/fogseg/experiment.py)) |
 | A per-pixel teacher trained on the station truth, cross-validated, then scored once on the held-out cases; an optional local correction | `fogseg teacher` ([`teacher.py`](src/fogseg/teacher.py), [`features.py`](src/fogseg/features.py)) |
-| Dense teacher labels `labels_teacher.zarr` (`label` and `fog_probability`), a benchmark store | `fogseg label --mode teacher` ([`teacher_labels.py`](src/fogseg/teacher_labels.py)) |
+| Dense teacher labels `labels_teacher.zarr` (`label` and `fog_probability`), the labels the U-Net trains on (`labels.mode: teacher`) | `fogseg label --mode teacher` ([`teacher_labels.py`](src/fogseg/teacher_labels.py)) |
 | The protocol, the re-scored baseline, the miss diagnosis and the phase B and C results | [`docs/notes/better_labels.md`](docs/notes/better_labels.md) |
 | The station check, the tuning decisions and where the labels fail | [`docs/notes/station_validation.md`](docs/notes/station_validation.md) |
 | All settings (region, channels, seasons, night slots, label thresholds, paths) | [`configs/default.yaml`](configs/default.yaml) |
@@ -206,7 +206,7 @@ fogseg diagnose                       # why visible fog is missed, selection cas
 fogseg experiment --phase B           # label variants on the selection cases; add --held-out once for the winner
 fogseg teacher                        # the station-trained teacher, cross-validated on the selection cases
 fogseg teacher --held-out             # the teacher against the rule on the held-out cases, once
-fogseg label --mode teacher           # labels_teacher.zarr, a benchmark store (labels.mode stays fixed)
+fogseg label --mode teacher           # labels_teacher.zarr, the U-Net's training labels (labels.mode: teacher)
 fogseg tune                           # tuning grids on the selection cases of the training season
 
 pip install -e ".[dev]" && pytest     # run the tests

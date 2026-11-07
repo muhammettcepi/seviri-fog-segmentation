@@ -61,7 +61,7 @@ def scored_cases(cases: pd.DataFrame) -> pd.DataFrame:
 
 
 def check_rule_mode(mode: str, command: str) -> None:
-    """Refuse a dynamic `labels.mode` for a command that studies the fixed rule, whatever else is configured."""
+    """Refuse a dynamic `labels.mode` for a command that studies the fixed rule, whatever else is set."""
     if mode not in (RULE_MODE, "teacher"):
         raise ValueError(
             f"{command} studies the fixed rule and needs labels.mode fixed or teacher, not {mode!r}"
