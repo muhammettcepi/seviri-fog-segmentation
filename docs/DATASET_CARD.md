@@ -96,11 +96,11 @@ The four solar channels (VIS006, VIS008, IR_016, HRV) are left out: they carry n
 ## Labels
 
 Weak labels for fog and low stratus, made by `fogseg label` from the dataset above. There is one
-Zarr store per mode, next to the dataset: `labels_fixed.zarr` and `labels_dynamic.zarr`, and the benchmark
-`labels_teacher.zarr` ([below](#teacher-labels-benchmark)) (folder
+Zarr store per mode, next to the dataset: `labels_fixed.zarr` and `labels_dynamic.zarr` from the rule, and
+`labels_teacher.zarr` from the station-trained teacher ([below](#teacher-labels-the-training-labels)) (folder
 `labels.output_dir` in [`configs/default.yaml`](../configs/default.yaml)). They have the same
-`time`, `y` and `x` as the dataset, so `xr.merge([dataset, labels])` lines them up. The default mode
-is `fixed`.
+`time`, `y` and `x` as the dataset, so `xr.merge([dataset, labels])` lines them up. The configured mode
+is `teacher`; the rule's stages (`diagnose`, `experiment`, `teacher`) always study `fixed`.
 
 | Value | Meaning |
 |---|---|
@@ -236,10 +236,11 @@ The `labels` section also has options for other versions of the rule: `texture` 
 combination (no smoothness test, the emissivity index at 0.80, a 0.5 K relax) gained 0.04 POD at a lower FAR on the
 held-out cases, but the 95 % interval of the gain reached below zero, so it did not replace the default.
 
-### Teacher labels (benchmark)
+### Teacher labels (the training labels)
 
 `fogseg label --mode teacher` writes a third store, `labels_teacher.zarr`, with a per-pixel classifier trained on the
-station truth instead of a rule. It is a **benchmark store, not the configured labels**: `labels.mode` stays `fixed`.
+station truth instead of a rule. It was written as a benchmark; the owner then chose it as the **training labels of the
+U-Net**, so `labels.mode` is now `teacher`.
 The store has `label`, with the same values as above, and one more variable:
 
 | Variable | Dimensions | Content |
@@ -257,7 +258,7 @@ brightness temperatures, their differences, texture, geometry, terrain, time and
 store was not built), trained on the visible station cases of the selection nights and stations of the 2023-24 season
 and calibrated with isotonic regression; p* is where the out-of-fold FAR is 0.28. On the held-out nights and stations
 (full count) it has POD 0.769 at FAR 0.266, against 0.433 and 0.255 for the fixed 4.0 K rule. It was not kept as the
-default because its FAR is 0.011 higher, which the pre-registered keep rule does not allow; the owner may still switch.
+default because its FAR is 0.011 higher, which the pre-registered keep rule does not allow; the owner then switched.
 On stations it has not seen, POD is 0.722 against the rule's 0.366, so the gain is not only a learned fog rate per
 location. The geometry and terrain features can learn such rates, so a model scored on stations that fed this teacher
 would not be a clean test. Details are in [`docs/notes/better_labels.md`](notes/better_labels.md#phase-c-station-trained-teacher).
@@ -266,10 +267,28 @@ Share of all pixels, 608 scenes:
 
 | Store | 0 | 1 | 2 | 255 | Fog among decided |
 |---|---|---|---|---|---|
-| `labels_fixed` (the rule, configured) | 0.301 | 0.151 | 0.394 | 0.154 | 0.334 |
-| `labels_teacher` (benchmark) | 0.279 | 0.215 | 0.394 | 0.112 | 0.436 |
+| `labels_fixed` (the rule) | 0.301 | 0.151 | 0.394 | 0.154 | 0.334 |
+| `labels_teacher` (configured, the U-Net's training labels) | 0.279 | 0.215 | 0.394 | 0.112 | 0.436 |
 
 7.9 % of all pixels are in the teacher's ignore band. The obscured share is the same by construction.
+
+### U-Net predictions
+
+`fogseg predict` writes `predictions_unet.zarr` (path `unet.predictions_path`) in the layout of the teacher store:
+`label` and `fog_probability`, as above, plus `fog_fraction`, `ignore_fraction` and `obscured_fraction`. It holds the
+304 scenes of the training season only; the test season needs `--final`. `label` is `1` where the U-Net's p is at or
+above p* = 0.40, `0` below, `255` at untrusted pixels and `2` where the rule says obscured. There is no ignore band. The
+store attributes hold the setting, p*, the model path and its sha256, the torch version and the label options. `fogseg
+evaluate` refuses a store that was not made by the current model file. The model, its training and its scores are in
+[`docs/notes/unet.md`](notes/unet.md).
+
+Share of all pixels, the 304 scenes of 2023-24:
+
+| Store | 0 | 1 | 2 | 255 | Fog among decided |
+|---|---|---|---|---|---|
+| `labels_fixed` | 0.285 | 0.105 | 0.464 | 0.146 | 0.270 |
+| `labels_teacher` | 0.260 | 0.172 | 0.464 | 0.105 | 0.398 |
+| `predictions_unet` | 0.300 | 0.202 | 0.464 | 0.034 | 0.402 |
 
 ### Limitations
 
@@ -339,4 +358,7 @@ fogseg diagnose              # why visible fog is missed, selection cases only
 fogseg experiment --phase B  # label variants, cross-validated on the selection cases
 fogseg teacher               # phase C: the station-trained model, processed/teacher.joblib
 fogseg label --mode teacher  # labels_teacher.zarr, ~5 min
+fogseg train                 # the U-Net, processed/unet.pt (needs pip install -e ".[model]")
+fogseg predict               # predictions_unet.zarr, training season
+fogseg evaluate              # the held-out comparison, once
 ```
