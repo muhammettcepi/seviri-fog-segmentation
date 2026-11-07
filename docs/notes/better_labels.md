@@ -285,7 +285,7 @@ winner is shown for reference (it was not kept).
 | Labels | Part | POD | FAR | CSI | Cases |
 |---|---|---|---|---|---|
 | Rule, fixed 4.0 K (phase A baseline) | held-out | 0.433 | 0.255 | 0.377 | 27,011 |
-| Phase B winner (not kept) | held-out | 0.470 | 0.242 | – | 27,011 |
+| Phase B winner (not kept) | held-out | 0.470 | 0.242 | 0.41 | 27,011 |
 | **Teacher** | **held-out** | **0.769** | **0.266** | **0.601** | 27,011 |
 | Teacher | unseen nights | 0.808 | 0.286 | 0.611 | 9,480 |
 | Teacher | unseen stations | 0.722 | 0.250 | 0.582 | 14,603 |
