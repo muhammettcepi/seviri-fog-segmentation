@@ -85,6 +85,8 @@ def check_model_matches(model: UNetModel, data: xr.Dataset, model_path: Path) ->
     """The model must have been trained on this build of the dataset."""
     trained_on = model.label_attrs.get("source_created", "unknown")
     created = data.attrs.get("created", "unknown")
+    if trained_on == created == "unknown":
+        log.warning("Neither the model nor the dataset records a creation time; the match is not checked")
     if trained_on != created:
         raise ValueError(
             f"The model {model_path} was trained on the dataset created {trained_on}, but the dataset was "

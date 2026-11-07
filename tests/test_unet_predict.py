@@ -27,9 +27,14 @@ CPU = torch.device("cpu")
 BASE_CHANNELS, DEPTH = 4, 2
 
 
-def move_last_night_to_the_test_season(path: Path) -> None:
+def prepare_dataset(path: Path) -> None:
+    """Move the last night to the test season; add a NaN pixel, a twilight pixel and a cold pixel."""
     with xr.open_zarr(path, consolidated=False) as store:
         data = store.load()
+    channel = list(data["channel"].values).index("IR_108")
+    data["bt"][0, channel, 0, 0] = np.nan
+    data["sza"][1, 1, 1] = 90.0
+    data["bt"][2, channel, 3, 3] = 250.0
     times = data["time"].values.copy()
     times[-2:] += np.timedelta64(366, "D")
     variable_length_strings(data.assign_coords(time=times)).to_zarr(
@@ -60,7 +65,7 @@ def predict_config(tmp_path: Path, p_star: float = 0.5, source_created: str = "u
     """A tiny season and a model with fresh weights; the third night is in the test season."""
     cfg = teacher_config(tmp_path)
     dataset_path = Path(cfg["data"]["processed_path"])
-    move_last_night_to_the_test_season(dataset_path)
+    prepare_dataset(dataset_path)
     cfg["unet"] = {
         "model_path": str(tmp_path / "processed" / "unet.pt"),
         "predictions_path": str(tmp_path / "processed" / "predictions_unet.zarr"),
@@ -151,9 +156,22 @@ def test_labels_follow_the_probabilities_of_the_store(tmp_path):
     assert np.array_equal(probability[defined], np.rint(p[defined] * 250))
     assert np.array_equal(label[defined], unet_labels(probability[defined] / 250, False, middle / 250))
     assert {FOG, 0} <= set(label[defined].tolist())
-    assert (label[obscured] == OBSCURED).all() and (probability[obscured] == 255).all()
     untrusted = np.isnan(p) & ~obscured
+    assert obscured.any() and untrusted.any() and np.isnan(p[0, 0, 0])
+    assert (label[obscured] == OBSCURED).all() and (probability[obscured] == 255).all()
     assert (label[untrusted] == IGNORE).all() and (probability[untrusted] == 255).all()
+    assert label[1, 1, 1] == IGNORE and label[0, 0, 0] == IGNORE
+
+
+def test_an_obscured_pixel_stays_obscured_above_the_threshold(tmp_path):
+    cfg = predict_config(tmp_path)
+    p, obscured, _ = season_inputs(cfg, 0.5)
+    assert obscured.any()
+    save_model(cfg, float(p[obscured].min()))
+    with run_predict(cfg, overwrite=True) as store:
+        label, probability = store["label"].values, store["fog_probability"].values
+    assert (label[obscured] == OBSCURED).all() and (probability[obscured] == 255).all()
+    assert (label[~obscured & ~np.isnan(p)] == FOG).any()
 
 
 def test_only_the_season_is_written(tmp_path):
