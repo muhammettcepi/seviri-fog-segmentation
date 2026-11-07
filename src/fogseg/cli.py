@@ -954,6 +954,126 @@ def cmd_predict(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_evaluate(args: argparse.Namespace) -> None:
+    import json
+
+    import pandas as pd
+    import xarray as xr
+
+    from fogseg.experiment import check_split, experiment_cases
+    from fogseg.label_store import check_labels_match, label_store_path
+    from fogseg.teacher import file_sha256
+    from fogseg.tracking import MlflowTracker
+    from fogseg.unet_eval import (
+        COMPARED_SCORES,
+        NOTE,
+        comparison,
+        differing_sources,
+        held_out_table,
+        labels_at_cases,
+    )
+    from fogseg.unet_train import UNetParams
+    from fogseg.validation import season_start
+
+    cfg = load_config(args.config)
+    stations_cfg = cfg["stations"]
+    season = args.season or stations_cfg["tune_season"]
+    require_tune_season(stations_cfg, season, "scored on the held-out set")
+
+    data_dir = Path(stations_cfg["data_dir"])
+    table_path, record_path = unet_held_out_paths(data_dir)
+    for path in (table_path, record_path):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; the held-out set is opened once for the U-Net")
+    unet_params = UNetParams.from_config(cfg["unet"])
+    model_path, predictions_path = Path(unet_params.model_path), Path(unet_params.predictions_path)
+    config_path = data_dir / "unet_config.json"
+    for path in (model_path, config_path):
+        if not path.exists():
+            raise FileNotFoundError(f"{path} not found; run `fogseg train` first")
+    if not predictions_path.exists():
+        raise FileNotFoundError(f"{predictions_path} not found; run `fogseg predict` first")
+    teacher_path = label_store_path(Path(cfg["labels"]["output_dir"]), "teacher")
+    if not teacher_path.exists():
+        raise FileNotFoundError(f"{teacher_path} not found; run `fogseg label --mode teacher` first")
+    record = json.loads(config_path.read_text(encoding="utf-8"))
+
+    selection, held_out = experiment_cases(cfg, season)
+    n_folds = stations_cfg["n_folds"]
+    check_split(selection, held_out, n_folds)
+    if "label" not in held_out:
+        raise ValueError("The case table has no rule label; run `fogseg validate` again")
+
+    model_sha256 = file_sha256(model_path)
+    with (
+        xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
+        xr.open_zarr(teacher_path, consolidated=False) as teacher,
+        xr.open_zarr(predictions_path, consolidated=False) as predictions,
+    ):
+        check_labels_match(data, teacher)
+        if predictions.attrs.get("unet_model_sha256") != model_sha256:
+            raise ValueError(
+                f"The predictions {predictions_path} are not those of the model {model_path}; "
+                "run `fogseg predict --overwrite`"
+            )
+        if predictions.attrs.get("source_created") != data.attrs.get("created", "unknown"):
+            raise ValueError(
+                f"The predictions {predictions_path} are of another dataset; run `fogseg predict --overwrite`"
+            )
+        sources = {
+            "rule": held_out["label"].to_numpy().astype("uint8"),
+            "teacher": labels_at_cases(teacher, held_out),
+            "unet": labels_at_cases(predictions, held_out),
+        }
+
+    table = held_out_table(held_out, sources, n_folds)
+    start = season_start(cfg, season)
+    comparisons = {
+        f"unet_vs_{reference}": comparison(held_out, sources, "unet", reference, stations_cfg, start)
+        for reference in ("teacher", "rule")
+    }
+    phase_c_path = data_dir / "teacher_held_out.csv"
+    if phase_c_path.exists():
+        for name in differing_sources(table, pd.read_csv(phase_c_path)):
+            log.warning("The %s counts differ from those of %s", name, phase_c_path)
+
+    result = {
+        "comparisons": comparisons,
+        "p_star": record["p_star"],
+        "setting": record["winner"],
+        "model_sha256": model_sha256,
+        "note": NOTE,
+    }
+    write_atomically(table_path, table.to_csv(index=False))
+    write_atomically(record_path, json.dumps(result, indent=2))
+    for name, values in comparisons.items():
+        log.info(
+            "Held-out, %s: POD gain %+.3f (95%% interval %+.3f to %+.3f); "
+            "FAR %.3f against %.3f (difference %+.3f to %+.3f)",
+            name,
+            values["pod_gain"],
+            values["pod_gain_low"],
+            values["pod_gain_high"],
+            values["far_candidate"],
+            values["far_reference"],
+            values["far_difference_low"],
+            values["far_difference_high"],
+        )
+
+    tracker = MlflowTracker(unet_params.tracking_uri, Path(unet_params.artifact_dir), unet_params.experiment)
+    whole = table[table["part"] == "held_out"].set_index("source")
+    metrics = {
+        f"held_out_{source}_{score}": float(whole.loc[source, score])
+        for source in whole.index
+        for score in COMPARED_SCORES
+    }
+    for name, values in comparisons.items():
+        metrics |= {f"{name}_{key}": value for key, value in values.items()}
+    with tracker.resume(record["final_run_id"]):
+        tracker.metrics(metrics)
+    log.info("Wrote %s and %s", table_path, record_path)
+
+
 def cmd_tune(args: argparse.Namespace) -> None:
     import dataclasses
 
@@ -1282,6 +1402,13 @@ def main() -> None:
     predict.add_argument("--final", action="store_true", help="allow the test season")
     predict.add_argument("--overwrite", action="store_true", help="replace the prediction store if it exists")
     predict.set_defaults(func=cmd_predict)
+
+    evaluate = sub.add_parser(
+        "evaluate", help="score the U-Net against the teacher and the rule on the held-out cases, once"
+    )
+    evaluate.add_argument("--config", default="configs/default.yaml")
+    evaluate.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
+    evaluate.set_defaults(func=cmd_evaluate)
 
     tune = sub.add_parser(
         "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"
