@@ -93,6 +93,9 @@ The work on better labels before a model is trained is in
 [`docs/notes/better_labels.md`](docs/notes/better_labels.md): a held-out set of nights and stations, a full count in
 which an ignored pixel under a fog report is a miss (POD 0.43 at FAR 0.25 on the held-out cases for the 4.0 K
 labels), and why the visible fog is missed (half of it has a BTD where clear ground sits, mostly broken decks).
+A teacher trained on the station truth reaches POD 0.769 at FAR 0.266 on the held-out cases. It was not kept as the
+labels, because its FAR is 0.011 higher than the rule's, which the pre-registered keep rule does not allow; its labels
+are written as a benchmark store.
 
 ## How the parts fit together
 
@@ -133,6 +136,13 @@ flowchart LR
     folds --> experiment["fogseg experiment --phase B"]
     data --> experiment
     experiment --> expB["experiment_B.csv, experiment_B_held_out.csv"]
+    folds --> teacher["fogseg teacher"]
+    data --> teacher
+    demstore --> teacher
+    teacher --> model["teacher.joblib"]
+    model --> labelteacher["fogseg label --mode teacher"]
+    data --> labelteacher
+    labelteacher --> teacherstore["labels_teacher.zarr<br/>label, fog_probability"]
 ```
 
 ## What exists so far
@@ -156,7 +166,9 @@ flowchart LR
 | ERA5 2 m temperature, skin temperature, dewpoint and snow depth at each scene, on the grid | `fogseg era5` ([`era5.py`](src/fogseg/era5.py)) |
 | Why visible station fog is missed, on the selection cases | `fogseg diagnose` ([`diagnosis.py`](src/fogseg/diagnosis.py)) |
 | Label-rule variants cross-validated at matched FAR, then the winner against the configured rule on the held-out cases, once | `fogseg experiment --phase B` ([`experiment.py`](src/fogseg/experiment.py)) |
-| The protocol, the re-scored baseline and the miss diagnosis | [`docs/notes/better_labels.md`](docs/notes/better_labels.md) |
+| A per-pixel teacher trained on the station truth, cross-validated, then scored once on the held-out cases; an optional local correction | `fogseg teacher` ([`teacher.py`](src/fogseg/teacher.py), [`features.py`](src/fogseg/features.py)) |
+| Dense teacher labels `labels_teacher.zarr` (`label` and `fog_probability`), a benchmark store | `fogseg label --mode teacher` ([`teacher_labels.py`](src/fogseg/teacher_labels.py)) |
+| The protocol, the re-scored baseline, the miss diagnosis and the phase B and C results | [`docs/notes/better_labels.md`](docs/notes/better_labels.md) |
 | The station check, the tuning decisions and where the labels fail | [`docs/notes/station_validation.md`](docs/notes/station_validation.md) |
 | All settings (region, channels, seasons, night slots, label thresholds, paths) | [`configs/default.yaml`](configs/default.yaml) |
 | Tests on tiny synthetic scenes (no data or credentials needed) | `pytest` ([`tests/`](tests/)) |
@@ -192,6 +204,9 @@ fogseg split                          # held-out nights and stations, written on
 fogseg validate --season 2023-24      # score labels.mode against the stations
 fogseg diagnose                       # why visible fog is missed, selection cases only
 fogseg experiment --phase B           # label variants on the selection cases; add --held-out once for the winner
+fogseg teacher                        # the station-trained teacher, cross-validated on the selection cases
+fogseg teacher --held-out             # the teacher against the rule on the held-out cases, once
+fogseg label --mode teacher           # labels_teacher.zarr, a benchmark store (labels.mode stays fixed)
 fogseg tune                           # tuning grids on the selection cases of the training season
 
 pip install -e ".[dev]" && pytest     # run the tests
