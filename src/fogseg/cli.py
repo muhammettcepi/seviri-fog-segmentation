@@ -932,6 +932,28 @@ def cmd_train(args: argparse.Namespace) -> None:
     log.info("Wrote %s, %s, %s and %s", cv_path, oof_path, config_path, unet_params.model_path)
 
 
+def cmd_predict(args: argparse.Namespace) -> None:
+    import xarray as xr
+
+    from fogseg.unet_predict import predict_dataset
+    from fogseg.unet_train import UNetParams, choose_device
+    from fogseg.validation import check_season_allowed
+
+    cfg = load_config(args.config)
+    season = args.season or cfg["stations"]["tune_season"]
+    check_season_allowed(cfg, season, args.final)
+    unet_params = UNetParams.from_config(cfg["unet"])
+    out_path = Path(unet_params.predictions_path)
+    device = choose_device(unet_params.device)
+    dataset_path = Path(cfg["data"]["processed_path"])
+    n_scenes = predict_dataset(dataset_path, out_path, cfg, season, args.overwrite, device)
+    with xr.open_zarr(out_path, consolidated=False) as predictions:
+        fog_fraction = float(predictions["fog_fraction"].mean())
+    log.info(
+        "Predicted %d scenes of %s, mean fog fraction %.4f: %s", n_scenes, season, fog_fraction, out_path
+    )
+
+
 def cmd_tune(args: argparse.Namespace) -> None:
     import dataclasses
 
@@ -1251,6 +1273,15 @@ def main() -> None:
     train.add_argument("--config", default="configs/default.yaml")
     train.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
     train.set_defaults(func=cmd_train)
+
+    predict = sub.add_parser(
+        "predict", help="write the U-Net's fog probability and label of every pixel of a season's scenes"
+    )
+    predict.add_argument("--config", default="configs/default.yaml")
+    predict.add_argument("--season", help="default: stations.tune_season of the config")
+    predict.add_argument("--final", action="store_true", help="allow the test season")
+    predict.add_argument("--overwrite", action="store_true", help="replace the prediction store if it exists")
+    predict.set_defaults(func=cmd_predict)
 
     tune = sub.add_parser(
         "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"
