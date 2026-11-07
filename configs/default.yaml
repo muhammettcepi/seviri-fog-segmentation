@@ -33,9 +33,9 @@ time:
 # Fog / low-stratus labels (0 not fog, 1 fog, 255 ignore).
 # Thresholds measured on the 2023-24 training season; evidence and reasons in docs/notes/btd_exploration.md.
 labels:
-  # fixed | dynamic; fixed 4.0 K scores best against the 2023-24 stations (Heidke and Peirce skill),
-  # see docs/notes/station_validation.md
-  mode: fixed
+  # fixed | dynamic | teacher; teacher labels are the station-trained teacher of docs/notes/better_labels.md
+  # (phase C); diagnose, experiment and teacher always study the fixed rule
+  mode: teacher
   output_dir: "/mnt/d/fogseg-data/processed"
   figures_dir: "/mnt/d/fogseg-data/figures/inspect"
   night_min_sza: 95.0
@@ -114,3 +114,20 @@ teacher:
   idw_length_km: [25, 50, 100]
   feature_groups: [bt, differences, texture, geometry, terrain, time, rule]   # add era5 once `fogseg era5` has run
   probability_grid: [0.10, 0.90, 0.01]   # start, stop (included), step
+
+# U-Net trained on the dense teacher labels (`fogseg train`), tracked with MLflow
+unet:
+  model_path: "/mnt/d/fogseg-data/processed/unet.pt"
+  predictions_path: "/mnt/d/fogseg-data/processed/predictions_unet.zarr"
+  tracking_uri: "sqlite:////mnt/d/fogseg-data/mlflow/mlflow.db"
+  artifact_dir: "/mnt/d/fogseg-data/mlflow/artifacts"
+  experiment: "fogseg-unet"
+  base_channels: 16
+  depth: 4
+  epochs: 40
+  batch_size: 4
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  point_weights: [0.25, 1.0]
+  probability_grid: [0.10, 0.90, 0.01]
+  device: auto          # cuda if available, else cpu

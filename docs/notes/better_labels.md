@@ -337,6 +337,9 @@ is applied. Share of all pixels:
 
 ## What this means next
 
+The owner switched `labels.mode` to `teacher` on 2026-11-07; the rule stages (`diagnose`, `experiment`, `teacher`) keep
+studying the fixed rule.
+
 - The teacher raises the held-out POD from 0.433 to 0.769 at a FAR within noise of the rule's. Only the FAR clause of
   the keep rule stops it; waiving it is the owner's call.
 - ERA5 is still missing from the teacher. With the key, `fogseg era5` and a new `fogseg teacher` run would add its

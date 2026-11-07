@@ -7,9 +7,9 @@ a physics-based baseline (the 10.8 − 3.9 µm brightness temperature difference
 from it, a small U-Net trained on them, and an evaluation of both against independent station
 observations (METAR and SYNOP).
 
-> **Status: work in progress.** Data access, preprocessing, weak labels and their check against
-> station observations work. Next: better labels using the stations
-> ([`label_improvement_research.md`](docs/notes/label_improvement_research.md)), then the model.
+> **Status: work in progress.** Data access, preprocessing, weak labels, their check against
+> station observations, station-trained teacher labels and a U-Net trained on them work
+> ([`docs/notes/unet.md`](docs/notes/unet.md)). The test season 2024-25 has not been scored with the U-Net yet.
 
 ![Night Microphysics RGB, fog labels, BTD histogram and solar zenith angle for 7 November 2024, 05:00 UTC](docs/notes/figures/showcase_20241107T0500_dynamic.png)
 
@@ -46,9 +46,12 @@ the threshold to call). A pixel is fog if its BTD is above a threshold, its clou
 not thin cirrus and the top is smooth; small patches and the pixels within 0.5 K of the threshold (on
 either side) are ignored. Two modes exist:
 
-- `fixed` (the default): the threshold is 4.0 K for every scene.
+- `fixed`: the threshold is 4.0 K for every scene.
 - `dynamic`: the threshold is the scene's clear-ground peak plus 1.5 K, and 4.0 K when no peak can
   be found.
+
+A third mode, `teacher`, replaces the threshold with a classifier trained on the station truth; it is the
+configured mode and the U-Net's training labels ([below](#the-u-net)).
 
 A clean training-season example, with two humps in the histogram and the threshold between them, is
 [29 February 2024, 03:00 UTC](docs/notes/figures/check_20240229T0300_dynamic.png).
@@ -94,8 +97,28 @@ The work on better labels before a model is trained is in
 which an ignored pixel under a fog report is a miss (POD 0.43 at FAR 0.25 on the held-out cases for the 4.0 K
 labels), and why the visible fog is missed (half of it has a BTD where clear ground sits, mostly broken decks).
 A teacher trained on the station truth reaches POD 0.769 at FAR 0.266 on the held-out cases. It was not kept as the
-labels, because its FAR is 0.011 higher than the rule's, which the pre-registered keep rule does not allow; its labels
-are written as a benchmark store.
+labels, because its FAR is 0.011 higher than the rule's, which the pre-registered keep rule does not allow. The owner
+then chose its labels as the training labels of the U-Net (`labels.mode: teacher`).
+
+## The U-Net
+
+A small U-Net (depth 4, 16 channels at the top, 1.97 M weights) maps one night scene to a fog map. Its 14 input
+channels per pixel are the 8 IR brightness temperatures, three differences, terrain height, solar zenith angle and a
+trusted flag. It trains on the teacher labels of the 248 scenes in night folds 1–4 of 2023-24. Four losses were
+cross-validated over those folds. The winner adds the raw station truth of the training stations to the soft teacher
+target. Every run is tracked with MLflow. Held-out cases, full count:
+
+| Labels | POD | FAR | CSI |
+|---|---|---|---|
+| rule, fixed 4.0 K | 0.433 | 0.255 | 0.377 |
+| teacher store | 0.769 | 0.266 | 0.601 |
+| **U-Net** | **0.865** | **0.266** | **0.658** |
+| U-Net, both night and station unseen | 0.909 | 0.277 | 0.674 |
+
+Most of the lead over the teacher store is the teacher's ignore band, which the full count scores as a miss. Decided at
+every pixel, the teacher reaches 0.845 at FAR 0.302, so the U-Net is ahead by a little POD and less FAR. These
+held-out cases have now been looked at four times. The test season 2024-25 is still closed and is the clean test.
+Protocol, cross-validation, maps and caveats are in [`docs/notes/unet.md`](docs/notes/unet.md).
 
 ## How the parts fit together
 
@@ -143,6 +166,18 @@ flowchart LR
     model --> labelteacher["fogseg label --mode teacher"]
     data --> labelteacher
     labelteacher --> teacherstore["labels_teacher.zarr<br/>label, fog_probability"]
+    teacherstore --> train["fogseg train"]
+    data --> train
+    demstore --> train
+    folds --> train
+    train --> unet["unet.pt, unet_cv.csv<br/>MLflow runs"]
+    unet --> predict["fogseg predict"]
+    data --> predict
+    predict --> predstore["predictions_unet.zarr"]
+    predstore --> evaluate["fogseg evaluate"]
+    teacherstore --> evaluate
+    fixed --> evaluate
+    evaluate --> heldout["unet_held_out.csv / .json"]
 ```
 
 ## What exists so far
@@ -167,7 +202,11 @@ flowchart LR
 | Why visible station fog is missed, on the selection cases | `fogseg diagnose` ([`diagnosis.py`](src/fogseg/diagnosis.py)) |
 | Label-rule variants cross-validated at matched FAR, then the winner against the configured rule on the held-out cases, once | `fogseg experiment --phase B` ([`experiment.py`](src/fogseg/experiment.py)) |
 | A per-pixel teacher trained on the station truth, cross-validated, then scored once on the held-out cases; an optional local correction | `fogseg teacher` ([`teacher.py`](src/fogseg/teacher.py), [`features.py`](src/fogseg/features.py)) |
-| Dense teacher labels `labels_teacher.zarr` (`label` and `fog_probability`), a benchmark store | `fogseg label --mode teacher` ([`teacher_labels.py`](src/fogseg/teacher_labels.py)) |
+| Dense teacher labels `labels_teacher.zarr` (`label` and `fog_probability`), the labels the U-Net trains on (`labels.mode: teacher`) | `fogseg label --mode teacher` ([`teacher_labels.py`](src/fogseg/teacher_labels.py)) |
+| A U-Net on the teacher labels: four loss settings cross-validated over the night folds, then the winner fitted and saved, tracked with MLflow | `fogseg train` ([`unet.py`](src/fogseg/unet.py), [`unet_data.py`](src/fogseg/unet_data.py), [`unet_train.py`](src/fogseg/unet_train.py), [`unet_cv.py`](src/fogseg/unet_cv.py), [`tracking.py`](src/fogseg/tracking.py)) |
+| The U-Net's fog probability and label of every pixel, `predictions_unet.zarr` | `fogseg predict` ([`unet_predict.py`](src/fogseg/unet_predict.py)) |
+| The U-Net against the teacher and the rule on the held-out cases, once | `fogseg evaluate` ([`unet_eval.py`](src/fogseg/unet_eval.py)) |
+| The U-Net protocol, its cross-validation and held-out results | [`docs/notes/unet.md`](docs/notes/unet.md) |
 | The protocol, the re-scored baseline, the miss diagnosis and the phase B and C results | [`docs/notes/better_labels.md`](docs/notes/better_labels.md) |
 | The station check, the tuning decisions and where the labels fail | [`docs/notes/station_validation.md`](docs/notes/station_validation.md) |
 | All settings (region, channels, seasons, night slots, label thresholds, paths) | [`configs/default.yaml`](configs/default.yaml) |
@@ -192,7 +231,7 @@ fogseg fetch --dry-run                # how many scenes would be fetched
 fogseg fetch --workers 2              # download + crop all scenes (resumable)
 fogseg build                          # stack them into one Zarr store
 
-fogseg label                          # labels_<mode>.zarr; mode = labels.mode in the config (fixed)
+fogseg label --mode fixed             # labels_fixed.zarr, the 4.0 K rule; without --mode: labels.mode
 fogseg label --mode dynamic           # the dynamic-threshold version; --overwrite replaces a store
 fogseg select-scenes                  # write configs/check_scenes.yaml (uses labels.mode, or --labels); --overwrite replaces it
 fogseg inspect --time 2024-02-29T03:00 --labels dynamic   # one check figure, a PNG in labels.figures_dir
@@ -206,8 +245,14 @@ fogseg diagnose                       # why visible fog is missed, selection cas
 fogseg experiment --phase B           # label variants on the selection cases; add --held-out once for the winner
 fogseg teacher                        # the station-trained teacher, cross-validated on the selection cases
 fogseg teacher --held-out             # the teacher against the rule on the held-out cases, once
-fogseg label --mode teacher           # labels_teacher.zarr, a benchmark store (labels.mode stays fixed)
+fogseg label --mode teacher           # labels_teacher.zarr, the U-Net's training labels (labels.mode: teacher)
 fogseg tune                           # tuning grids on the selection cases of the training season
+
+# the U-Net needs torch and mlflow: pip install -e ".[model]" (with CUDA, install torch from pytorch.org first)
+fogseg train                          # 4 settings x 4 night folds, then the winner on all of them (~2 h on a GTX 1050 Ti)
+fogseg predict                        # predictions_unet.zarr for the training season; the test season needs --final
+fogseg evaluate                       # the U-Net, the teacher and the rule on the held-out cases, once
+mlflow ui --backend-store-uri sqlite:////mnt/d/fogseg-data/mlflow/mlflow.db   # the runs, losses and files
 
 pip install -e ".[dev]" && pytest     # run the tests
 ```

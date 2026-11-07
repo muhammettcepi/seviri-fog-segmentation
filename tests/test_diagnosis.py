@@ -378,16 +378,28 @@ def test_read_selection_cases_counts_a_metar_and_synop_pair_at_one_pixel_and_sce
     assert sorted(selection["station"]) == ["CLEAR", "HIT", "MISS"]
 
 
-def test_diagnose_refuses_labels_that_are_not_fixed_mode(tmp_path):
+def test_diagnose_refuses_dynamic_labels(tmp_path):
     args = diagnose_setup(tmp_path)
     validate_cases(args)
     cfg = load_config(args.config)
     cfg["labels"]["mode"] = "dynamic"
     args.config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="fixed 4.0 K"):
+    with pytest.raises(ValueError, match="fogseg diagnose.*fixed or teacher"):
         cmd_diagnose(args)
     assert not list((tmp_path / "stations").glob("diagnosis_*"))
+
+
+def test_diagnose_in_teacher_mode_reads_the_fixed_store_and_cases(tmp_path):
+    args = diagnose_setup(tmp_path)
+    validate_cases(args)
+    cfg = load_config(args.config)
+    cfg["labels"]["mode"] = "teacher"
+    args.config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    cmd_diagnose(args)
+
+    assert (tmp_path / "stations" / "diagnosis_2023-24.csv").exists()
 
 
 @pytest.mark.parametrize(

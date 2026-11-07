@@ -22,6 +22,7 @@ from fogseg.experiment import (
     PHASE_B_VARIANTS,
     KeepDecision,
     block_counts,
+    check_rule_mode,
     combined_variants,
     config_changes,
     cross_validate,
@@ -960,3 +961,21 @@ def test_experiment_cases_split_the_scored_cases_by_the_frozen_folds(tmp_path):
     assert selection["case"].tolist() == list(range(24)) and held_out["case"].tolist() == list(range(36))
     assert (held_out_part(selection, 5) == "selection").all()
     assert (held_out_part(held_out, 5) != "selection").all()
+
+
+def test_experiment_cases_read_the_rule_cases_in_teacher_mode(tmp_path):
+    cfg = experiment_config(tmp_path)
+    fixed_selection, fixed_held_out = experiment_cases(cfg, "2023-24")
+    cfg["labels"]["mode"] = "teacher"
+
+    selection, held_out = experiment_cases(cfg, "2023-24")
+
+    pd.testing.assert_frame_equal(selection, fixed_selection)
+    pd.testing.assert_frame_equal(held_out, fixed_held_out)
+
+
+def test_check_rule_mode_refuses_dynamic():
+    check_rule_mode("fixed", "fogseg teacher")
+    check_rule_mode("teacher", "fogseg teacher")
+    with pytest.raises(ValueError, match=r"fogseg teacher.*fixed or teacher"):
+        check_rule_mode("dynamic", "fogseg teacher")
