@@ -207,6 +207,7 @@ flowchart LR
 | The U-Net's fog probability and label of every pixel, `predictions_unet.zarr` | `fogseg predict` ([`unet_predict.py`](src/fogseg/unet_predict.py)) |
 | The U-Net against the teacher and the rule on the held-out cases, once | `fogseg evaluate` ([`unet_eval.py`](src/fogseg/unet_eval.py)) |
 | The U-Net protocol, its cross-validation and held-out results | [`docs/notes/unet.md`](docs/notes/unet.md) |
+| A wider U-Net on a Colab GPU, compared on the cross-validation | [`notebooks/03_train_unet_colab.ipynb`](notebooks/03_train_unet_colab.ipynb) |
 | The protocol, the re-scored baseline, the miss diagnosis and the phase B and C results | [`docs/notes/better_labels.md`](docs/notes/better_labels.md) |
 | The station check, the tuning decisions and where the labels fail | [`docs/notes/station_validation.md`](docs/notes/station_validation.md) |
 | All settings (region, channels, seasons, night slots, label thresholds, paths) | [`configs/default.yaml`](configs/default.yaml) |
@@ -259,6 +260,41 @@ pip install -e ".[dev]" && pytest     # run the tests
 
 Paths in `configs/default.yaml` point to `/mnt/d/...` (a Windows D: drive seen from WSL); change
 them for your machine. Satellite data is never committed to this repository.
+
+## Training a wider U-Net on Colab
+
+[`notebooks/03_train_unet_colab.ipynb`](notebooks/03_train_unet_colab.ipynb) runs `fogseg train` on a Colab GPU with
+`unet.base_channels` 32 or 48. It reads these files from `MyDrive/fogseg`:
+
+| On this machine | On Drive, in `MyDrive/fogseg` | Size |
+|---|---|---|
+| `processed/seviri_ceu.zarr` | `processed/seviri_ceu.zarr` | 803 MB, 229 files |
+| `processed/labels_teacher.zarr` | `processed/labels_teacher.zarr` | 36 MB, 487 files |
+| `processed/dem_ceu.zarr` | `processed/dem_ceu.zarr` | 1.5 MB, 17 files |
+| `stations/cases_fixed_2023-24.csv` | `stations/cases_fixed_2023-24.csv` | 41 MB |
+| `stations/splits_2023-24.csv` | `stations/splits_2023-24.csv` | 1.4 KB |
+
+Copy these five and nothing else from `stations`. The `cases_*_2024-25.csv` tables belong to the closed test season,
+and `fogseg train` refuses a folder with `unet_held_out.*`; the notebook stops if the Drive folder holds anything else.
+The two stores hold the imagery and labels of both seasons, because `fogseg train` checks them scene by scene, but it
+reads only the scenes of 2023-24.
+
+With Google Drive for desktop, in PowerShell (the folder is `G:\Drive'ım` on a Turkish system):
+
+```powershell
+$drive = "G:\My Drive\fogseg"
+foreach ($store in "seviri_ceu.zarr", "labels_teacher.zarr", "dem_ceu.zarr") {
+    robocopy "D:\fogseg-data\processed\$store" "$drive\processed\$store" /E
+}
+robocopy D:\fogseg-data\stations "$drive\stations" cases_fixed_2023-24.csv splits_2023-24.csv
+```
+
+Wait until Drive for desktop reports the upload as finished before starting the notebook. Without Drive for desktop,
+upload the three `.zarr` folders and the two files at [drive.google.com](https://drive.google.com) into those folders.
+
+Each width writes to its own folder `MyDrive/fogseg/runs/unet_base<width>`, and the MLflow runs go to
+`MyDrive/fogseg/mlflow/mlflow.db`, experiment `fogseg-unet-colab`. A wider model is judged on the cross-validation
+only; see [the notes](docs/notes/unet.md#a-wider-u-net-on-colab).
 
 ## Branches, CI and releases
 
