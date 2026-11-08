@@ -136,8 +136,25 @@ the same decks, and has no hatched band.
   in that station knowledge; the unseen-stations parts do not.
 - **One season, one model.** About 60 scenes per night fold. The CV folds spread by 0.13 POD, so one season's
   held-out score is a rough measure.
-- **The width was not explored.** 16 top-level channels fit the 4 GB GTX 1050 Ti. A wider net on Colab is a follow-up
-  (owner's call, 7 November 2026). Its held-out score would be a fifth look, unless it is judged on the test season.
+- **The width was not explored here.** 16 top-level channels fit the 4 GB GTX 1050 Ti. A wider net on Colab is a
+  follow-up (owner's call, 7 November 2026), [below](#a-wider-u-net-on-colab).
+
+## A wider U-Net on Colab
+
+[`notebooks/03_train_unet_colab.ipynb`](../../notebooks/03_train_unet_colab.ipynb) trains the same protocol with
+`unet.base_channels` 32 (7.85 M weights) or 48 (17.66 M weights). What has to be on Drive, and how to copy it, is in
+[the README](../../README.md#training-a-wider-u-net-on-colab). Only the width changes.
+
+- **A wider model is compared on the CV over night folds 1–4 only**, as pooled POD at FAR ≤ 0.28, from `unet_cv.csv`.
+  The notebook does not run `fogseg predict` or `fogseg evaluate`. A held-out score would be a fifth look at spent
+  cases, unless the owner agrees to judge the wider model on the test season instead.
+- **The test season stays closed.** Its case tables are never copied to Drive. The notebook stops if the Drive
+  stations folder holds anything but `cases_fixed_2023-24.csv` and `splits_2023-24.csv`.
+- **The local record is safe.** `fogseg train` refuses a stations folder with `unet_held_out.*`, so each run has its
+  own stations folder on Drive, `runs/unet_base<width>/stations`, with copies of the two files and without that
+  record. The folder on this machine is not touched.
+- **Same inputs.** The notebook checks the sha256 of the two files and the creation time of the label store against
+  the record of the 16-channel run before training.
 
 ## Reproduce
 
