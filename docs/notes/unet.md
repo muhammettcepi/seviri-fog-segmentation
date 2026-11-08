@@ -156,6 +156,32 @@ the same decks, and has no hatched band.
 - **Same inputs.** The notebook checks the sha256 of the two files and the creation time of the label store against
   the record of the 16-channel run before training.
 
+**Result: 32 channels did not beat 16.** The winner is the same setting, with pooled POD 0.807 against 0.821 at the
+same FAR of 0.277, so by the rule of the highest pooled POD the 16-channel model stays. Width 48 has not been run.
+
+| Top channels | Setting | p* | Pooled POD | Pooled FAR | Pooled CSI | POD per fold 1 / 2 / 3 / 4 |
+|---|---|---|---|---|---|---|
+| 16 | 1 soft | 0.48 | 0.770 | 0.277 | 0.595 | 0.720 / 0.711 / 0.832 / 0.809 |
+| 32 | 1 soft | 0.48 | 0.768 | 0.278 | 0.593 | 0.722 / 0.708 / 0.830 / 0.804 |
+| 16 | 2 hard | 0.77 | 0.776 | 0.280 | 0.596 | 0.725 / 0.703 / 0.841 / 0.822 |
+| 32 | 2 hard | 0.76 | 0.772 | 0.280 | 0.594 | 0.723 / 0.711 / 0.841 / 0.805 |
+| 16 | 3 soft + points 0.25 | 0.46 | 0.794 | 0.275 | 0.610 | 0.748 / 0.730 / 0.842 / 0.842 |
+| 32 | 3 soft + points 0.25 | 0.46 | 0.796 | 0.277 | 0.610 | 0.745 / 0.743 / 0.840 / 0.849 |
+| **16** | **4 soft + points 1.0** | **0.40** | **0.821** | **0.277** | **0.624** | 0.776 / 0.749 / 0.863 / 0.880 |
+| 32 | 4 soft + points 1.0 | 0.41 | 0.807 | 0.277 | 0.617 | 0.771 / 0.743 / 0.833 / 0.869 |
+
+- **Four times the weights bought nothing measurable.** Settings 1 to 3 differ by 0.004 POD or less. In setting 4 the
+  wider net is behind in each fold, by 0.005 to 0.030.
+- **The order of the settings is the same**, and the point loss helps at both widths.
+- **Each row is one training per fold, on different GPUs.** The 16-channel run was on the GTX 1050 Ti and the
+  32-channel run on Colab, and the run-to-run noise was not measured, so a difference of 0.013 POD is not proof that
+  the wider net is worse. It only shows no sign that it is better.
+- **The held-out cases and the test season were not used.** The 32-channel `unet.pt` stays on Drive and has not been
+  applied to any held-out or test scene.
+
+The training took 1 h 57 min on the Colab GPU. MLflow experiment `fogseg-unet-colab` in `MyDrive/fogseg/mlflow/mlflow.db`:
+the `train` run `ba715c7d4fd14c32a9c6c6d6f9887ef3` and the `final` run `1c2dd3b5a6a844d08567833e47b675e1`.
+
 ## Reproduce
 
 ```bash
