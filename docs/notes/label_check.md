@@ -314,7 +314,8 @@ sits on the rising flank of the deck hump). The deck is labelled, so here the me
   a low-cloud deck, not clear ground (3 February 05:00, 8 January 05:00), so 5.0 K tends to cut through the deck (missed
   fog or hatched pixels) rather than to label clear ground as fog. This is a visual judgement on two scenes; without a
   cloud mask or stations it cannot be proved. Kept by decision of the project owner (25 October 2026); to be revisited
-  with the METAR tuning.
+  with the METAR tuning. *The stations confirmed it: CSI on the fallback scenes rises from 0.30 to 0.59 with a 4.0 K
+  fallback, see [`station_validation.md`](station_validation.md).*
 - **Viewing-angle drift** (+1 K from south to north, see `btd_exploration.md`): nothing obvious in the check scenes,
   for example no band of false fog on the clear land in the north, but without a cloud mask this cannot be proved.
 - **Under high cloud the label is 0** (not ignore), even if fog lies below. A model trained on these labels learns that
@@ -326,7 +327,11 @@ sits on the rising flank of the deck hump). The deck is labelled, so here the me
 
 ## Recommendation
 
-Use **dynamic** as the default label mode (now set in `configs/default.yaml`).
+> **Superseded on 29 October 2026.** The station check
+> ([`station_validation.md`](station_validation.md)) found that both modes miss most of the fog. The default is now
+> `fixed` with 4.0 K, and the dynamic fallback is 4.0 K too. The recommendation below is kept as it was made.
+
+Use **dynamic** as the default label mode (set in `configs/default.yaml` at the time).
 
 - Where the clear-ground level is close to 5.0 K, the dynamic and fixed labels are almost the same; where it is lower
   (cold nights), the fixed threshold misses parts of the deck and the dynamic one follows the picture in the RGB
