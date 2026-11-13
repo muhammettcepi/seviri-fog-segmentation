@@ -145,9 +145,22 @@ def match_observations(
 
 
 def deduplicate(cases: pd.DataFrame) -> pd.DataFrame:
-    """One case per scene and pixel: METAR before SYNOP (exact cloud base), then by station id."""
-    ordered = cases.sort_values(["source", "station"], kind="stable")
-    return ordered.drop_duplicates(["scene_time", "iy", "ix"]).reset_index(drop=True)
+    """One case per scene and pixel.
+
+    A case with a known FLS truth comes first, so an undefined report never pushes out a usable one
+    on the same pixel; then the source in `SOURCES` order (METAR first: its cloud base is exact);
+    then the station id.
+    """
+    cases = cases.reset_index(drop=True)
+    priority = pd.DataFrame(
+        {
+            "unknown": cases["truth_fls"] == TRUTH_UNDEFINED,
+            "source_rank": cases["source"].map({source: rank for rank, source in enumerate(SOURCES)}),
+            "station": cases["station"],
+        }
+    )
+    order = priority.sort_values(["unknown", "source_rank", "station"], kind="stable").index
+    return cases.loc[order].drop_duplicates(["scene_time", "iy", "ix"]).reset_index(drop=True)
 
 
 def on_grid_stations(data: xr.Dataset, observations: pd.DataFrame, stations_cfg: dict) -> pd.DataFrame:

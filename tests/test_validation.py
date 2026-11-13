@@ -16,6 +16,9 @@ from fogseg.config import load_config
 from fogseg.label_store import label_dataset, label_store_path
 from fogseg.validation import (
     CASE_COLUMNS,
+    TRUTH_NO,
+    TRUTH_UNDEFINED,
+    TRUTH_YES,
     check_season_allowed,
     deduplicate,
     fls_truth,
@@ -135,10 +138,44 @@ def test_deduplicate_prefers_metar():
             "source": ["synop", "metar", "synop"],
             "iy": [1, 1, 2],
             "ix": [1, 1, 2],
+            "truth_fls": [TRUTH_YES, TRUTH_NO, TRUTH_NO],
         }
     )
     kept = deduplicate(cases)
     assert kept["station"].tolist() == ["A-METAR", "OTHER"]
+
+
+def test_deduplicate_prefers_a_known_truth_over_the_source():
+    # The airport's cloud group is missing, so only the SYNOP station can score this pixel
+    cases = pd.DataFrame(
+        {
+            "scene_time": pd.Timestamp("2023-11-21T05:00"),
+            "station": ["EHAM", "06240"],
+            "source": ["metar", "synop"],
+            "iy": [1, 1],
+            "ix": [1, 1],
+            "truth_fls": [TRUTH_UNDEFINED, TRUTH_YES],
+        }
+    )
+    kept = deduplicate(cases)
+    assert kept["station"].tolist() == ["06240"]
+    assert list(kept.columns) == list(cases.columns)
+
+
+def test_deduplicate_ranks_sources_by_their_listed_order_not_by_name(monkeypatch):
+    monkeypatch.setattr("fogseg.validation.SOURCES", ("synop", "metar"))
+    cases = pd.DataFrame(
+        {
+            "scene_time": pd.Timestamp("2023-11-21T05:00"),
+            "station": ["S", "M"],
+            "source": ["synop", "metar"],
+            "iy": [1, 1],
+            "ix": [1, 1],
+            "truth_fls": [TRUTH_NO, TRUTH_NO],
+        }
+    )
+    assert deduplicate(cases)["station"].tolist() == ["S"]
+    assert deduplicate(cases.iloc[::-1])["station"].tolist() == ["S"]
 
 
 def test_station_cases_reads_labels_and_flags_hidden(tmp_path):
