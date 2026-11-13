@@ -254,11 +254,13 @@ def cmd_tune(args: argparse.Namespace) -> None:
     data_dir = Path(stations_cfg["data_dir"])
     observations = read_observations(data_dir)
 
-    store_path = label_store_path(Path(labels_cfg["output_dir"]), "dynamic")
+    # The store only supplies the scenes: every case is relabelled below, so either mode's store will do.
+    store_path = label_store_path(Path(labels_cfg["output_dir"]), labels_cfg["mode"])
     with (
         xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data,
         xr.open_zarr(store_path, consolidated=False) as labels,
     ):
+        # Unlike `validate`, the hidden test takes the config's thresholds, as the relabelling does.
         cases = deduplicate(season_cases(data, labels, observations, cfg, season, params))
         cases = cases[cases["truth_fls"].isin([TRUTH_NO, TRUTH_YES]) & ~cases["hidden"]]
         if cases.empty:
