@@ -66,7 +66,7 @@ labelled `0`.
 The labels were scored against 1175 airport (METAR) and weather stations (SYNOP) in the domain. A
 report counts as fog or low stratus when visibility is below 1 km or a broken or overcast deck has its
 base below 1 km. The BTD threshold was tuned on the training season 2023-24 only, and the test season
-2024-25 was scored once at the end. Cases the satellite can see:
+2024-25 was scored in one final run at the end. Cases the satellite can see:
 
 | Labels | Season | POD | FAR | CSI (95 % interval) |
 |---|---|---|---|---|

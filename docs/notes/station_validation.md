@@ -12,8 +12,8 @@ The fog labels are a rule on satellite data. Until now they were only looked at 
 what weather stations on the ground reported at the same time, tunes the BTD threshold on the **training season
 2023-24**, and scores the result once on the **test season 2024-25**.
 
-The tuning used the training season only. The test season was scored once, after every value had been fixed (see the
-last section).
+The tuning used the training season only. The test season was scored in one final run, after every value had been
+fixed: once with the fixed labels and once with the dynamic labels, the documented alternative (see the last section).
 
 ## Data
 
@@ -45,7 +45,8 @@ Following Egli et al. (2017) and Jahani et al. (2025), a station report counts a
 - **Time:** SEVIRI scans Central Europe about 12 minutes after the nominal slot time, so each scene takes, per
   station, the report closest to slot time + 12 min, within 30 minutes. No report in that window, no case.
 - **One case per pixel and scene:** when an airport and a SYNOP station share a pixel, the pooled score keeps the
-  airport (its cloud base is exact). Each source is also scored on its own.
+  airport (its cloud base is exact), unless the airport's truth is undefined and the SYNOP station's is not: then the
+  SYNOP report is kept, so the pixel is still scored. Each source is also scored on its own.
 - **Not scored:**
   - Cases whose label is `255` are not scored; their number is reported.
   - Cases where the station pixel fails the labels' own high-cloud tests (`IR_108` below 255 K, or
@@ -67,6 +68,9 @@ The training season gives 330,400 station reports matched to a scene. Of these:
 | Bias | labelled fog / reported FLS | 1 |
 | HSS | Heidke skill score: correct answers above chance, counting correct "no" too | 1 |
 | PSS | Peirce skill score: POD minus the false-alarm rate on the "no" reports | 1 |
+
+HSS and PSS are 0 for a rule that is no better than chance. Every score table (`scores_*.csv`, `tuning_*.csv`) has
+all six, so the HSS and PSS behind decision 1 below can be read straight from `tuning_btd_fixed_fixed_mode.csv`.
 
 Intervals are 95 % bootstrap intervals over whole nights (1000 draws, seed 0), because cases on the same night are not
 independent. A tuned value replaces the current one only when the 95 % interval of the paired difference excludes 0.
@@ -292,7 +296,9 @@ the question does not arise: every scene uses 4.0 K.
 
 ### Point against pixel
 
-A station is a point, a pixel is 3 to 5 km across. Patchy fog gives misses and false alarms that are nobody's fault.
+A station is a point, a pixel is about 3.3 km east–west and 5 to 7 km north–south here (up to 4.1 × 8.6 km in the
+far north-east of the grid; see [`DATASET_CARD.md`](../DATASET_CARD.md)), because Meteosat sees Central Europe at a
+slant. Patchy fog gives misses and false alarms that are nobody's fault.
 Airports avoid valleys, so valley fog is under-sampled; SYNOP stations help a little. None of this is corrected.
 
 ## Benchmarks
@@ -378,6 +384,12 @@ first. They are the next piece of work, in their own spec:
   - a METAR `BKN` deck at 900 m counts as FLS;
   - a `SCT` deck at 200 m does not;
   - SYNOP's `h` is the base of the lowest cloud of any amount.
+
+- **One fix after these numbers were made** (13 November 2026): the step that keeps one case per pixel and scene
+  used to keep the airport even when its truth was undefined, which dropped a usable SYNOP report on the same pixel.
+  It now keeps the report with a known truth (see "Matching"). This only adds cases where an airport and a SYNOP
+  station share a pixel and the airport report is incomplete; the tables in this note are from before the fix and
+  shift slightly when `fogseg validate` and `fogseg tune` are run again.
 
 ## Reproduce
 
