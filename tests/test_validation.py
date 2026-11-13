@@ -361,7 +361,9 @@ def test_score_table_puts_a_station_on_a_band_edge_into_the_upper_band():
 def test_score_table_empty_group_is_nan():
     empty_band = table_of(score_cases()).loc[("lat_band", "51-56")]
     assert empty_band["n_cases"] == 0
-    assert np.isnan(empty_band[["pod", "far", "csi", "csi_low", "csi_high", "bias"]].astype(float)).all()
+    assert np.isnan(
+        empty_band[["pod", "far", "csi", "csi_low", "csi_high", "bias", "hss", "pss"]].astype(float)
+    ).all()
 
 
 def station_files(tmp_path: Path, sources: tuple[str, ...]) -> Path:

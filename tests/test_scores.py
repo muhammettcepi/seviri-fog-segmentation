@@ -31,6 +31,18 @@ def test_skill_values():
     assert np.isclose(scores["far"], 1 / 3)
     assert np.isclose(scores["csi"], 6 / 11)
     assert np.isclose(scores["bias"], 9 / 8)
+    # Heidke: 2 (hits * CN - FA * misses) / ((hits + misses)(misses + CN) + (hits + FA)(FA + CN))
+    assert np.isclose(scores["hss"], 2 * (6 * 89 - 3 * 2) / (8 * 91 + 9 * 92))
+    # Peirce: POD minus the false-alarm rate on the "no" reports, FA / (FA + CN)
+    assert np.isclose(scores["pss"], 0.75 - 3 / 92)
+
+
+def test_skill_scores_of_a_perfect_and_a_random_rule():
+    perfect = skill(np.array([30, 0, 0, 70]))
+    random = skill(np.array([9, 21, 21, 49]))  # labels independent of the truth, 30 % fog in both
+
+    assert perfect["hss"] == 1.0 and perfect["pss"] == 1.0
+    assert np.isclose(random["hss"], 0.0) and np.isclose(random["pss"], 0.0)
 
 
 def test_skill_without_fog_cases_is_nan():
@@ -115,9 +127,10 @@ def test_score_summary_columns_follow_the_requested_intervals():
     counts = ["n_cases", *COUNT_NAMES]
     assert list(full) == [
         *counts,
-        *("pod", "pod_low", "pod_high", "far", "far_low", "far_high", "csi", "csi_low", "csi_high", "bias"),
+        *("pod", "pod_low", "pod_high", "far", "far_low", "far_high", "csi", "csi_low", "csi_high"),
+        *("bias", "hss", "pss"),
     ]
-    assert list(csi_only) == [*counts, "pod", "far", "csi", "csi_low", "csi_high", "bias"]
+    assert list(csi_only) == [*counts, "pod", "far", "csi", "csi_low", "csi_high", "bias", "hss", "pss"]
     assert full["n_cases"] == night_counts.sum()
     assert full["csi"] == csi_only["csi"]
     assert (full["csi_low"], full["csi_high"]) == (csi_only["csi_low"], csi_only["csi_high"])

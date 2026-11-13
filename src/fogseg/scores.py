@@ -31,16 +31,24 @@ def ratio(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
 
 
 def skill(counts: np.ndarray) -> dict[str, np.ndarray]:
-    """POD, FAR, CSI and frequency bias from counts in `COUNT_NAMES` order, along the last axis.
+    """POD, FAR, CSI, frequency bias, HSS and PSS from counts in `COUNT_NAMES` order, along the last axis.
 
-    A score is NaN where its denominator is 0, e.g. when a night or sample has no fog at all.
+    HSS (Heidke) and PSS (Peirce) also reward correct "no" answers, which CSI ignores; both are 1 for
+    a perfect rule and 0 for one that is no better than chance. A score is NaN where its denominator
+    is 0, e.g. when a night or sample has no fog at all.
     """
-    hits, misses, false_alarms, _ = np.moveaxis(np.asarray(counts), -1, 0)
+    hits, misses, false_alarms, correct_negatives = np.moveaxis(np.asarray(counts), -1, 0)
+    heidke_denominator = (hits + misses) * (misses + correct_negatives) + (hits + false_alarms) * (
+        false_alarms + correct_negatives
+    )
+    pod = ratio(hits, hits + misses)
     return {
-        "pod": ratio(hits, hits + misses),
+        "pod": pod,
         "far": ratio(false_alarms, hits + false_alarms),
         "csi": ratio(hits, hits + misses + false_alarms),
         "bias": ratio(hits + false_alarms, hits + misses),
+        "hss": ratio(2 * (hits * correct_negatives - false_alarms * misses), heidke_denominator),
+        "pss": pod - ratio(false_alarms, false_alarms + correct_negatives),
     }
 
 
@@ -79,7 +87,7 @@ def score_summary(
     """Row of a score table: the case count, the four counts, the scores and their bootstrap intervals.
 
     The columns are `n_cases`, `COUNT_NAMES`, then `pod`, `far` and `csi` with `<name>_low` and `<name>_high`
-    after each one in `interval_scores`, and `bias`. Without any night the intervals are NaN.
+    after each one in `interval_scores`, then `bias`, `hss` and `pss`. Without any night the intervals are NaN.
     """
     counts = night_counts.sum(axis=0)
     point = skill(counts)
@@ -94,7 +102,8 @@ def score_summary(
         row[name] = float(point[name])
         if name in interval_scores:
             row[f"{name}_low"], row[f"{name}_high"] = intervals[name]
-    row["bias"] = float(point["bias"])
+    for name in ("bias", "hss", "pss"):
+        row[name] = float(point[name])
     return row
 
 
