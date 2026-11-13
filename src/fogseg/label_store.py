@@ -1,15 +1,18 @@
 """Write the fog label stores: one Zarr store per labelling mode, aligned with the dataset.
 
-Each store holds, per scene, the label image (0 no fog, 1 fog, 255 ignore), the BTD threshold used
-and where it came from, and the share of fog and ignored pixels. The thresholds and the version
-that produced it are stored as attributes, so a label store explains itself.
+Each store holds, per scene, the label image (0 no fog, 1 fog, 2 obscured, 255 ignore), the threshold used
+and where it came from, and the share of fog, ignored and obscured pixels. The scenes of a night are labelled
+together, so that the labels can follow the night. The label options and the version that produced the store
+are stored as attributes, so a label store explains itself.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import itertools
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -19,9 +22,9 @@ import zarr
 import fogseg
 from fogseg.build import CHUNK_TIME
 from fogseg.dynamic_threshold import DynamicParams, ThresholdChoice, dynamic_threshold
-from fogseg.labels import FOG, IGNORE, NO_FOG, LabelParams, histogram_pixels, label_scene
+from fogseg.labels import FOG, IGNORE, NO_FOG, OBSCURED, LabelParams, histogram_pixels, label_night
 
-MODES = ("fixed", "dynamic")
+MODES = ("fixed", "dynamic", "teacher")
 LABEL_CHANNELS = ["IR_039", "IR_108", "IR_120"]
 # Same fixed time units as the dataset, so appended batches are stored exactly like the first one.
 TIME_ENCODING = {"units": "minutes since 2000-01-01", "dtype": "int64"}
@@ -32,12 +35,19 @@ def label_store_path(output_dir: Path, mode: str) -> Path:
     return output_dir / f"labels_{mode}.zarr"
 
 
-def check_mode(mode: str, dynamic: DynamicParams | None) -> None:
-    """The mode must be known, and the dynamic mode needs its settings."""
+def check_mode(mode: str, dynamic: DynamicParams | None, params: LabelParams) -> None:
+    """The mode must be known, the dynamic mode needs its settings, and the fog index must fit the mode."""
+    if mode == "teacher":
+        raise ValueError("mode 'teacher' is written by label_teacher_dataset (fogseg label --mode teacher)")
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     if mode == "dynamic" and dynamic is None:
         raise ValueError("mode 'dynamic' needs dynamic parameters (labels.dynamic in the config)")
+    if params.fog_index == "emissivity":
+        if mode == "dynamic":
+            raise ValueError("mode 'dynamic' finds a BTD peak and cannot be used with fog_index 'emissivity'")
+        if params.emissivity_max is None:
+            raise ValueError("fog_index 'emissivity' needs labels.emissivity_max in the config")
 
 
 def check_dataset(data: xr.Dataset, dataset_path: Path) -> None:
@@ -64,23 +74,50 @@ def choose_threshold(
     params: LabelParams,
     dynamic: DynamicParams | None,
 ) -> ThresholdChoice:
-    """BTD threshold of one scene: `btd_fixed` in fixed mode, the clear-ground peak plus an offset in dynamic mode."""
+    """The scene's threshold: configured (fixed mode) or the clear-ground BTD peak plus offset (dynamic)."""
     if mode == "fixed":
-        return ThresholdChoice(params.btd_fixed, "fixed")
+        fixed = params.emissivity_max if params.fog_index == "emissivity" else params.btd_fixed
+        return ThresholdChoice(fixed, "fixed")
     btd = histogram_pixels(ir039, ir108, ir120, sza, params)
     return dynamic_threshold(btd, params.btd_fixed, dynamic)
 
 
-def label_fractions(labels: np.ndarray) -> tuple[float, float]:
-    """Fog share of the decided pixels (NaN if there are none) and ignored share of all pixels."""
+def label_fractions(labels: np.ndarray) -> tuple[float, float, float]:
+    """Fog share of the decided pixels (NaN if there are none), ignored and obscured share of all pixels."""
     n_fog = int(np.count_nonzero(labels == FOG))
     n_no_fog = int(np.count_nonzero(labels == NO_FOG))
     n_ignore = int(np.count_nonzero(labels == IGNORE))
+    n_obscured = int(np.count_nonzero(labels == OBSCURED))
 
     n_decided = n_fog + n_no_fog
     fog_fraction = n_fog / n_decided if n_decided > 0 else np.nan
     ignore_fraction = n_ignore / labels.size
-    return fog_fraction, ignore_fraction
+    obscured_fraction = n_obscured / labels.size
+    return fog_fraction, ignore_fraction, obscured_fraction
+
+
+def night_dates(times: np.ndarray) -> np.ndarray:
+    """The date a night is named after, for each time: a night runs from noon to noon."""
+    return (times - np.timedelta64(12, "h")).astype("datetime64[D]")
+
+
+def night_runs(times: np.ndarray) -> list[tuple[int, int]]:
+    """Spans `[start, stop)` of the consecutive scenes that belong to the same night."""
+    dates = night_dates(times)
+    first_scenes = np.flatnonzero(dates[1:] != dates[:-1]) + 1
+    edges = [0, *first_scenes.tolist(), len(times)]
+    return list(itertools.pairwise(edges))
+
+
+def night_batches(times: np.ndarray, batch: int) -> list[tuple[int, int]]:
+    """Spans `[start, stop)` of whole nights, each at most `batch` scenes unless one night alone is longer."""
+    spans: list[tuple[int, int]] = []
+    for start, stop in night_runs(times):
+        if spans and stop - spans[-1][0] <= batch:
+            spans[-1] = (spans[-1][0], stop)
+        else:
+            spans.append((start, stop))
+    return spans
 
 
 def label_batch(
@@ -91,37 +128,82 @@ def label_batch(
     params: LabelParams,
     dynamic: DynamicParams | None,
 ) -> xr.Dataset:
-    """Label scenes `start` to `stop` of the dataset; the result has the variables of the label store."""
+    """Label scenes `start` to `stop` of the dataset, which must hold whole nights.
+
+    The result has the variables of the label store.
+    """
     scenes = data.isel(time=slice(start, stop))
     bt = scenes["bt"].sel(channel=LABEL_CHANNELS).values
     sza = scenes["sza"].values
 
     n_scenes = bt.shape[0]
     labels = np.empty((n_scenes, bt.shape[2], bt.shape[3]), dtype=np.uint8)
-    thresholds = np.empty(n_scenes, dtype=np.float32)
+    thresholds = np.empty(n_scenes)
     # object dtype is stored as a variable-length string; Zarr v3 has no spec for fixed-width text
     sources = np.empty(n_scenes, dtype=object)
     fog_fractions = np.empty(n_scenes, dtype=np.float32)
     ignore_fractions = np.empty(n_scenes, dtype=np.float32)
+    obscured_fractions = np.empty(n_scenes, dtype=np.float32)
 
     for i in range(n_scenes):
         ir039, ir108, ir120 = bt[i]
         choice = choose_threshold(ir039, ir108, ir120, sza[i], mode, params, dynamic)
-        labels[i] = label_scene(ir039, ir108, ir120, sza[i], choice.value, params)
         thresholds[i] = choice.value
         sources[i] = choice.source
-        fog_fractions[i], ignore_fractions[i] = label_fractions(labels[i])
+
+    for first, last in night_runs(scenes["time"].values):
+        ir039, ir108, ir120 = np.moveaxis(bt[first:last], 1, 0)
+        labels[first:last] = label_night(ir039, ir108, ir120, sza[first:last], thresholds[first:last], params)
+
+    for i in range(n_scenes):
+        fog_fractions[i], ignore_fractions[i], obscured_fractions[i] = label_fractions(labels[i])
 
     return xr.Dataset(
         {
-            "label": (("time", "y", "x"), labels, {"long_name": "fog label: 0 no fog, 1 fog, 255 ignore"}),
-            "btd_threshold": (("time",), thresholds, {"units": "K", "long_name": "BTD threshold used"}),
+            "label": (
+                ("time", "y", "x"),
+                labels,
+                {"long_name": "fog label: 0 no fog, 1 fog, 2 obscured, 255 ignore"},
+            ),
+            "btd_threshold": (
+                ("time",),
+                thresholds.astype(np.float32),
+                {"long_name": "threshold of the fog index: K for btd, emissivity for emissivity"},
+            ),
             "threshold_source": (("time",), sources, {"long_name": "fixed, dynamic or fallback"}),
             "fog_fraction": (("time",), fog_fractions, {"long_name": "fog share of the decided pixels"}),
             "ignore_fraction": (("time",), ignore_fractions, {"long_name": "ignored share of all pixels"}),
+            "obscured_fraction": (
+                ("time",),
+                obscured_fractions,
+                {"long_name": "obscured share of all pixels"},
+            ),
         },
         coords={"time": scenes["time"].values, "y": scenes["y"].values, "x": scenes["x"].values},
     )
+
+
+def write_store(
+    data: xr.Dataset,
+    store: Path,
+    make_batch: Callable[[int, int], xr.Dataset],
+    encoding: dict,
+    batch: int,
+) -> None:
+    """Write the label batches of whole nights to `store`, about `batch` scenes at a time.
+
+    `make_batch(start, stop)` labels scenes `start` to `stop` of the dataset.
+    """
+    for start, stop in night_batches(data["time"].values, batch):
+        labelled = make_batch(start, stop)
+
+        is_first_batch = start == 0
+        if is_first_batch:
+            labelled.to_zarr(store, mode="w", encoding=encoding, zarr_format=3, consolidated=False)
+        else:
+            # x and y are already in the store; appending them again would overwrite them
+            labelled = labelled.drop_vars(["x", "y"])
+            labelled.to_zarr(store, append_dim="time", consolidated=False)
 
 
 def write_batches(
@@ -132,28 +214,21 @@ def write_batches(
     dynamic: DynamicParams | None,
     batch: int,
 ) -> None:
-    """Label all scenes and write them to `store`, `batch` scenes at a time."""
-    n_scenes = data.sizes["time"]
+    """Label all scenes and write them to `store`, about `batch` scenes at a time and never half a night."""
     encoding = {
         "label": {"chunks": (CHUNK_TIME, data.sizes["y"], data.sizes["x"])},
         "btd_threshold": {"chunks": (CHUNK_TIME,)},
         "threshold_source": {"chunks": (CHUNK_TIME,)},
         "fog_fraction": {"chunks": (CHUNK_TIME,)},
         "ignore_fraction": {"chunks": (CHUNK_TIME,)},
+        "obscured_fraction": {"chunks": (CHUNK_TIME,)},
         "time": TIME_ENCODING,
     }
 
-    for start in range(0, n_scenes, batch):
-        stop = min(start + batch, n_scenes)
-        labelled = label_batch(data, start, stop, mode, params, dynamic)
+    def make_batch(start: int, stop: int) -> xr.Dataset:
+        return label_batch(data, start, stop, mode, params, dynamic)
 
-        is_first_batch = start == 0
-        if is_first_batch:
-            labelled.to_zarr(store, mode="w", encoding=encoding, zarr_format=3, consolidated=False)
-        else:
-            # x and y are already in the store; appending them again would overwrite them
-            labelled = labelled.drop_vars(["x", "y"])
-            labelled.to_zarr(store, append_dim="time", consolidated=False)
+    write_store(data, store, make_batch, encoding, batch)
 
 
 def store_attrs(
@@ -216,6 +291,30 @@ def stored_params(attrs: dict, config_dynamic: DynamicParams) -> tuple[LabelPara
     return params, DynamicParams.from_config(dynamic_cfg)
 
 
+def write_store_atomically(out_path: Path, overwrite: bool, write: Callable[[Path], int]) -> int:
+    """Run `write` on a temporary store and rename it to `out_path` when it is complete.
+
+    Written like the dataset itself: the temporary store is deleted if anything fails, and an existing
+    store stays untouched until the new one is complete. Returns what `write` returns.
+    """
+    if out_path.exists() and not overwrite:
+        raise FileExistsError(f"{out_path} exists; use overwrite=True (--overwrite) to replace it")
+
+    tmp_path = out_path.with_name(out_path.name + ".part")
+    shutil.rmtree(tmp_path, ignore_errors=True)
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        n_scenes = write(tmp_path)
+    except BaseException:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+        raise
+
+    if out_path.exists():
+        shutil.rmtree(out_path)
+    tmp_path.rename(out_path)
+    return n_scenes
+
+
 def label_dataset(
     dataset_path: Path,
     out_path: Path,
@@ -225,35 +324,19 @@ def label_dataset(
     overwrite: bool = False,
     batch: int = 32,
 ) -> int:
-    """Label every scene of the dataset into the Zarr store `out_path`. Returns the number of scenes.
-
-    Written like the dataset itself: under a temporary name, renamed at the end, and the temporary
-    store is deleted if anything fails. An existing store stays untouched until the new one is complete.
-    """
-    check_mode(mode, dynamic)
+    """Label every scene of the dataset into the Zarr store `out_path`. Returns the number of scenes."""
+    check_mode(mode, dynamic, params)
     if not dataset_path.exists():
         raise FileNotFoundError(f"Dataset not found: {dataset_path}")
-    if out_path.exists() and not overwrite:
-        raise FileExistsError(f"{out_path} exists; use overwrite=True (--overwrite) to replace it")
 
-    with xr.open_zarr(dataset_path, consolidated=False) as data:
-        check_dataset(data, dataset_path)
-
-        tmp_path = out_path.with_name(out_path.name + ".part")
-        shutil.rmtree(tmp_path, ignore_errors=True)
-        tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
+    def write(tmp_path: Path) -> int:
+        with xr.open_zarr(dataset_path, consolidated=False) as data:
+            check_dataset(data, dataset_path)
             write_batches(data, tmp_path, mode, params, dynamic, batch)
             write_metadata(tmp_path, store_attrs(data, dataset_path, mode, params, dynamic))
-        except BaseException:
-            shutil.rmtree(tmp_path, ignore_errors=True)
-            raise
-        n_scenes = data.sizes["time"]
+            return data.sizes["time"]
 
-    if out_path.exists():
-        shutil.rmtree(out_path)
-    tmp_path.rename(out_path)
-    return n_scenes
+    return write_store_atomically(out_path, overwrite, write)
 
 
 def summarize_store(store: Path) -> tuple[dict[str, int], float]:

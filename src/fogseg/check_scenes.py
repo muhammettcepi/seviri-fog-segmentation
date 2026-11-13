@@ -90,14 +90,20 @@ def scene_statistics(dataset: xr.Dataset, labels: xr.Dataset) -> pd.DataFrame:
         high_cloud_parts.append(high_cloud)
         twilight_parts.append(twilight)
 
+    # A pixel is decided (0 or 1) when it is neither ignored (255) nor obscured (2); stores made before
+    # label 2 existed have no obscured fraction
+    ignore_fraction = labels["ignore_fraction"].values.astype(float)
+    obscured_fraction = 0.0
+    if "obscured_fraction" in labels:
+        obscured_fraction = labels["obscured_fraction"].values.astype(float)
+
     times = pd.DatetimeIndex(labels["time"].values)
     stats = pd.DataFrame(
         {
             "time": times,
             "season": [season_of(time) for time in times],
             "fog_fraction": labels["fog_fraction"].values,
-            # a pixel is decided (0 or 1) exactly when it is not ignored (255)
-            "decided_fraction": 1.0 - labels["ignore_fraction"].values.astype(float),
+            "decided_fraction": 1.0 - ignore_fraction - obscured_fraction,
             "high_cloud_fraction": np.concatenate(high_cloud_parts),
             "twilight_fraction": np.concatenate(twilight_parts),
             "threshold_source": [str(source) for source in labels["threshold_source"].values],

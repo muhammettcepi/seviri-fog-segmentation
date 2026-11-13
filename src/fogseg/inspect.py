@@ -19,7 +19,7 @@ from matplotlib.patches import Patch
 
 from fogseg.dynamic_threshold import DynamicParams
 from fogseg.label_store import check_labels_match
-from fogseg.labels import FOG, IGNORE, LabelParams, histogram_pixels
+from fogseg.labels import FOG, IGNORE, OBSCURED, LabelParams, histogram_pixels
 
 # Set after the imports on purpose: figures are only written to files, never shown, so no GUI
 # toolkit may be needed (the command also runs on a machine without a display).
@@ -35,8 +35,10 @@ BLUE_RANGE = (243.0, 293.0)  # IR_108
 NEAREST_TIMES_LISTED = 3
 FOG_COLOUR = (0.0, 1.0, 1.0)
 IGNORE_COLOUR = (0.5, 0.5, 0.5)
+OBSCURED_COLOUR = (1.0, 0.6, 0.0)
 FOG_ALPHA = 0.6
 IGNORE_ALPHA = 0.5
+OBSCURED_ALPHA = 0.35
 IGNORE_HATCH = "///"
 TIME_FORMAT = "%Y-%m-%d %H:%M"
 FILE_TIME_FORMAT = "%Y%m%dT%H%M"
@@ -71,8 +73,10 @@ def find_scene(times: pd.DatetimeIndex, wanted: pd.Timestamp) -> int:
     raise ValueError(f"No scene at {wanted.strftime(TIME_FORMAT)}. Nearest available times: {listed}")
 
 
-def histogram_title(threshold: float, source: str) -> str:
-    """Title of the histogram panel: the threshold used and where it came from."""
+def histogram_title(threshold: float | None, source: str) -> str:
+    """Title of the histogram panel: the threshold used and where it came from, if the labels have one."""
+    if threshold is None:
+        return f"BTD histogram, no threshold ({source})"
     return f"BTD histogram, threshold {threshold:.2f} K ({source})"
 
 
@@ -110,6 +114,8 @@ def draw_labels_panel(ax: Axes, rgb: np.ndarray, labels: np.ndarray) -> None:
     ax.imshow(rgb, interpolation="nearest")
     is_fog = labels == FOG
     is_ignored = labels == IGNORE
+    is_obscured = labels == OBSCURED
+    ax.imshow(class_overlay(is_obscured, OBSCURED_COLOUR, OBSCURED_ALPHA), interpolation="nearest")
     ax.imshow(class_overlay(is_ignored, IGNORE_COLOUR, IGNORE_ALPHA), interpolation="nearest")
     ax.imshow(class_overlay(is_fog, FOG_COLOUR, FOG_ALPHA), interpolation="nearest")
     with plt.rc_context({"hatch.color": "white", "hatch.linewidth": 0.8}):
@@ -117,6 +123,7 @@ def draw_labels_panel(ax: Axes, rgb: np.ndarray, labels: np.ndarray) -> None:
 
     legend_items = [
         Patch(facecolor=FOG_COLOUR, alpha=FOG_ALPHA, label="fog (1)"),
+        Patch(facecolor=OBSCURED_COLOUR, alpha=OBSCURED_ALPHA, label="obscured (2)"),
         Patch(facecolor=IGNORE_COLOUR, edgecolor="white", hatch=IGNORE_HATCH, label="ignore (255)"),
     ]
     ax.legend(handles=legend_items, loc="lower left", fontsize=8, framealpha=0.9)
@@ -130,15 +137,16 @@ def histogram_edges(dynamic: DynamicParams) -> np.ndarray:
 
 
 def draw_histogram_panel(
-    ax: Axes, btd: np.ndarray, threshold: float, source: str, dynamic: DynamicParams
+    ax: Axes, btd: np.ndarray, threshold: float | None, source: str, dynamic: DynamicParams
 ) -> None:
     ax.hist(btd, bins=histogram_edges(dynamic), color="steelblue")
-    ax.axvline(threshold, color="red", linewidth=2, label=f"threshold {threshold:.2f} K")
+    if threshold is not None:
+        ax.axvline(threshold, color="red", linewidth=2, label=f"threshold {threshold:.2f} K")
+        ax.legend(fontsize=8)
     if btd.size == 0:
         ax.text(0.5, 0.5, "no histogram pixels", transform=ax.transAxes, ha="center", va="center")
     ax.set_xlabel("IR_108 - IR_039 (K)")
     ax.set_ylabel("pixels")
-    ax.legend(fontsize=8)
     ax.set_title(histogram_title(threshold, source))
 
 
@@ -178,7 +186,7 @@ def inspect_figure(
     ir039, ir108, ir120 = scene_channels(dataset, scene)
     sza = dataset["sza"].isel(time=scene).values
     label_image = labels["label"].isel(time=scene).values
-    threshold = float(labels["btd_threshold"].isel(time=scene).values)
+    threshold = float(labels["btd_threshold"].isel(time=scene).values) if "btd_threshold" in labels else None
     source = str(labels["threshold_source"].isel(time=scene).values)
     mode = str(labels.attrs["mode"])
 

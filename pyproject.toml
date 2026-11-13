@@ -20,8 +20,11 @@ dependencies = [
     "pandas",
     "pyyaml",
     "scipy",
+    "scikit-learn",
+    "rasterio",
     "matplotlib",
     "zarr>=3",
+    "cdsapi",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +32,8 @@ dependencies = [
 dev = ["pytest", "ruff==0.17.*"]
 # to run the notebooks, also headless: jupyter nbconvert --to notebook --execute --inplace <file>
 notebooks = ["nbclient", "ipykernel", "jupyter"]
+# the U-Net; CUDA users install torch from the PyTorch index first
+model = ["torch", "mlflow"]
 
 [project.scripts]
 fogseg = "fogseg.cli:main"
@@ -42,3 +47,6 @@ line-length = 110
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
+filterwarnings = [
+    "ignore:The ``noload`` loader strategy is deprecated",
+]

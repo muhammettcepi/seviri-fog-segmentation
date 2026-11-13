@@ -4,11 +4,12 @@
 
 Segmenting fog and low stratus at night from Meteosat SEVIRI infrared imagery over Central Europe:
 a physics-based baseline (the 10.8 − 3.9 µm brightness temperature difference), weak labels derived
-from it, a small U-Net trained on them, and an evaluation of both against independent airport
-visibility observations (METAR).
+from it, a small U-Net trained on them, and an evaluation of both against independent station
+observations (METAR and SYNOP).
 
-> **Status: work in progress.** Data access, preprocessing and weak labels work; the model and the
-> evaluation against METAR are next.
+> **Status: work in progress.** Data access, preprocessing, weak labels, their check against
+> station observations, station-trained teacher labels and a U-Net trained on them work
+> ([`docs/notes/unet.md`](docs/notes/unet.md)). The test season 2024-25 has not been scored with the U-Net yet.
 
 ![Night Microphysics RGB, fog labels, BTD histogram and solar zenith angle for 7 November 2024, 05:00 UTC](docs/notes/figures/showcase_20241107T0500_dynamic.png)
 
@@ -39,14 +40,18 @@ its own clear-ground level. The measurements are in
 
 ## Fog labels
 
-Every pixel of every scene gets one of three labels: `1` fog or low stratus, `0` not fog, `255`
-ignore (twilight, missing data, or too close to the threshold to call). A pixel is fog if its BTD
-is above a threshold, its cloud top is warm, it is not thin cirrus and the top is smooth; small
-patches and the pixels within 0.5 K of the threshold (on either side) are ignored. Two modes exist:
+Every pixel of every scene gets one of four labels: `1` fog or low stratus, `0` not fog, `2` obscured
+(a cold top or thin cirrus hides what is below), `255` ignore (twilight, missing data, or too close to
+the threshold to call). A pixel is fog if its BTD is above a threshold, its cloud top is warm, it is
+not thin cirrus and the top is smooth; small patches and the pixels within 0.5 K of the threshold (on
+either side) are ignored. Two modes exist:
 
-- `fixed`: the threshold is 5.0 K for every scene.
-- `dynamic` (the default): the threshold is the scene's clear-ground peak plus 1.5 K, and 5.0 K
-  when no peak can be found.
+- `fixed`: the threshold is 4.0 K for every scene.
+- `dynamic`: the threshold is the scene's clear-ground peak plus 1.5 K, and 4.0 K when no peak can
+  be found.
+
+A third mode, `teacher`, replaces the threshold with a classifier trained on the station truth; it is the
+configured mode and the U-Net's training labels ([below](#the-u-net)).
 
 A clean training-season example, with two humps in the histogram and the threshold between them, is
 [29 February 2024, 03:00 UTC](docs/notes/figures/check_20240229T0300_dynamic.png).
@@ -54,12 +59,66 @@ A clean training-season example, with two humps in the histogram and the thresho
 The rule, the thresholds, and per-season statistics are in the
 [dataset card](docs/DATASET_CARD.md#labels). How the thresholds were measured is in
 [`docs/notes/btd_exploration.md`](docs/notes/btd_exploration.md); how the labels were checked by eye on
-15 training-season scenes, and why `dynamic` became the default, is in
-[`docs/notes/label_check.md`](docs/notes/label_check.md).
+15 training-season scenes is in [`docs/notes/label_check.md`](docs/notes/label_check.md).
 
 These are **weak labels**: a rule on satellite data, not an observation on the ground. A satellite
-sees cloud tops, so fog and low stratus cannot be told apart, and fog under higher cloud is
-labelled `0`. Airport visibility observations (METAR) will be used to judge and tune the labels.
+sees cloud tops, so fog and low stratus cannot be told apart, and fog under higher cloud cannot be
+seen: it is labelled `2`, obscured.
+
+## Validation against stations
+
+The labels were scored against 1175 airport (METAR) and weather stations (SYNOP) in the domain. A
+report counts as fog or low stratus when visibility is below 1 km or a broken or overcast deck has its
+base below 1 km. The BTD threshold was tuned on the training season 2023-24 only, and the test season
+2024-25 was scored once at the end. Cases the satellite can see:
+
+| Labels | Season | POD | FAR | CSI (95 % interval) |
+|---|---|---|---|---|
+| before: `dynamic`, peak + 1.5 K, fallback 5.0 K | training | 0.27 | 0.19 | 0.26 (0.20–0.32) |
+| now: `fixed`, 4.0 K | training | 0.50 | 0.28 | 0.42 (0.37–0.47) |
+| now: `fixed`, 4.0 K | **test** | 0.70 | 0.19 | 0.60 (0.55–0.64) |
+
+Some limits:
+
+- **The test season was easier,** with wide low-stratus decks and less fog under high cloud. The gap between the seasons
+  says that one season's score is only a rough measure of the labels.
+
+- **The threshold was chosen on HSS / PSS.** CSI alone peaks at 3.5 K, but there half of the
+  cloud-free ground in the north is labelled fog, so 4.0 K was chosen instead.
+- **Clear ground in the north still gets false fog.** A quarter of it is labelled fog at 4.0 K, against 5 % in the
+  south (viewing-angle drift).
+- **Half of the reported fog lies under high cloud**, where the labels say `2`, obscured.
+
+Everything, including the test-season result, is in
+[`docs/notes/station_validation.md`](docs/notes/station_validation.md).
+
+The work on better labels before a model is trained is in
+[`docs/notes/better_labels.md`](docs/notes/better_labels.md): a held-out set of nights and stations, a full count in
+which an ignored pixel under a fog report is a miss (POD 0.43 at FAR 0.25 on the held-out cases for the 4.0 K
+labels), and why the visible fog is missed (half of it has a BTD where clear ground sits, mostly broken decks).
+A teacher trained on the station truth reaches POD 0.769 at FAR 0.266 on the held-out cases. It was not kept as the
+labels, because its FAR is 0.011 higher than the rule's, which the pre-registered keep rule does not allow. The owner
+then chose its labels as the training labels of the U-Net (`labels.mode: teacher`).
+
+## The U-Net
+
+A small U-Net (depth 4, 16 channels at the top, 1.97 M weights) maps one night scene to a fog map. Its 14 input
+channels per pixel are the 8 IR brightness temperatures, three differences, terrain height, solar zenith angle and a
+trusted flag. It trains on the teacher labels of the 248 scenes in night folds 1–4 of 2023-24. Four losses were
+cross-validated over those folds. The winner adds the raw station truth of the training stations to the soft teacher
+target. Every run is tracked with MLflow. Held-out cases, full count:
+
+| Labels | POD | FAR | CSI |
+|---|---|---|---|
+| rule, fixed 4.0 K | 0.433 | 0.255 | 0.377 |
+| teacher store | 0.769 | 0.266 | 0.601 |
+| **U-Net** | **0.865** | **0.266** | **0.658** |
+| U-Net, both night and station unseen | 0.909 | 0.277 | 0.674 |
+
+Most of the lead over the teacher store is the teacher's ignore band, which the full count scores as a miss. Decided at
+every pixel, the teacher reaches 0.845 at FAR 0.302, so the U-Net is ahead by a little POD and less FAR. These
+held-out cases have now been looked at four times. The test season 2024-25 is still closed and is the clean test.
+Protocol, cross-validation, maps and caveats are in [`docs/notes/unet.md`](docs/notes/unet.md).
 
 ## How the parts fit together
 
@@ -79,6 +138,46 @@ flowchart LR
     dynamic --> select["fogseg select-scenes"]
     data --> select
     select --> check["configs/check_scenes.yaml"]
+    iem["IEM METAR, Ogimet SYNOP"] --> stations["fogseg stations"]
+    stations --> obs["observations_*.csv"]
+    obs --> validate["fogseg validate / tune"]
+    fixed --> validate
+    dynamic --> validate
+    data --> validate
+    validate --> scores["scores, cases, tuning grids"]
+    glo["Copernicus GLO-90 (AWS)"] --> dem["fogseg dem"]
+    dem --> demstore["dem_ceu.zarr"]
+    demstore --> validate
+    cds["Copernicus CDS, ERA5"] --> era5["fogseg era5"]
+    era5 --> era5store["era5_ceu.zarr"]
+    split["fogseg split"] --> folds["splits_2023-24.csv"]
+    folds --> validate
+    scores --> diagnose["fogseg diagnose"]
+    folds --> diagnose
+    era5store --> diagnose
+    diagnose --> diagnosis["diagnosis_2023-24.csv"]
+    folds --> experiment["fogseg experiment --phase B"]
+    data --> experiment
+    experiment --> expB["experiment_B.csv, experiment_B_held_out.csv"]
+    folds --> teacher["fogseg teacher"]
+    data --> teacher
+    demstore --> teacher
+    teacher --> model["teacher.joblib"]
+    model --> labelteacher["fogseg label --mode teacher"]
+    data --> labelteacher
+    labelteacher --> teacherstore["labels_teacher.zarr<br/>label, fog_probability"]
+    teacherstore --> train["fogseg train"]
+    data --> train
+    demstore --> train
+    folds --> train
+    train --> unet["unet.pt, unet_cv.csv<br/>MLflow runs"]
+    unet --> predict["fogseg predict"]
+    data --> predict
+    predict --> predstore["predictions_unet.zarr"]
+    predstore --> evaluate["fogseg evaluate"]
+    teacherstore --> evaluate
+    fixed --> evaluate
+    evaluate --> heldout["unet_held_out.csv / .json"]
 ```
 
 ## What exists so far
@@ -90,10 +189,27 @@ flowchart LR
 | Quick access test (token, search, 1 KB download) | `fogseg check` |
 | Stack all scenes into one ML-ready Zarr store | `fogseg build` ([`src/fogseg/build.py`](src/fogseg/build.py)) |
 | Where clear ground and low cloud sit in the BTD, and the thresholds measured from it | [`notebooks/02_explore_btd.ipynb`](notebooks/02_explore_btd.ipynb), [`docs/notes/btd_exploration.md`](docs/notes/btd_exploration.md) |
-| Weak fog labels (`0` / `1` / `255`), one Zarr store per mode, `fixed` or `dynamic` threshold | `fogseg label` ([`src/fogseg/label_store.py`](src/fogseg/label_store.py), [`labels.py`](src/fogseg/labels.py), [`dynamic_threshold.py`](src/fogseg/dynamic_threshold.py)) |
+| Weak fog labels (`0` / `1` / `2` / `255`), one Zarr store per mode, `fixed` or `dynamic` threshold | `fogseg label` ([`src/fogseg/label_store.py`](src/fogseg/label_store.py), [`labels.py`](src/fogseg/labels.py), [`dynamic_threshold.py`](src/fogseg/dynamic_threshold.py)) |
 | Check figure of one scene: RGB, labels, BTD histogram, solar zenith angle | `fogseg inspect` ([`src/fogseg/inspect.py`](src/fogseg/inspect.py)) |
 | Pick the 15 training-season scenes to check by eye, with a fixed rule | `fogseg select-scenes` → [`configs/check_scenes.yaml`](configs/check_scenes.yaml) |
-| The visual check of the labels and why `dynamic` is the default | [`docs/notes/label_check.md`](docs/notes/label_check.md) |
+| The visual check of the labels | [`docs/notes/label_check.md`](docs/notes/label_check.md) |
+| Download METAR and SYNOP reports for the stations in the domain (resumable) | `fogseg stations` ([`observations.py`](src/fogseg/observations.py), [`metar.py`](src/fogseg/metar.py), [`synop.py`](src/fogseg/synop.py)) |
+| Score a label store against the stations: POD, FAR, CSI with bootstrap intervals over nights | `fogseg validate` ([`validation.py`](src/fogseg/validation.py), [`scores.py`](src/fogseg/scores.py)) |
+| Tune the BTD threshold on the training season | `fogseg tune` ([`tuning.py`](src/fogseg/tuning.py)) |
+| Held-out nights and stations of the training season, and the cross-validation folds | `fogseg split` ([`splits.py`](src/fogseg/splits.py)) |
+| Pixel-mean terrain height from Copernicus GLO-90 | `fogseg dem` ([`dem.py`](src/fogseg/dem.py)) |
+| ERA5 2 m temperature, skin temperature, dewpoint and snow depth at each scene, on the grid | `fogseg era5` ([`era5.py`](src/fogseg/era5.py)) |
+| Why visible station fog is missed, on the selection cases | `fogseg diagnose` ([`diagnosis.py`](src/fogseg/diagnosis.py)) |
+| Label-rule variants cross-validated at matched FAR, then the winner against the configured rule on the held-out cases, once | `fogseg experiment --phase B` ([`experiment.py`](src/fogseg/experiment.py)) |
+| A per-pixel teacher trained on the station truth, cross-validated, then scored once on the held-out cases; an optional local correction | `fogseg teacher` ([`teacher.py`](src/fogseg/teacher.py), [`features.py`](src/fogseg/features.py)) |
+| Dense teacher labels `labels_teacher.zarr` (`label` and `fog_probability`), the labels the U-Net trains on (`labels.mode: teacher`) | `fogseg label --mode teacher` ([`teacher_labels.py`](src/fogseg/teacher_labels.py)) |
+| A U-Net on the teacher labels: four loss settings cross-validated over the night folds, then the winner fitted and saved, tracked with MLflow | `fogseg train` ([`unet.py`](src/fogseg/unet.py), [`unet_data.py`](src/fogseg/unet_data.py), [`unet_train.py`](src/fogseg/unet_train.py), [`unet_cv.py`](src/fogseg/unet_cv.py), [`tracking.py`](src/fogseg/tracking.py)) |
+| The U-Net's fog probability and label of every pixel, `predictions_unet.zarr` | `fogseg predict` ([`unet_predict.py`](src/fogseg/unet_predict.py)) |
+| The U-Net against the teacher and the rule on the held-out cases, once | `fogseg evaluate` ([`unet_eval.py`](src/fogseg/unet_eval.py)) |
+| The U-Net protocol, its cross-validation and held-out results | [`docs/notes/unet.md`](docs/notes/unet.md) |
+| A wider U-Net on a Colab GPU, compared on the cross-validation | [`notebooks/03_train_unet_colab.ipynb`](notebooks/03_train_unet_colab.ipynb) |
+| The protocol, the re-scored baseline, the miss diagnosis and the phase B and C results | [`docs/notes/better_labels.md`](docs/notes/better_labels.md) |
+| The station check, the tuning decisions and where the labels fail | [`docs/notes/station_validation.md`](docs/notes/station_validation.md) |
 | All settings (region, channels, seasons, night slots, label thresholds, paths) | [`configs/default.yaml`](configs/default.yaml) |
 | Tests on tiny synthetic scenes (no data or credentials needed) | `pytest` ([`tests/`](tests/)) |
 
@@ -116,16 +232,69 @@ fogseg fetch --dry-run                # how many scenes would be fetched
 fogseg fetch --workers 2              # download + crop all scenes (resumable)
 fogseg build                          # stack them into one Zarr store
 
-fogseg label                          # labels_<mode>.zarr; mode = labels.mode in the config (dynamic)
-fogseg label --mode fixed             # the fixed-threshold version; --overwrite replaces a store
+fogseg label --mode fixed             # labels_fixed.zarr, the 4.0 K rule; without --mode: labels.mode
+fogseg label --mode dynamic           # the dynamic-threshold version; --overwrite replaces a store
 fogseg select-scenes                  # write configs/check_scenes.yaml (uses labels.mode, or --labels); --overwrite replaces it
 fogseg inspect --time 2024-02-29T03:00 --labels dynamic   # one check figure, a PNG in labels.figures_dir
+
+fogseg stations                       # METAR and SYNOP reports (no account needed; SYNOP takes many hours)
+fogseg dem                            # terrain height per pixel (public AWS bucket, ~3 min)
+fogseg era5                           # ERA5 fields per scene; needs a CDS key in ~/.cdsapirc
+fogseg split                          # held-out nights and stations, written once
+fogseg validate --season 2023-24      # score labels.mode against the stations
+fogseg diagnose                       # why visible fog is missed, selection cases only
+fogseg experiment --phase B           # label variants on the selection cases; add --held-out once for the winner
+fogseg teacher                        # the station-trained teacher, cross-validated on the selection cases
+fogseg teacher --held-out             # the teacher against the rule on the held-out cases, once
+fogseg label --mode teacher           # labels_teacher.zarr, the U-Net's training labels (labels.mode: teacher)
+fogseg tune                           # tuning grids on the selection cases of the training season
+
+# the U-Net needs torch and mlflow: pip install -e ".[model]" (with CUDA, install torch from pytorch.org first)
+fogseg train                          # 4 settings x 4 night folds, then the winner on all of them (~2 h on a GTX 1050 Ti)
+fogseg predict                        # predictions_unet.zarr for the training season; the test season needs --final
+fogseg evaluate                       # the U-Net, the teacher and the rule on the held-out cases, once
+mlflow ui --backend-store-uri sqlite:////mnt/d/fogseg-data/mlflow/mlflow.db   # the runs, losses and files
 
 pip install -e ".[dev]" && pytest     # run the tests
 ```
 
 Paths in `configs/default.yaml` point to `/mnt/d/...` (a Windows D: drive seen from WSL); change
 them for your machine. Satellite data is never committed to this repository.
+
+## Training a wider U-Net on Colab
+
+[`notebooks/03_train_unet_colab.ipynb`](notebooks/03_train_unet_colab.ipynb) runs `fogseg train` on a Colab GPU with
+`unet.base_channels` 32 or 48. It reads these files from `MyDrive/fogseg`:
+
+| On this machine | On Drive, in `MyDrive/fogseg` | Size |
+|---|---|---|
+| `processed/seviri_ceu.zarr` | `processed/seviri_ceu.zarr` | 803 MB, 229 files |
+| `processed/labels_teacher.zarr` | `processed/labels_teacher.zarr` | 36 MB, 487 files |
+| `processed/dem_ceu.zarr` | `processed/dem_ceu.zarr` | 1.5 MB, 17 files |
+| `stations/cases_fixed_2023-24.csv` | `stations/cases_fixed_2023-24.csv` | 41 MB |
+| `stations/splits_2023-24.csv` | `stations/splits_2023-24.csv` | 1.4 KB |
+
+Copy these five and nothing else from `stations`. The `cases_*_2024-25.csv` tables belong to the closed test season,
+and `fogseg train` refuses a folder with `unet_held_out.*`; the notebook stops if the Drive folder holds anything else.
+The two stores hold the imagery and labels of both seasons, because `fogseg train` checks them scene by scene, but it
+reads only the scenes of 2023-24.
+
+With Google Drive for desktop, in PowerShell (the folder is `G:\Drive'ım` on a Turkish system):
+
+```powershell
+$drive = "G:\My Drive\fogseg"
+foreach ($store in "seviri_ceu.zarr", "labels_teacher.zarr", "dem_ceu.zarr") {
+    robocopy "D:\fogseg-data\processed\$store" "$drive\processed\$store" /E
+}
+robocopy D:\fogseg-data\stations "$drive\stations" cases_fixed_2023-24.csv splits_2023-24.csv
+```
+
+Wait until Drive for desktop reports the upload as finished before starting the notebook. Without Drive for desktop,
+upload the three `.zarr` folders and the two files at [drive.google.com](https://drive.google.com) into those folders.
+
+Each width writes to its own folder `MyDrive/fogseg/runs/unet_base<width>`, and the MLflow runs go to
+`MyDrive/fogseg/mlflow/mlflow.db`, experiment `fogseg-unet-colab`. A wider model is judged on the cross-validation
+only; see [the notes](docs/notes/unet.md#a-wider-u-net-on-colab).
 
 ## Branches, CI and releases
 

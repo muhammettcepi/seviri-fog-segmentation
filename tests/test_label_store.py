@@ -12,29 +12,76 @@ import pytest
 import xarray as xr
 import yaml
 from helpers import (
+    BASE_FIELDS,
     LABEL_DATASET_CREATED,
     LABEL_NX,
     LABEL_NY,
     TEST_DYNAMIC,
     TEST_PARAMS,
+    label_scenes,
     make_label_dataset,
 )
 
 import fogseg
 from fogseg import label_store
+from fogseg.build import variable_length_strings
 from fogseg.cli import cmd_label
 from fogseg.config import load_config
-from fogseg.label_store import label_dataset, label_store_path, summarize_store
-from fogseg.labels import FOG, IGNORE
+from fogseg.label_store import (
+    check_mode,
+    label_dataset,
+    label_fractions,
+    label_store_path,
+    night_batches,
+    stored_params,
+    summarize_store,
+)
+from fogseg.labels import FOG, IGNORE, OBSCURED, LabelParams, label_night
 
 # Small enough for the 80-pixel test scenes, so the dynamic threshold really finds the clear-ground peak
 SMALL_SCENE_DYNAMIC = dataclasses.replace(TEST_DYNAMIC, min_pixels=10)
 PATCH_PIXELS = 5 * 5
 SCENE_PIXELS = LABEL_NY * LABEL_NX
+FIRST_SLOT = np.datetime64("2023-11-20T21:00", "ns")
+SLOT = np.timedelta64(3, "h")
 
 
 def open_store(path: Path) -> xr.Dataset:
     return xr.open_zarr(path, consolidated=False)
+
+
+def scene_times(stamps: list[str]) -> list[np.datetime64]:
+    return [np.datetime64(stamp, "ns") for stamp in stamps]
+
+
+def write_dataset(
+    tmp_path: Path,
+    n_nights: int = 1,
+    slots: int = 3,
+    scene_sza: dict[int, float] | None = None,
+    patch_btd: dict[int, float] | None = None,
+) -> Path:
+    """Like `make_label_dataset`, with `slots` scenes at 21:00, 00:00, ... on each of `n_nights` days.
+
+    `patch_btd` maps a scene index to the BTD of its fog patch in K instead of 5.0.
+    """
+    dataset = label_scenes(n_nights * slots, scene_sza, background_btd=1.8)
+    night_starts = FIRST_SLOT + np.arange(n_nights) * np.timedelta64(1, "D")
+    dataset["time"] = (night_starts[:, None] + np.arange(slots) * SLOT).ravel()
+    for scene, btd in (patch_btd or {}).items():
+        dataset["bt"][scene, 0, :5, :5] = 270.0 - btd
+
+    path = tmp_path / "data.zarr"
+    variable_length_strings(dataset).to_zarr(path, mode="w", zarr_format=3, consolidated=False)
+    return path
+
+
+def night_inputs(dataset: Path, night: int, slots: int = 3) -> tuple[np.ndarray, ...]:
+    """IR_039, IR_108, IR_120 and sza of the scenes of one night of a `write_dataset` dataset."""
+    with xr.open_zarr(dataset, consolidated=False) as data:
+        scenes = data.isel(time=slice(night * slots, (night + 1) * slots))
+        bt = scenes["bt"].sel(channel=["IR_039", "IR_108", "IR_120"]).values
+        return bt[:, 0], bt[:, 1], bt[:, 2], scenes["sza"].values
 
 
 def test_label_store_path_is_named_after_the_mode(tmp_path):
@@ -48,7 +95,7 @@ def test_store_has_spec_variables_and_aligns_with_the_dataset(tmp_path):
     assert label_dataset(data, out, "fixed", TEST_PARAMS) == 3
     labels = open_store(out)
     assert labels["label"].dtype == np.uint8
-    assert set(np.unique(labels["label"])) <= {0, 1, 255}
+    assert set(np.unique(labels["label"])) <= {0, 1, 2, 255}
     assert list(labels["threshold_source"].values) == ["fixed"] * 3
     merged = xr.merge([open_store(data), labels])
     assert merged.sizes["time"] == 3
@@ -64,6 +111,29 @@ def test_threshold_source_is_stored_as_a_variable_length_string(tmp_path):
     assert metadata["data_type"] == "string"
 
 
+def test_label_fractions_report_obscured_separately():
+    fog, ignored, obscured = label_fractions(np.array([1, 0, 2, 2, 255], dtype=np.uint8))
+    assert (fog, ignored, obscured) == (0.5, 0.2, 0.4)
+
+
+def test_label_fractions_exclude_obscured_pixels_from_the_decided_ones():
+    fog, _, _ = label_fractions(np.array([1, 2, 2, 2], dtype=np.uint8))
+    assert fog == 1.0
+
+
+def test_store_has_obscured_fraction_and_lists_value_2_in_the_label_name(tmp_path):
+    data = make_label_dataset(tmp_path / "data.zarr")
+    out = tmp_path / "labels_fixed.zarr"
+    label_dataset(data, out, "fixed", TEST_PARAMS)
+    labels = open_store(out)
+
+    assert labels["obscured_fraction"].dims == ("time",)
+    assert labels["obscured_fraction"].dtype == np.float32
+    assert "2 obscured" in labels["label"].attrs["long_name"]
+    expected = (labels["label"] == OBSCURED).mean(dim=["y", "x"]).values
+    np.testing.assert_allclose(labels["obscured_fraction"].values, expected)
+
+
 def test_store_variables_have_the_documented_layout(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_fixed.zarr"
@@ -72,7 +142,7 @@ def test_store_variables_have_the_documented_layout(tmp_path):
 
     assert labels["label"].dims == ("time", "y", "x")
     assert labels["label"].encoding["chunks"] == (8, LABEL_NY, LABEL_NX)
-    for name in ["btd_threshold", "fog_fraction", "ignore_fraction"]:
+    for name in ["btd_threshold", "fog_fraction", "ignore_fraction", "obscured_fraction"]:
         assert labels[name].dims == ("time",)
         assert labels[name].dtype == np.float32
     assert labels["threshold_source"].dims == ("time",)
@@ -153,7 +223,7 @@ def test_scene_without_night_gets_nan_fog_fraction(tmp_path):
 
 
 def test_batches_give_the_same_store_as_one_pass(tmp_path):
-    data = make_label_dataset(tmp_path / "data.zarr", n_scenes=5, scene_sza={3: 80.0})
+    data = write_dataset(tmp_path, n_nights=3, slots=2, scene_sza={3: 80.0})
     one_pass = tmp_path / "one_pass.zarr"
     batched = tmp_path / "batched.zarr"
     label_dataset(data, one_pass, "fixed", TEST_PARAMS, batch=32)
@@ -167,6 +237,84 @@ def test_dynamic_batches_keep_every_source_label(tmp_path):
     out = tmp_path / "labels_dynamic.zarr"
     label_dataset(data, out, "dynamic", TEST_PARAMS, dynamic=TEST_DYNAMIC, batch=1)
     assert list(open_store(out)["threshold_source"].values) == ["fallback"] * 3
+
+
+def test_night_batches_never_split_a_night():
+    times = np.array(scene_times(["2023-10-01T21", "2023-10-02T00", "2023-10-02T03", "2023-10-03T21"]))
+    assert night_batches(times, 2) == [(0, 3), (3, 4)]
+
+
+def test_night_batches_fill_a_batch_with_whole_nights():
+    times = np.array(scene_times(["2023-10-01T21", "2023-10-02T03", "2023-10-02T21", "2023-10-03T21"]))
+    assert night_batches(times, 3) == [(0, 3), (3, 4)]
+    assert night_batches(times, 4) == [(0, 4)]
+
+
+def test_night_runs_from_noon_to_noon():
+    times = np.array(scene_times(["2023-10-01T11", "2023-10-01T12"]))
+    assert night_batches(times, 1) == [(0, 1), (1, 2)]
+
+
+def test_store_with_temporal_relax_matches_label_night(tmp_path):
+    dataset = write_dataset(tmp_path, n_nights=2, slots=3, patch_btd={1: 2.3})
+    params = dataclasses.replace(TEST_PARAMS, temporal_relax=0.5)
+    label_dataset(dataset, tmp_path / "labels.zarr", "fixed", params, batch=2)
+    stored = open_store(tmp_path / "labels.zarr")["label"].values
+
+    thresholds = np.full(3, params.btd_fixed)
+    assert np.array_equal(stored[:3], label_night(*night_inputs(dataset, 0), thresholds, params))
+    assert np.array_equal(stored[3:], label_night(*night_inputs(dataset, 1), thresholds, params))
+    assert stored[1, 2, 2] == FOG  # the strict label of this pixel is IGNORE
+
+
+def test_dynamic_store_matches_label_night(tmp_path):
+    dataset = write_dataset(tmp_path, n_nights=1, slots=3)
+    params = dataclasses.replace(TEST_PARAMS, temporal_relax=0.5)
+    label_dataset(dataset, tmp_path / "labels.zarr", "dynamic", params, SMALL_SCENE_DYNAMIC)
+    labels = open_store(tmp_path / "labels.zarr")
+
+    expected = label_night(*night_inputs(dataset, 0), labels["btd_threshold"].values, params)
+    assert np.array_equal(labels["label"].values, expected)
+
+
+def test_emissivity_store_records_its_threshold(tmp_path):
+    params = dataclasses.replace(TEST_PARAMS, fog_index="emissivity", emissivity_max=0.9)
+    label_dataset(write_dataset(tmp_path), tmp_path / "labels.zarr", "fixed", params)
+    store = open_store(tmp_path / "labels.zarr")
+    assert np.allclose(store["btd_threshold"].values, 0.9) and store.attrs["fog_index"] == "emissivity"
+
+
+def test_dynamic_mode_refuses_the_emissivity_index():
+    params = dataclasses.replace(TEST_PARAMS, fog_index="emissivity", emissivity_max=0.9)
+    with pytest.raises(ValueError, match="dynamic"):
+        check_mode("dynamic", TEST_DYNAMIC, params)
+
+
+def test_the_rule_store_refuses_the_teacher_mode(tmp_path):
+    with pytest.raises(ValueError, match="label_teacher_dataset"):
+        label_dataset(write_dataset(tmp_path), tmp_path / "labels.zarr", "teacher", TEST_PARAMS)
+    assert not list(tmp_path.glob("labels*"))
+
+
+def test_emissivity_index_needs_its_threshold():
+    params = dataclasses.replace(TEST_PARAMS, fog_index="emissivity")
+    with pytest.raises(ValueError, match=r"labels\.emissivity_max"):
+        check_mode("fixed", None, params)
+
+
+def test_store_records_the_new_options_and_reads_them_back(tmp_path):
+    params = dataclasses.replace(TEST_PARAMS, texture="blob", split_window="kma", temporal_relax=0.5)
+    label_dataset(write_dataset(tmp_path), tmp_path / "labels.zarr", "fixed", params)
+    attrs = open_store(tmp_path / "labels.zarr").attrs
+
+    assert attrs["emissivity_max"] is None
+    assert stored_params(attrs, TEST_DYNAMIC)[0] == params
+
+
+def test_old_store_attributes_give_the_default_options():
+    attrs = {"mode": "fixed", **{name: getattr(TEST_PARAMS, name) for name in BASE_FIELDS}}
+    params, _ = stored_params(attrs, TEST_DYNAMIC)
+    assert params == LabelParams(**{name: getattr(TEST_PARAMS, name) for name in BASE_FIELDS})
 
 
 def test_fixed_store_attrs_describe_the_run(tmp_path):
@@ -268,21 +416,21 @@ def test_overwrite_replaces_the_store(tmp_path):
 
 
 def test_failure_while_overwriting_keeps_the_old_store(tmp_path, monkeypatch):
-    data = make_label_dataset(tmp_path / "data.zarr")
+    data = write_dataset(tmp_path, n_nights=2, slots=2)
     out = tmp_path / "labels_fixed.zarr"
     label_dataset(data, out, "fixed", TEST_PARAMS)
     before = open_store(out).load()
 
-    real_label_scene = label_store.label_scene
+    real_label_night = label_store.label_night
     calls = []
 
-    def fail_on_second_scene(*args, **kwargs):
+    def fail_on_second_night(*args, **kwargs):
         calls.append(1)
         if len(calls) == 2:
             raise RuntimeError("simulated failure")
-        return real_label_scene(*args, **kwargs)
+        return real_label_night(*args, **kwargs)
 
-    monkeypatch.setattr(label_store, "label_scene", fail_on_second_scene)
+    monkeypatch.setattr(label_store, "label_night", fail_on_second_night)
     with pytest.raises(RuntimeError, match="simulated failure"):
         label_dataset(data, out, "fixed", TEST_PARAMS, overwrite=True, batch=1)
 
@@ -297,7 +445,7 @@ def test_failure_on_a_first_write_leaves_nothing_behind(tmp_path, monkeypatch):
     def always_fail(*args, **kwargs):
         raise RuntimeError("simulated failure")
 
-    monkeypatch.setattr(label_store, "label_scene", always_fail)
+    monkeypatch.setattr(label_store, "label_night", always_fail)
     with pytest.raises(RuntimeError):
         label_dataset(data, out, "fixed", TEST_PARAMS)
     assert not out.exists()
