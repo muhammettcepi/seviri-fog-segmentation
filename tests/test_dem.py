@@ -94,7 +94,8 @@ def test_fetch_tile_caches_the_file(tmp_path, tile_file):
     first = fetch_tile(45, 5, tmp_path / "raw", copy_tile(tile_file, calls))
     second = fetch_tile(45, 5, tmp_path / "raw", copy_tile(tile_file, calls))
     assert first == second == tmp_path / "raw" / f"{tile_name(45, 5)}.tif"
-    assert first.exists() and len(calls) == 1
+    assert first.exists()
+    assert len(calls) == 1
 
 
 def test_missing_tile_is_marked_sea_and_not_fetched_again(tmp_path):
@@ -131,7 +132,8 @@ def test_grid_statistics_mean_std_and_sea():
     mean, std = grid_statistics(
         np.array([5.0, 5.001, 5.002]), np.array([45.0, 45.0, 45.0]), np.array([100.0, 200.0, 300.0]), lon, lat
     )
-    assert mean.tolist() == [[200.0, 0.0]] and std[0, 0] == pytest.approx(np.std([100, 200, 300]))
+    assert mean.tolist() == [[200.0, 0.0]]
+    assert std[0, 0] == pytest.approx(np.std([100, 200, 300]))
     assert std[0, 1] == 0.0
 
 
@@ -163,16 +165,16 @@ def test_build_dem_store_gives_the_relief_inside_a_pixel(tmp_path, tile_file):
     out_path = tmp_path / "dem.zarr"
     build_dem_store(make_grid([5.5], [45.5]), tmp_path / "raw", out_path, copy_tile(tile_file))
     with xr.open_zarr(out_path, consolidated=False) as store:
-        assert store["elevation_mean"].values.tolist() == [[9.5]] and store[
-            "elevation_std"
-        ].values.tolist() == [[5.0]]
+        assert store["elevation_mean"].values.tolist() == [[9.5]]
+        assert store["elevation_std"].values.tolist() == [[5.0]]
 
 
 def test_build_dem_store_over_sea_is_zero(tmp_path):
     out_path = tmp_path / "dem.zarr"
     build_dem_store(make_grid([0.1, 0.4], [60.1, 60.4]), tmp_path / "raw", out_path, lambda url, path: False)
     with xr.open_zarr(out_path, consolidated=False) as store:
-        assert (store["elevation_mean"] == 0).all() and (store["elevation_std"] == 0).all()
+        assert (store["elevation_mean"] == 0).all()
+        assert (store["elevation_std"] == 0).all()
 
 
 def test_read_dem_returns_the_store(tmp_path, tile_file):
@@ -199,7 +201,8 @@ def test_http_fetch_saves_through_a_part_file(tmp_path, monkeypatch):
     monkeypatch.setattr(dem.urllib.request, "urlopen", lambda url, timeout: FakeResponse(b"tiff"))
     path = tmp_path / "tile.tif"
     assert http_fetch("https://example.test/tile.tif", path) is True
-    assert path.read_bytes() == b"tiff" and not path.with_name("tile.tif.part").exists()
+    assert path.read_bytes() == b"tiff"
+    assert not path.with_name("tile.tif.part").exists()
 
 
 def raise_http_error(code: int):

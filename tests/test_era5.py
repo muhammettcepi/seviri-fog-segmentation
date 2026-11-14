@@ -60,7 +60,8 @@ def test_month_requests_group_scene_days_and_hours():
     requests = month_requests(times, [55.5, 1.5, 42.5, 20.5], ["2m_temperature"])
     assert [month for month, _ in requests] == ["2023-11", "2023-12"]
     november = requests[0][1]
-    assert november["day"] == ["20", "21"] and november["time"] == ["03:00", "21:00"]
+    assert november["day"] == ["20", "21"]
+    assert november["time"] == ["03:00", "21:00"]
 
 
 def test_month_request_asks_for_netcdf_on_the_area():
@@ -91,7 +92,10 @@ def test_era5_area_ignores_nan_pixels():
 def test_era5_area_covers_a_grid_wider_than_the_bbox():
     lon, lat = np.meshgrid(np.linspace(1.57, 27.44, 50), np.linspace(42.59, 56.12, 40))
     north, west, south, east = era5_area(lon, lat)
-    assert west <= lon.min() and lon.max() <= east and south <= lat.min() and lat.max() <= north
+    assert west <= lon.min()
+    assert lon.max() <= east
+    assert south <= lat.min()
+    assert lat.max() <= north
 
 
 def test_era5_variables_map_to_the_short_names_in_the_files():
@@ -154,7 +158,8 @@ def test_download_months_skips_existing_files(tmp_path):
     (tmp_path / "era5_2023-11.nc").write_text("done")
     calls = []
     failed = download_months([("2023-11", {})], tmp_path, lambda request, path: calls.append(path))
-    assert failed == [] and calls == []
+    assert failed == []
+    assert calls == []
 
 
 def test_failed_month_is_reported_and_not_written(tmp_path, caplog):
@@ -165,7 +170,8 @@ def test_failed_month_is_reported_and_not_written(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="fogseg"):
         assert download_months([("2023-11", {})], tmp_path, retrieve) == ["2023-11"]
     assert not list(tmp_path.glob("*.nc*"))
-    assert "2023-11" in caplog.text and "queue full" in caplog.text
+    assert "2023-11" in caplog.text
+    assert "queue full" in caplog.text
 
 
 def test_failed_month_does_not_stop_the_other_months(tmp_path):
@@ -309,9 +315,10 @@ def test_cmd_era5_refuses_an_existing_store_without_overwrite(tmp_path, cds_envi
 def test_cmd_era5_without_credentials_points_to_the_cds_instructions(tmp_path, cds_environment):
     write_dataset(tmp_path / "seviri.zarr")
     args = argparse.Namespace(config=str(write_config(tmp_path, tmp_path / "seviri.zarr")), overwrite=False)
-    with pytest.raises(SystemExit, match="https://cds.climate.copernicus.eu/how-to-api"):
+    with pytest.raises(SystemExit, match=r"https://cds\.climate\.copernicus\.eu/how-to-api"):
         cmd_era5(args)
-    assert FakeClient.requests == [] and not (tmp_path / "era5.zarr").exists()
+    assert FakeClient.requests == []
+    assert not (tmp_path / "era5.zarr").exists()
 
 
 def test_cmd_era5_downloads_the_months_and_writes_the_store(tmp_path, cds_environment):
@@ -341,7 +348,8 @@ def test_cmd_era5_builds_no_store_while_a_month_is_missing(tmp_path, cds_environ
     with caplog.at_level(logging.WARNING, logger="fogseg"):
         cmd_era5(args)
     assert not (tmp_path / "era5.zarr").exists()
-    assert "2023-12" in caplog.text and "fogseg era5" in caplog.text
+    assert "2023-12" in caplog.text
+    assert "fogseg era5" in caplog.text
 
     FakeClient.failing_months = set()
     FakeClient.requests = []

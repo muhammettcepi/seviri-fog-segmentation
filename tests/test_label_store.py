@@ -281,7 +281,8 @@ def test_emissivity_store_records_its_threshold(tmp_path):
     params = dataclasses.replace(TEST_PARAMS, fog_index="emissivity", emissivity_max=0.9)
     label_dataset(write_dataset(tmp_path), tmp_path / "labels.zarr", "fixed", params)
     store = open_store(tmp_path / "labels.zarr")
-    assert np.allclose(store["btd_threshold"].values, 0.9) and store.attrs["fog_index"] == "emissivity"
+    assert np.allclose(store["btd_threshold"].values, 0.9)
+    assert store.attrs["fog_index"] == "emissivity"
 
 
 def test_dynamic_mode_refuses_the_emissivity_index():
@@ -353,7 +354,7 @@ def test_dynamic_store_attrs_include_the_dynamic_params(tmp_path):
 
 
 def test_missing_dataset_names_the_expected_path(tmp_path):
-    with pytest.raises(FileNotFoundError, match="nowhere.zarr"):
+    with pytest.raises(FileNotFoundError, match=r"nowhere\.zarr"):
         label_dataset(tmp_path / "nowhere.zarr", tmp_path / "labels.zarr", "fixed", TEST_PARAMS)
 
 
@@ -386,7 +387,7 @@ def test_missing_bt_is_reported(tmp_path):
 
 def test_unknown_mode_is_rejected(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
-    with pytest.raises(ValueError, match="mode.*sometimes"):
+    with pytest.raises(ValueError, match=r"mode.*sometimes"):
         label_dataset(data, tmp_path / "labels.zarr", "sometimes", TEST_PARAMS)
 
 
@@ -400,7 +401,7 @@ def test_refuses_to_overwrite_without_the_flag(tmp_path):
     data = make_label_dataset(tmp_path / "data.zarr")
     out = tmp_path / "labels_fixed.zarr"
     label_dataset(data, out, "fixed", TEST_PARAMS)
-    with pytest.raises(FileExistsError, match="labels_fixed.zarr"):
+    with pytest.raises(FileExistsError, match=r"labels_fixed\.zarr"):
         label_dataset(data, out, "fixed", TEST_PARAMS)
 
 

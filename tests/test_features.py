@@ -75,14 +75,15 @@ def test_hours_after_21():
 def test_stack_values_at_one_pixel():
     bt, times, static, era5, rule = night_inputs()
     stack = night_feature_stack(bt, times, static, era5, rule, ALL_GROUPS)
-    at = dict(zip(feature_names(ALL_GROUPS), stack[:, :, 1, 2].T))
+    at = dict(zip(feature_names(ALL_GROUPS), stack[:, :, 1, 2].T, strict=True))
     ir039, ir108 = bt[:, CHANNELS.index("IR_039"), 1, 2], bt[:, CHANNELS.index("IR_108"), 1, 2]
     assert stack.dtype == np.float32
     assert stack.shape == (2, 29, 4, 4)
     assert np.allclose(at["d108_039"], ir108 - ir039)
     assert np.allclose(at["emissivity_39"], emissivity_39(ir039, ir108))
     assert np.allclose(at["night_max_btd"], (ir108 - ir039).max())
-    assert np.isnan(at["ir108_change"][0]) and at["ir108_change"][1] == pytest.approx(ir108[1] - ir108[0])
+    assert np.isnan(at["ir108_change"][0])
+    assert at["ir108_change"][1] == pytest.approx(ir108[1] - ir108[0])
     assert at["rule_fog"].tolist() == (rule[:, 1, 2] == FOG).tolist()
     assert at["rule_ignore"].tolist() == (rule[:, 1, 2] == IGNORE).tolist()
     assert np.allclose(at["t2m_minus_ir108"], era5["t2m"][:, 1, 2] - ir108)
@@ -185,7 +186,7 @@ def test_case_features_match_the_night_stack(tmp_path):
     stack = night_features(data, night, static, None, TEST_PARAMS, groups).stack
     slot = list(data["time"].values[night]).index(cases.loc[1, "scene_time"])
     expected = stack[slot, :, cases.loc[1, "iy"], cases.loc[1, "ix"]]
-    assert table.columns.tolist() == feature_names(groups) + ["has_era5", "trusted"]
+    assert table.columns.tolist() == [*feature_names(groups), "has_era5", "trusted"]
     assert table.index.tolist() == cases.index.tolist()
     assert np.allclose(table.loc[1, feature_names(groups)].to_numpy(float), expected, equal_nan=True)
 
@@ -198,15 +199,18 @@ def test_night_features_carry_trust_and_rule_labels_without_the_rule_group(tmp_p
     assert result.has_era5.tolist() == [True, True]
     assert result.trusted.shape == result.rule_labels.shape == (2, 8, 10)
     assert result.trusted.all()
-    assert result.rule_labels[0, 2, 2] == FOG and result.rule_labels[0, 7, 9] != FOG
+    assert result.rule_labels[0, 2, 2] == FOG
+    assert result.rule_labels[0, 7, 9] != FOG
 
 
 def test_scene_missing_from_era5_gives_nan_and_no_era5(tmp_path):
     data, cases, static = tiny_teacher_season(tmp_path)
     era5 = era5_store(data, without=cases.loc[0, "scene_time"])
     table = case_features(data, cases, static, era5, TEST_PARAMS, ["bt", "era5"])
-    assert not table.loc[0, "has_era5"] and np.isnan(table.loc[0, "t2m_minus_ir108"])
-    assert table.loc[1, "has_era5"] and table.loc[2, "has_era5"]
+    assert not table.loc[0, "has_era5"]
+    assert np.isnan(table.loc[0, "t2m_minus_ir108"])
+    assert table.loc[1, "has_era5"]
+    assert table.loc[2, "has_era5"]
     assert table.loc[1, "t2m_minus_ir108"] == pytest.approx(275.0 + SCENE_OF_CASE_1 - IR_108)
     assert table.loc[2, "t2m_minus_ir108"] == pytest.approx(275.0 + SCENE_OF_CASE_2 - IR_108)
     assert table.loc[1, "snow_depth"] == pytest.approx(0.1 + SCENE_OF_CASE_1)
@@ -238,7 +242,8 @@ def test_case_pixel_without_ir108_is_untrusted_and_has_nan_differences(tmp_path)
     data["bt"][scene, CHANNELS.index("IR_108"), cases.loc[0, "iy"], cases.loc[0, "ix"]] = np.nan
     table = case_features(data, cases, static, None, TEST_PARAMS, ["differences"])
     assert table["trusted"].tolist() == [False, True, True]
-    assert np.isnan(table.loc[0, "d108_039"]) and np.isfinite(table.loc[1, "d108_039"])
+    assert np.isnan(table.loc[0, "d108_039"])
+    assert np.isfinite(table.loc[1, "d108_039"])
 
 
 def test_read_static_takes_the_grid_geometry_and_the_dem_when_asked(tmp_path):
@@ -250,7 +255,8 @@ def test_read_static_takes_the_grid_geometry_and_the_dem_when_asked(tmp_path):
     dem.to_zarr(tmp_path / "dem.zarr", zarr_format=3, consolidated=False)
     flat = read_static(data, tmp_path / "dem.zarr", ["geometry"])
     hilly = read_static(data, tmp_path / "dem.zarr", ["terrain"])
-    assert flat.elevation_mean is None and flat.elevation_std is None
+    assert flat.elevation_mean is None
+    assert flat.elevation_std is None
     assert np.array_equal(flat.latitude, data["lat"].values)
     assert flat.satellite_zenith.shape == (8, 10)
     assert np.array_equal(hilly.elevation_mean, elevation)

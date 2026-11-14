@@ -385,7 +385,7 @@ def test_diagnose_refuses_dynamic_labels(tmp_path):
     cfg["labels"]["mode"] = "dynamic"
     args.config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="fogseg diagnose.*fixed or teacher"):
+    with pytest.raises(ValueError, match=r"fogseg diagnose.*fixed or teacher"):
         cmd_diagnose(args)
     assert not list((tmp_path / "stations").glob("diagnosis_*"))
 

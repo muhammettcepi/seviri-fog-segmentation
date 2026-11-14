@@ -132,8 +132,10 @@ def test_prediction_store_layout_and_attributes(tmp_path):
         assert store["fog_fraction"].dtype == np.float32
         attrs = store.attrs
     model_path = Path(cfg["unet"]["model_path"])
-    assert attrs["mode"] == "unet" and attrs["season"] == "2023-24"
-    assert attrs["unet_setting"] == "3 logistic" and attrs["unet_p_star"] == 0.5
+    assert attrs["mode"] == "unet"
+    assert attrs["season"] == "2023-24"
+    assert attrs["unet_setting"] == "3 logistic"
+    assert attrs["unet_p_star"] == 0.5
     assert attrs["unet_model_path"] == str(model_path)
     assert attrs["unet_model_sha256"] == file_sha256(model_path)
     assert attrs["torch_version"] == str(torch.__version__)
@@ -157,10 +159,15 @@ def test_labels_follow_the_probabilities_of_the_store(tmp_path):
     assert np.array_equal(label[defined], unet_labels(probability[defined] / 250, False, middle / 250))
     assert {FOG, 0} <= set(label[defined].tolist())
     untrusted = np.isnan(p) & ~obscured
-    assert obscured.any() and untrusted.any() and np.isnan(p[0, 0, 0])
-    assert (label[obscured] == OBSCURED).all() and (probability[obscured] == 255).all()
-    assert (label[untrusted] == IGNORE).all() and (probability[untrusted] == 255).all()
-    assert label[1, 1, 1] == IGNORE and label[0, 0, 0] == IGNORE
+    assert obscured.any()
+    assert untrusted.any()
+    assert np.isnan(p[0, 0, 0])
+    assert (label[obscured] == OBSCURED).all()
+    assert (probability[obscured] == 255).all()
+    assert (label[untrusted] == IGNORE).all()
+    assert (probability[untrusted] == 255).all()
+    assert label[1, 1, 1] == IGNORE
+    assert label[0, 0, 0] == IGNORE
 
 
 def test_an_obscured_pixel_stays_obscured_above_the_threshold(tmp_path):
@@ -170,7 +177,8 @@ def test_an_obscured_pixel_stays_obscured_above_the_threshold(tmp_path):
     save_model(cfg, float(p[obscured].min()))
     with run_predict(cfg, overwrite=True) as store:
         label, probability = store["label"].values, store["fog_probability"].values
-    assert (label[obscured] == OBSCURED).all() and (probability[obscured] == 255).all()
+    assert (label[obscured] == OBSCURED).all()
+    assert (probability[obscured] == 255).all()
     assert (label[~obscured & ~np.isnan(p)] == FOG).any()
 
 
@@ -179,7 +187,8 @@ def test_only_the_season_is_written(tmp_path):
     with run_predict(cfg) as store:
         times = store["time"].values
     start, end = season_bounds(cfg, "2023-24")
-    assert len(times) == 4 and ((times >= start) & (times < end)).all()
+    assert len(times) == 4
+    assert ((times >= start) & (times < end)).all()
 
 
 def test_the_test_season_needs_final(tmp_path):
@@ -189,7 +198,8 @@ def test_the_test_season_needs_final(tmp_path):
     assert not Path(cfg["unet"]["predictions_path"]).exists()
     cmd_predict(predict_args(cfg, season="2024-25", final=True))
     with xr.open_zarr(cfg["unet"]["predictions_path"], consolidated=False) as store:
-        assert store.sizes["time"] == 2 and store.attrs["season"] == "2024-25"
+        assert store.sizes["time"] == 2
+        assert store.attrs["season"] == "2024-25"
 
 
 def test_existing_store_needs_overwrite(tmp_path):

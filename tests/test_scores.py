@@ -139,7 +139,8 @@ def test_paired_difference_sign_follows_order():
     better = np.array([[8, 2, 1, 10], [7, 3, 2, 8]])
     worse = np.array([[5, 5, 1, 10], [4, 6, 2, 8]])
     low, high = paired_difference(better, worse, "pod", 200, 0)
-    assert low > 0 and high > 0
+    assert low > 0
+    assert high > 0
 
 
 def test_score_summary_columns_follow_the_requested_intervals():

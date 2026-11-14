@@ -84,12 +84,14 @@ def test_train_command_writes_model_tables_and_runs(tmp_path, mlflow_uri):
         "p",
     ]
     record = json.loads((stations / "unet_config.json").read_text(encoding="utf-8"))
-    assert record["unet"] == cfg["unet"] and record["labels_mode"] == "teacher"
+    assert record["unet"] == cfg["unet"]
+    assert record["labels_mode"] == "teacher"
     assert record["winner"] in set(table["variant"])
     assert set(record["inputs"]) == {"cases_sha256", "splits_sha256", "labels_created"}
 
     model = load_unet(Path(cfg["unet"]["model_path"]))
-    assert model.setting == record["winner"] and model.p_star == record["p_star"]
+    assert model.setting == record["winner"]
+    assert model.p_star == record["p_star"]
     assert model.label_attrs["teacher_setting"] == "3 logistic"
 
     client = mlflow.MlflowClient(mlflow_uri)
@@ -156,5 +158,6 @@ def test_train_fits_only_scenes_of_the_selection_night_folds(tmp_path, mlflow_ur
     assert not np.isin(fit.times, everything[held_out_night]).any()
     assert set(fit.night_folds) == {1, 2}
     assert len(fit.times) == (~held_out_night).sum()
-    assert fit.usable.shape == fit.targets["soft"][0].shape and fit.usable.dtype == bool
+    assert fit.usable.shape == fit.targets["soft"][0].shape
+    assert fit.usable.dtype == bool
     assert fit.usable[fit.points["scene"], fit.points["iy"], fit.points["ix"]].all()

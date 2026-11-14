@@ -157,7 +157,7 @@ def test_download_does_not_save_empty_answer(monkeypatch, tmp_path):
     urls = stub_fetch(monkeypatch, [""])
     path = tmp_path / "answer.csv"
 
-    assert not download("https://example.test", path, 0, 3, lambda text: bool(text))
+    assert not download("https://example.test", path, 0, 3, bool)
 
     assert len(urls) == 3
     assert list(tmp_path.iterdir()) == []
@@ -167,7 +167,7 @@ def test_download_retries_then_saves(monkeypatch, tmp_path):
     urls = stub_fetch(monkeypatch, ["", VALID_ANSWER])
     path = tmp_path / "raw" / "answer.csv"
 
-    assert download("https://example.test", path, 0, 3, lambda text: bool(text))
+    assert download("https://example.test", path, 0, 3, bool)
 
     assert len(urls) == 2
     assert path.read_text() == VALID_ANSWER
@@ -178,7 +178,7 @@ def test_download_pauses_longer_after_an_invalid_answer(monkeypatch, tmp_path):
     pauses = []
     monkeypatch.setattr("time.sleep", pauses.append)
 
-    download("https://example.test", tmp_path / "answer.csv", 10, 3, lambda text: bool(text))
+    download("https://example.test", tmp_path / "answer.csv", 10, 3, bool)
 
     assert pauses == [10, 60, 10]
 
@@ -189,7 +189,7 @@ def test_download_treats_network_errors_as_invalid_answers(monkeypatch, tmp_path
 
     monkeypatch.setattr(observations, "fetch_text", fetch_text)
 
-    assert not download("https://example.test", tmp_path / "answer.csv", 0, 2, lambda text: bool(text))
+    assert not download("https://example.test", tmp_path / "answer.csv", 0, 2, bool)
 
 
 def test_night_windows(tmp_path):
@@ -272,7 +272,7 @@ def test_download_survives_broken_connections(monkeypatch, tmp_path, error):
     monkeypatch.setattr(observations, "fetch_text", fetch_text)
     path = tmp_path / "answer.csv"
 
-    assert not download("https://example.test", path, 0, 3, lambda text: bool(text))
+    assert not download("https://example.test", path, 0, 3, bool)
 
     assert len(calls) == 3
     assert list(tmp_path.iterdir()) == []

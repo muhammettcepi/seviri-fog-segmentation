@@ -66,7 +66,8 @@ def test_labels_at_cases_refuse_a_scene_missing_from_the_store():
 def test_case_grid_has_one_value_and_the_labels():
     grid = case_grid(np.arange(8, dtype=np.uint8), held_out_cases())
     assert grid.columns.tolist() == ["value", "case", "label"]
-    assert (grid["value"] == 0.0).all() and grid["case"].tolist() == list(range(8))
+    assert (grid["value"] == 0.0).all()
+    assert grid["case"].tolist() == list(range(8))
 
 
 def test_table_has_three_sources_and_four_parts():
@@ -79,7 +80,8 @@ def test_table_has_three_sources_and_four_parts():
     unet = table[table["source"] == "unet"].set_index("part")
     assert unet["n_cases"].to_dict() == sizes
     assert sizes["held_out"] == sizes["nights"] + sizes["stations"] + sizes["both"]
-    assert unet.loc["held_out", "hits"] == 5 and unet.loc["held_out", "false_alarms"] == 3
+    assert unet.loc["held_out", "hits"] == 5
+    assert unet.loc["held_out", "false_alarms"] == 3
 
 
 def test_comparison_of_a_source_with_itself_is_zero():
@@ -91,8 +93,10 @@ def test_comparison_of_a_source_with_itself_is_zero():
 
 def test_comparison_reports_the_gain_and_both_fars():
     result = comparison(held_out_cases(), sources(), "teacher", "rule", STATIONS_CFG, START)
-    assert result["pod_gain"] == 1.0 and result["pod_gain_low"] <= 1.0 <= result["pod_gain_high"]
-    assert result["far_candidate"] == 0.0 and np.isnan(result["far_reference"])
+    assert result["pod_gain"] == 1.0
+    assert result["pod_gain_low"] <= 1.0 <= result["pod_gain_high"]
+    assert result["far_candidate"] == 0.0
+    assert np.isnan(result["far_reference"])
 
 
 def prepare(tmp_path: Path, mlflow_uri: str) -> dict:
@@ -117,12 +121,15 @@ def test_evaluate_writes_once_and_refuses_a_rerun(tmp_path, mlflow_uri):
     cmd_evaluate(evaluate_args(cfg))
     stations = tmp_path / "stations"
     table = pd.read_csv(stations / "unet_held_out.csv")
-    assert set(table["source"]) == {"rule", "teacher", "unet"} and len(table) == 12
+    assert set(table["source"]) == {"rule", "teacher", "unet"}
+    assert len(table) == 12
     record = json.loads((stations / "unet_held_out.json").read_text(encoding="utf-8"))
     config = json.loads((stations / "unet_config.json").read_text(encoding="utf-8"))
     assert set(record["comparisons"]) == {"unet_vs_teacher", "unet_vs_rule"}
-    assert record["p_star"] == config["p_star"] and record["setting"] == config["winner"]
-    assert record["note"] == "reported, not used for any choice" and len(record["model_sha256"]) == 64
+    assert record["p_star"] == config["p_star"]
+    assert record["setting"] == config["winner"]
+    assert record["note"] == "reported, not used for any choice"
+    assert len(record["model_sha256"]) == 64
 
     metrics = mlflow.MlflowClient(mlflow_uri).get_run(config["final_run_id"]).data.metrics
     assert {"held_out_unet_pod", "held_out_rule_far", "held_out_teacher_csi"} <= set(metrics)
@@ -157,7 +164,8 @@ def test_evaluate_warns_when_the_teacher_row_differs_from_phase_c(tmp_path, mlfl
     earlier.to_csv(tmp_path / "stations" / "teacher_held_out.csv", index=False)
     with caplog.at_level(logging.WARNING, logger="fogseg"):
         cmd_evaluate(evaluate_args(cfg))
-    assert "teacher_held_out.csv" in caplog.text and "teacher" in caplog.text
+    assert "teacher_held_out.csv" in caplog.text
+    assert "teacher" in caplog.text
 
 
 def test_evaluate_refuses_without_the_model_or_the_predictions(tmp_path, mlflow_uri):
