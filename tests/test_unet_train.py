@@ -125,7 +125,8 @@ def test_batch_points_map_each_scene_to_its_position_in_the_shuffled_batch():
     assert iy.tolist() == [1, 3, 4, 5]
     assert ix.tolist() == [6, 8, 9, 0]
     assert truth.tolist() == [1.0, 1.0, 0.0, 1.0]
-    assert batch.dtype == torch.long and truth.dtype == torch.float32
+    assert batch.dtype == torch.long
+    assert truth.dtype == torch.float32
 
 
 def test_point_bce_without_points_is_zero():
@@ -186,7 +187,8 @@ def test_probabilities_are_nan_where_untrusted():
     model = train(inputs, target, weight)
     inputs[1, -1, 2:4, 3:5] = 0.0
     p = predict_probabilities(model, inputs, CPU, 3)
-    assert p.shape == (4, 8, 10) and p.dtype == np.float32
+    assert p.shape == (4, 8, 10)
+    assert p.dtype == np.float32
     assert np.isnan(p[1, 2:4, 3:5]).all()
     assert np.isfinite(p).sum() == p.size - 4
     assert ((p[np.isfinite(p)] >= 0) & (p[np.isfinite(p)] <= 1)).all()
@@ -223,7 +225,9 @@ def test_saved_model_predicts_like_the_trained_one(tmp_path):
     inputs, net, model, path = saved_model(tmp_path)
     save_unet(model, path)
     loaded = load_unet(path)
-    assert loaded.setting == "1 soft" and loaded.p_star == 0.4 and loaded.label_attrs == {"mode": "teacher"}
+    assert loaded.setting == "1 soft"
+    assert loaded.p_star == 0.4
+    assert loaded.label_attrs == {"mode": "teacher"}
     assert np.array_equal(loaded.normalization.mean, model.normalization.mean)
     expected = predict_probabilities(net, inputs, CPU, 2)
     assert np.allclose(predict_probabilities(network(loaded), inputs, CPU, 2), expected, atol=1e-6)

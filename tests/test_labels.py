@@ -172,7 +172,8 @@ def test_three_pixel_island_is_ignored_but_ten_pixel_deck_stays_fog():
     mask = np.zeros((8, 12), bool)
     mask[1, 1:4] = True  # 3 pixels
     mask[5:7, 2:7] = True  # 10 pixels
-    assert small_blobs(mask, 5)[1, 2] and not small_blobs(mask, 5)[5, 3]
+    assert small_blobs(mask, 5)[1, 2]
+    assert not small_blobs(mask, 5)[5, 3]
 
 
 def test_diagonal_pixels_form_one_blob():
@@ -198,7 +199,9 @@ def test_small_fog_island_in_a_scene_is_ignored():
     ir120 = ir108 - 0.5
     sza = np.full((8, 8), 120.0)
     labels = label_scene(ir039, ir108, ir120, sza, 2.5, TEST_PARAMS)
-    assert labels[1, 2] == IGNORE and labels[5, 3] == FOG and labels[3, 3] == NO_FOG
+    assert labels[1, 2] == IGNORE
+    assert labels[5, 3] == FOG
+    assert labels[3, 3] == NO_FOG
 
 
 def scene_arrays() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -266,7 +269,8 @@ def test_kma_split_window_follows_the_temperature():
     ir120 = ir108 - np.array([0.9, -0.2])  # expected split at 280 K is -0.268 K
     fixed = warm_and_not_cirrus(ir108, ir120, TEST_PARAMS)
     kma = warm_and_not_cirrus(ir108, ir120, dataclasses.replace(TEST_PARAMS, split_window="kma"))
-    assert fixed.tolist() == [True, True] and kma.tolist() == [False, True]
+    assert fixed.tolist() == [True, True]
+    assert kma.tolist() == [False, True]
 
 
 def test_emissivity_threshold_is_the_btd_with_that_emissivity():
@@ -305,7 +309,8 @@ def test_mad5_ignores_one_hot_pixel_that_fails_std3():
     region = np.ones((7, 7), dtype=bool)
     std3 = texture_ok(ir108, btd, region, TEST_PARAMS)
     mad5 = texture_ok(ir108, btd, region, dataclasses.replace(TEST_PARAMS, texture="ir108_mad5"))
-    assert not std3[3, 3] and mad5.all()
+    assert not std3[3, 3]
+    assert mad5.all()
 
 
 def test_btd_std3_looks_at_the_btd_not_ir108():
@@ -319,7 +324,9 @@ def test_blob_judges_each_group_by_its_median_spread():
     ir108, region = two_blobs()
     params = dataclasses.replace(TEST_PARAMS, texture="blob")
     passed = texture_ok(ir108, np.zeros_like(ir108), region, params)
-    assert passed[LEFT_BLOB].all() and not passed[RIGHT_BLOB].any() and not passed[~region].any()
+    assert passed[LEFT_BLOB].all()
+    assert not passed[RIGHT_BLOB].any()
+    assert not passed[~region].any()
 
 
 def test_blob_texture_of_an_empty_region_fails_everywhere():
@@ -337,7 +344,9 @@ def test_local_mad_is_nan_wherever_a_missing_value_reaches_it(recwarn):
     field = np.full((13, 13), 270.0)
     field[6, 6] = np.nan
     mad = local_mad(field)
-    assert np.isnan(mad[2:11, 2:11]).all() and np.isfinite(mad[0, 0]) and np.isfinite(mad[12, 12])
+    assert np.isnan(mad[2:11, 2:11]).all()
+    assert np.isfinite(mad[0, 0])
+    assert np.isfinite(mad[12, 12])
     assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
 
 
@@ -365,7 +374,8 @@ def test_nan_channel_stays_ignored_under_the_emissivity_index(recwarn):
     ir039[3, 3] = np.nan
     params = dataclasses.replace(TEST_PARAMS, fog_index="emissivity")
     labels = label_scene(ir039, ir108, ir120, sza, 0.85, params)
-    assert labels[2, 2] == IGNORE and labels[3, 3] == IGNORE
+    assert labels[2, 2] == IGNORE
+    assert labels[3, 3] == IGNORE
     assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
 
 

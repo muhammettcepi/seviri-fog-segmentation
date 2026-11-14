@@ -193,7 +193,8 @@ def test_each_fold_is_a_nested_run_with_its_metrics():
     runs = [event for event in events if event[0] == "run"]
     assert [event[1] for event in runs] == ["1 soft fold 1", "1 soft fold 2", "1 soft fold 3"]
     assert all(event[3] for event in runs)
-    assert runs[0][2]["setting"] == "1 soft" and runs[0][2]["fold"] == 1
+    assert runs[0][2]["setting"] == "1 soft"
+    assert runs[0][2]["fold"] == 1
     epochs = [event for event in events if event[1] == ["test_loss", "train_loss"]]
     assert [event[2] for event in epochs] == [1, 2] * 3
     assert events[-1] == ("metrics", ["cv_csi_1", "cv_far_1", "cv_p_star_1", "cv_pod_1"], None)

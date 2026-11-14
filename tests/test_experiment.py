@@ -98,7 +98,9 @@ def test_value_scores_counts_an_ignored_label_as_no_and_follows_the_mask():
     first_three = value_scores(grid, cases, pd.Series([True, True, True, False])).iloc[0]
 
     assert everything[["hits", "misses", "false_alarms", "correct_negatives"]].tolist() == [1, 1, 1, 1]
-    assert everything["pod"] == 0.5 and everything["far"] == 0.5 and everything["n_cases"] == 4
+    assert everything["pod"] == 0.5
+    assert everything["far"] == 0.5
+    assert everything["n_cases"] == 4
     assert first_three[["hits", "misses", "false_alarms", "correct_negatives"]].tolist() == [1, 1, 1, 0]
 
 
@@ -144,10 +146,12 @@ def test_matched_value_refuses_scores_without_any_fog():
 def test_each_fold_chooses_on_its_training_part():
     cases, grid = two_value_grid()  # value 3.0 reaches FAR <= 0.28 only on fold 1's training part
     table = cross_validate(grid, cases, n_folds=5, far_target=0.28).set_index("fold")
-    assert table.loc[1, "value"] == 3.0 and table.loc[2, "value"] == 4.0
+    assert table.loc[1, "value"] == 3.0
+    assert table.loc[2, "value"] == 4.0
     folds = table.drop(index="pooled")
     assert table.loc["pooled", "hits"] == folds["hits"].sum()
-    assert folds["hits"].dtype.kind == "i" and folds["n_cases"].dtype.kind == "i"
+    assert folds["hits"].dtype.kind == "i"
+    assert folds["n_cases"].dtype.kind == "i"
 
 
 def test_the_pooled_row_scores_the_summed_test_counts():
@@ -178,8 +182,10 @@ def test_a_fold_that_falls_back_is_logged(caplog):
     grid["label"] = 1  # every value has a FAR of 0.5
     with caplog.at_level(logging.WARNING, logger="fogseg"):
         table = cross_validate(grid, cases, n_folds=5, far_target=0.28).set_index("fold")
-    assert not table.loc[1, "matched"] and not table.loc["pooled", "matched"]
-    assert "Fold 1" in caplog.text and "Fold 4" in caplog.text
+    assert not table.loc[1, "matched"]
+    assert not table.loc["pooled", "matched"]
+    assert "Fold 1" in caplog.text
+    assert "Fold 4" in caplog.text
 
 
 def test_block_counts_has_one_row_per_night_block_in_order():
@@ -256,7 +262,8 @@ def test_variant_grid_relabels_whole_nights(tmp_path):
     iy, ix = cases.loc[1, "iy"], cases.loc[1, "ix"]
     night = label_night(*night_inputs(data, cases.loc[1, "night"]), np.full(2, 4.0), params)
     scene = label_scene(*scene_inputs(data, cases.loc[1, "scene_time"]), 4.0, params)
-    assert scene[iy, ix] == IGNORE and night[SLOT_OF_CASE_1, iy, ix] == FOG
+    assert scene[iy, ix] == IGNORE
+    assert night[SLOT_OF_CASE_1, iy, ix] == FOG
     assert grid.loc[grid["case"] == 1, "label"].item() == FOG
 
 
@@ -284,7 +291,8 @@ def test_variant_grid_of_no_cases_or_no_values_is_empty(tmp_path):
     no_cases = variant_grid(data, cases.iloc[:0], TEST_PARAMS, np.array([4.0]))
     no_values = variant_grid(data, cases, TEST_PARAMS, np.array([]))
     assert no_cases.columns.tolist() == no_values.columns.tolist() == GRID_COLUMNS
-    assert no_cases.empty and no_values.empty
+    assert no_cases.empty
+    assert no_values.empty
 
 
 def pooled_table(pods: dict[str, float], unmatched: tuple[str, ...] = ()) -> pd.DataFrame:
@@ -366,7 +374,7 @@ def test_a_variant_without_a_pooled_pod_cannot_win():
 
 def test_the_winner_needs_a_matched_variant():
     table = pooled_table({"1 baseline": 0.40, "7 emissivity": 0.45}, unmatched=("1 baseline", "7 emissivity"))
-    with pytest.raises(ValueError, match="No variant.*matched"):
+    with pytest.raises(ValueError, match=r"No variant.*matched"):
         winner(table)
 
 
@@ -395,7 +403,7 @@ def test_variant_9_needs_a_matched_variant_of_each_choice():
         "5 texture none": 0.39,
         "7 emissivity": 0.44,
     }
-    with pytest.raises(ValueError, match="No variant.*matched"):
+    with pytest.raises(ValueError, match=r"No variant.*matched"):
         combined_variants(pooled_table(pods, unmatched=("1 baseline", "7 emissivity")), [])
 
 
@@ -421,9 +429,13 @@ def test_a_variant_without_any_fog_is_recorded_as_unusable_and_the_run_goes_on(t
         table = run_variants(data, cases, TEST_PARAMS, variants, cfg["stations"])
     unusable = table[table["variant"] == "6 never fog"]
     assert unusable["fold"].astype(str).tolist() == ["1", "2", "3", "4", "pooled"]
-    assert not unusable["matched"].any() and unusable["pod"].isna().all() and unusable["hits"].isna().all()
+    assert not unusable["matched"].any()
+    assert unusable["pod"].isna().all()
+    assert unusable["hits"].isna().all()
     assert table.loc[table["variant"] == "1 baseline", "pod"].notna().all()
-    assert "variant 6 never fog" in caplog.text and "Fold 1" in caplog.text and "Fold 4" in caplog.text
+    assert "variant 6 never fog" in caplog.text
+    assert "Fold 1" in caplog.text
+    assert "Fold 4" in caplog.text
     assert winner(table) == "1 baseline"
 
 
@@ -431,7 +443,8 @@ def test_a_fold_without_any_fog_in_its_training_part_is_unusable():
     cases, grid = two_value_grid()
     grid["label"] = 0
     table = cross_validate(grid, cases, n_folds=5, far_target=0.28)
-    assert table["pod"].isna().all() and not table["matched"].any()
+    assert table["pod"].isna().all()
+    assert not table["matched"].any()
 
 
 def test_a_matched_value_at_the_edge_of_the_grid_is_logged_with_its_variant(caplog):
@@ -439,7 +452,8 @@ def test_a_matched_value_at_the_edge_of_the_grid_is_logged_with_its_variant(capl
     with caplog.at_level(logging.WARNING, logger="fogseg"):
         cross_validate(grid, cases, 5, 0.28, "6 band 0.25")
     edge_warnings = [message for message in caplog.messages if "edge" in message]
-    assert len(edge_warnings) == 4 and "Fold 1 of variant 6 band 0.25" in edge_warnings[0]
+    assert len(edge_warnings) == 4
+    assert "Fold 1 of variant 6 band 0.25" in edge_warnings[0]
 
 
 def test_a_matched_value_inside_the_grid_is_not_an_edge(caplog):
@@ -448,7 +462,8 @@ def test_a_matched_value_inside_the_grid_is_not_an_edge(caplog):
     with caplog.at_level(logging.WARNING, logger="fogseg"):
         cross_validate(grid, cases, 5, 0.28)
     edge_warnings = [message for message in caplog.messages if "edge" in message]
-    assert len(edge_warnings) == 1 and edge_warnings[0].startswith("Fold 1")
+    assert len(edge_warnings) == 1
+    assert edge_warnings[0].startswith("Fold 1")
 
 
 def test_a_fold_fallback_names_its_variant(tmp_path, caplog):
@@ -651,7 +666,7 @@ def test_an_emissivity_baseline_is_scored_at_its_emissivity_threshold(tmp_path):
 
 def test_an_emissivity_baseline_needs_its_threshold(tmp_path):
     emissivity = dataclasses.replace(TEST_PARAMS, fog_index="emissivity")
-    with pytest.raises(ValueError, match="labels.emissivity_max"):
+    with pytest.raises(ValueError, match=r"labels\.emissivity_max"):
         compare(tmp_path, params=emissivity)
 
 
@@ -699,7 +714,8 @@ def test_intervals_come_from_a_paired_bootstrap_over_the_held_out_night_blocks(t
 def test_an_unreachable_far_on_the_selection_cases_is_logged(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="fogseg"):
         compare(tmp_path, winner=("5 texture none", {"texture": "none"}))
-    assert "5 texture none" in caplog.text and "selection" in caplog.text
+    assert "5 texture none" in caplog.text
+    assert "selection" in caplog.text
 
 
 def test_an_empty_held_out_set_is_an_error(tmp_path):
@@ -761,7 +777,8 @@ def test_held_out_writes_the_comparison_and_logs_the_decision(tmp_path, caplog):
         [rule, part] for rule in ("baseline", "winner") for part in HELD_OUT_PARTS
     ]
     assert table.loc[table["rule"] == "winner", "n_cases"].tolist() == [36, 12, 16, 8]
-    assert "1 baseline" in caplog.text and "POD gain" in caplog.text
+    assert "1 baseline" in caplog.text
+    assert "POD gain" in caplog.text
 
 
 def test_the_winner_and_its_options_come_from_the_cross_validation_table(tmp_path, monkeypatch):
@@ -790,7 +807,8 @@ def test_a_kept_winner_logs_the_config_keys_to_set(tmp_path, caplog, monkeypatch
     monkeypatch.setattr("fogseg.experiment.held_out_comparison", lambda *args: (pd.DataFrame(), kept))
     with caplog.at_level(logging.INFO, logger="fogseg"):
         cmd_experiment(experiment_args(cfg, held_out=True))
-    assert "labels.btd_fixed" in caplog.text and "4.5" in caplog.text
+    assert "labels.btd_fixed" in caplog.text
+    assert "4.5" in caplog.text
 
 
 def test_a_failed_comparison_does_not_open_the_held_out_set(tmp_path, monkeypatch):
@@ -835,9 +853,11 @@ def test_held_out_leaves_the_table_and_the_decision_record(tmp_path):
     best = winner(table)
     assert record["winner"] == best
     assert record["options"] == json.loads(table.loc[table["variant"] == best, "options"].iloc[0])
-    assert record["baseline_fog_index"] == "btd" and record["baseline_threshold"] == TEST_PARAMS.btd_fixed
+    assert record["baseline_fog_index"] == "btd"
+    assert record["baseline_threshold"] == TEST_PARAMS.btd_fixed
     assert set(record) >= {field.name for field in dataclasses.fields(KeepDecision)}
-    assert isinstance(record["keep"], bool) and "config_changes" in record
+    assert isinstance(record["keep"], bool)
+    assert "config_changes" in record
     assert held_out_files(tmp_path) == ["experiment_B_held_out.csv", "experiment_B_held_out.json"]
 
 
@@ -851,10 +871,12 @@ def test_a_crash_while_writing_leaves_no_held_out_file_and_the_decision_is_logge
         raise OSError("disk full")
 
     with monkeypatch.context() as patched, caplog.at_level(logging.INFO, logger="fogseg"):
-        patched.setattr("fogseg.cli.os.replace", crash)
+        # write_atomically renames the finished .part file with Path.replace
+        patched.setattr("pathlib.Path.replace", crash)
         with pytest.raises(OSError, match="disk full"):
             cmd_experiment(experiment_args(cfg, held_out=True))
-    assert "POD gain" in caplog.text and "Held-out baseline" in caplog.text
+    assert "POD gain" in caplog.text
+    assert "Held-out baseline" in caplog.text
     assert not [name for name in held_out_files(tmp_path) if not name.endswith(".part")]
 
 
@@ -921,7 +943,8 @@ def test_a_held_out_match_at_the_edge_of_the_grid_is_logged_with_the_winner(tmp_
     data, selection, held_out = split_season(tmp_path)
     with caplog.at_level(logging.WARNING, logger="fogseg"):
         held_out_comparison(data, selection, held_out, RULE_AT_4_K, WINNER, stations_cfg, START)
-    assert "Winner 6 band 0.25" in caplog.text and "edge of the grid" in caplog.text
+    assert "Winner 6 band 0.25" in caplog.text
+    assert "edge of the grid" in caplog.text
 
 
 def log_table(far: float) -> pd.DataFrame:
@@ -949,16 +972,17 @@ def test_a_winner_within_the_matched_far_is_not_warned_about(caplog):
 def test_the_held_out_and_selection_tables_cannot_be_swapped(tmp_path):
     data, selection, held_out = split_season(tmp_path)
     args = (RULE_AT_4_K, WINNER, STATIONS_CFG, START)
-    with pytest.raises(ValueError, match="held-out.*selection"):
+    with pytest.raises(ValueError, match=r"held-out.*selection"):
         held_out_comparison(data, selection, selection, *args)
-    with pytest.raises(ValueError, match="selection.*held-out"):
+    with pytest.raises(ValueError, match=r"selection.*held-out"):
         held_out_comparison(data, held_out, held_out, *args)
 
 
 def test_experiment_cases_split_the_scored_cases_by_the_frozen_folds(tmp_path):
     selection, held_out = experiment_cases(experiment_config(tmp_path), "2023-24")
     assert (len(selection), len(held_out)) == (24, 36)
-    assert selection["case"].tolist() == list(range(24)) and held_out["case"].tolist() == list(range(36))
+    assert selection["case"].tolist() == list(range(24))
+    assert held_out["case"].tolist() == list(range(36))
     assert (held_out_part(selection, 5) == "selection").all()
     assert (held_out_part(held_out, 5) != "selection").all()
 

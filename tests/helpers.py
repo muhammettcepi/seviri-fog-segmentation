@@ -97,7 +97,7 @@ def label_scenes(
     for scene, angle in (scene_sza or {}).items():
         sza[scene] = angle
 
-    dataset = xr.Dataset(
+    return xr.Dataset(
         {
             "bt": (("time", "channel", "y", "x"), bt),
             "sza": (("time", "y", "x"), sza),
@@ -110,7 +110,6 @@ def label_scenes(
         },
         attrs={"created": LABEL_DATASET_CREATED},
     )
-    return dataset
 
 
 def make_label_dataset(

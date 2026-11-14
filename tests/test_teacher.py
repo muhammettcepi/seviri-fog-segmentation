@@ -359,7 +359,8 @@ def test_loading_a_teacher_of_another_scikit_learn_version_warns(tmp_path, caplo
     with caplog.at_level(logging.WARNING, logger="fogseg"):
         loaded = load_teacher(tmp_path / "teacher.joblib", teacher.feature_groups)
     assert loaded.sklearn_version == "0.0.1"
-    assert "0.0.1" in caplog.text and sklearn.__version__ in caplog.text
+    assert "0.0.1" in caplog.text
+    assert sklearn.__version__ in caplog.text
 
 
 def test_loading_needs_the_same_features(tmp_path):
@@ -740,8 +741,10 @@ def test_teacher_gain_is_teacher_minus_rule(tmp_path):
     table, decision, _ = held_out_run(tmp_path, teacher_hits_more=True)
     rows = table.set_index(["rule", "part"])
     gain = rows.loc[("teacher", "held_out"), "pod"] - rows.loc[("rule", "held_out"), "pod"]
-    assert decision.pod_gain == pytest.approx(gain) and gain > 0
-    assert decision.winner == "teacher" and decision.value == 0.5
+    assert decision.pod_gain == pytest.approx(gain)
+    assert gain > 0
+    assert decision.winner == "teacher"
+    assert decision.value == 0.5
 
 
 def test_the_table_scores_every_labelling_on_every_part(tmp_path):
@@ -755,19 +758,22 @@ def test_the_table_scores_every_labelling_on_every_part(tmp_path):
 def test_a_teacher_that_calls_no_fog_scores_no_hits(tmp_path):
     table, decision, _ = held_out_run(tmp_path, teacher_hits_more=False)
     teacher = table[(table["rule"] == "teacher") & (table["part"] == "held_out")].iloc[0]
-    assert teacher["hits"] == 0 and teacher["misses"] > 0
+    assert teacher["hits"] == 0
+    assert teacher["misses"] > 0
     assert not decision.keep
 
 
 def test_there_is_no_correction_decision_without_a_correction_length(tmp_path):
     table, _, correction = held_out_run(tmp_path)
-    assert correction is None and "corrected" not in set(table["rule"])
+    assert correction is None
+    assert "corrected" not in set(table["rule"])
 
 
 def test_correction_is_judged_on_unseen_stations_only(tmp_path):
     table, _, correction = held_out_run(tmp_path, correction_km=50.0)
     rows = table.set_index(["rule", "part"])
-    assert correction is not None and correction.winner == "corrected"
+    assert correction is not None
+    assert correction.winner == "corrected"
     assert rows.loc[("corrected", "nights"), "hits"] == rows.loc[("teacher", "nights"), "hits"]
     gain = rows.loc[("corrected", "stations"), "pod"] - rows.loc[("teacher", "stations"), "pod"]
     assert correction.pod_gain == pytest.approx(gain)
@@ -809,7 +815,8 @@ def test_held_out_writes_the_table_and_the_decisions(tmp_path, caplog):
     assert {"rule", "teacher"} <= set(table["rule"])
     record = json.loads((tmp_path / "stations" / "teacher_held_out.json").read_text(encoding="utf-8"))
     teacher = load_teacher(Path(cfg["teacher"]["model_path"]), cfg["teacher"]["feature_groups"])
-    assert record["p_star"] == teacher.p_star and record["setting"] == teacher.setting
+    assert record["p_star"] == teacher.p_star
+    assert record["setting"] == teacher.setting
     assert record["correction_km"] == teacher.correction_km
     assert record["teacher"]["winner"] == "teacher"
     assert record["config_changes"] == ({"labels.mode": "teacher"} if record["teacher"]["keep"] else {})
@@ -894,7 +901,8 @@ def test_held_out_corrects_with_the_saved_feeders_on_unseen_stations_only(tmp_pa
     cmd_teacher(teacher_args(cfg, held_out=True))
     stations = tmp_path / "stations"
     record = json.loads((stations / "teacher_held_out.json").read_text(encoding="utf-8"))
-    assert record["correction_km"] == 25.0 and record["correction"]["winner"] == "corrected"
+    assert record["correction_km"] == 25.0
+    assert record["correction"]["winner"] == "corrected"
     table = pd.read_csv(stations / "teacher_held_out.csv").set_index(["rule", "part"])
     for part in ("nights", "both"):
         assert table.loc[("corrected", part)].equals(table.loc[("teacher", part)])

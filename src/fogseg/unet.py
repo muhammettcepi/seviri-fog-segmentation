@@ -23,7 +23,9 @@ class UNet(nn.Module):
         super().__init__()
         self.depth = depth
         widths = [base_channels * 2**level for level in range(depth + 1)]
-        self.down = nn.ModuleList(double_conv(i, o) for i, o in zip([in_channels, *widths[:-2]], widths[:-1]))
+        self.down = nn.ModuleList(
+            double_conv(i, o) for i, o in zip([in_channels, *widths[:-2]], widths[:-1], strict=True)
+        )
         self.bottom = double_conv(widths[-2], widths[-1])
         self.up = nn.ModuleList(
             double_conv(widths[level + 1] + widths[level], widths[level]) for level in reversed(range(depth))
@@ -40,7 +42,7 @@ class UNet(nn.Module):
             skips.append(x)
             x = F.max_pool2d(x, 2)
         x = self.bottom(x)
-        for block, skip in zip(self.up, reversed(skips)):
+        for block, skip in zip(self.up, reversed(skips), strict=True):
             x = F.interpolate(x, size=skip.shape[-2:], mode="bilinear", align_corners=False)
             x = block(torch.cat([skip, x], dim=1))
         return self.head(x)[:, 0, :height, :width]

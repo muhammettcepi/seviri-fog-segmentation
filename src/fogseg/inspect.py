@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -23,7 +23,7 @@ from fogseg.labels import FOG, IGNORE, OBSCURED, LabelParams, histogram_pixels
 
 # Set after the imports on purpose: figures are only written to files, never shown, so no GUI
 # toolkit may be needed (the command also runs on a machine without a display).
-matplotlib.use("Agg")
+mpl.use("Agg")
 
 log = logging.getLogger("fogseg")
 

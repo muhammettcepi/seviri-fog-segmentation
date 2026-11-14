@@ -11,7 +11,7 @@ import argparse
 import json
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -26,7 +26,7 @@ from fogseg.labels import FOG
 from fogseg.splits import held_out_part
 from fogseg.validation import TRUTH_YES, night_of
 
-matplotlib.use("Agg")
+mpl.use("Agg")
 
 FIGURES = Path("docs/notes/figures")
 SEASON = "2023-24"
@@ -115,7 +115,7 @@ def example_map(data: xr.Dataset, stores: dict, cases: pd.DataFrame, time: pd.Ti
     rgb = night_microphysics_rgb(*scene_channels(data, scene))
     at_scene = cases[pd.to_datetime(cases["scene_time"]) == time]
     fig, axes = plt.subplots(1, len(stores), figsize=(6 * len(stores), 4))
-    for ax, (name, store) in zip(axes, stores.items()):
+    for ax, (name, store) in zip(axes, stores.items(), strict=True):
         draw_labels_panel(ax, rgb, store["label"].sel(time=time).values)
         draw_cases(ax, at_scene)
         ax.set_title(name)

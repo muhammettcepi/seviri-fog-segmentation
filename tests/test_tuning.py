@@ -275,7 +275,7 @@ def test_decide_breaks_ties_towards_the_current_value():
 def test_decide_rejects_a_current_value_outside_the_grid():
     grid = grid_of_nights(5, {1.0: 1, 1.5: 1})
 
-    with pytest.raises(ValueError, match="1.25"):
+    with pytest.raises(ValueError, match=r"1\.25"):
         decide(grid, "offset", current=1.25, n_samples=20, seed=0)
 
 

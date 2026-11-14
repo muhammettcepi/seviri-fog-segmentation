@@ -551,7 +551,7 @@ def test_read_observations_keeps_station_ids_as_text(tmp_path, caplog):
 
 def test_read_observations_without_any_table_names_the_files_and_the_command(tmp_path):
     with pytest.raises(
-        FileNotFoundError, match="observations_metar.csv.*observations_synop.csv.*fogseg stations"
+        FileNotFoundError, match=r"observations_metar\.csv.*observations_synop\.csv.*fogseg stations"
     ):
         read_observations(station_files(tmp_path, ()))
 

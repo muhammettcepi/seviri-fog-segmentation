@@ -23,7 +23,7 @@ class Synop:
     ceiling_m: float
 
 
-def visibility_m(vv: str) -> float:
+def visibility_m(vv: str) -> float:  # noqa: PLR0911 - one return per range of the WMO table
     """Visibility in m from the two-digit VV code (WMO table 4377); NaN for `//`, 51-55 and non-digits."""
     if len(vv) != 2 or not vv.isdigit():
         return math.nan

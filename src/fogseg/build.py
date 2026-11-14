@@ -63,8 +63,8 @@ def grid_lonlats(grid: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
 
 def load_scene(path: Path, grid: xr.Dataset, channels: list[str]) -> xr.Dataset:
     """One scene as a 1-element slice of the final dataset (time dimension of length 1)."""
-    with xr.open_dataset(path) as ds:
-        ds = ds.load()
+    with xr.open_dataset(path) as opened:
+        ds = opened.load()
     if not (np.array_equal(ds["x"], grid["x"]) and np.array_equal(ds["y"], grid["y"])):
         raise ValueError(f"{path.name} is not on the reference grid")
     if list(ds["channel"].values) != channels:
@@ -147,8 +147,8 @@ def build_zarr(
     if out_path.exists() and not overwrite:
         raise FileExistsError(f"{out_path} exists; use overwrite=True (--overwrite) to rebuild")
 
-    with xr.open_dataset(interim_dir / GRID_FILE) as grid:
-        grid = grid.load()
+    with xr.open_dataset(interim_dir / GRID_FILE) as opened:
+        grid = opened.load()
     lons, lats = grid_lonlats(grid)
 
     tmp_path = out_path.with_name(out_path.name + ".part")

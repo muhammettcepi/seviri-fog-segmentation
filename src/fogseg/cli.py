@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import logging
-import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,8 +14,13 @@ from typing import TYPE_CHECKING
 from fogseg.config import load_config, scene_filename, scene_times
 
 if TYPE_CHECKING:
+    import pandas as pd
+    import xarray as xr
+
     from fogseg.experiment import KeepDecision
+    from fogseg.teacher import TeacherModel, TeacherParams
     from fogseg.tuning import Decision
+    from fogseg.unet_train import UNetParams
 
 log = logging.getLogger("fogseg")
 
@@ -72,7 +76,7 @@ def fetch_with_retry(slot: dt.datetime, collection, cfg: dict) -> str:
                 # EUMETSAT sometimes refuses all downloads for a while ("GeneralLicense required"),
                 # then allows them again. Retrying quickly is pointless, so pause and try again later.
                 if blocked == len(BLOCKED_WAITS_MIN):
-                    log.error(
+                    log.error(  # noqa: TRY400 - the message says what to do; a traceback would not help
                         "EUMETSAT still refuses downloads after ~3 h (%s). Stopping; run "
                         "`fogseg fetch` again later, it continues where it stopped.",
                         message,
@@ -400,7 +404,7 @@ def write_atomically(path: Path, text: str) -> None:
     """Write `text` to a `.part` file and move it into place, so a crash never leaves a partial `path`."""
     part = path.with_name(f"{path.name}.part")
     part.write_text(text, encoding="utf-8", newline="")
-    os.replace(part, path)
+    part.replace(path)
 
 
 def cmd_experiment(args: argparse.Namespace) -> None:
@@ -526,6 +530,46 @@ def cmd_held_out(args: argparse.Namespace) -> None:
     log.info("Wrote %s and %s", table_path, record_path)
 
 
+def choose_station_correction(
+    probabilities: pd.DataFrame,
+    selection: pd.DataFrame,
+    teacher: TeacherModel,
+    teacher_params: TeacherParams,
+    n_folds: int,
+) -> tuple[TeacherModel, pd.DataFrame, pd.DataFrame]:
+    """Cross-validate the station correction and give the teacher the best length, logging the choice.
+
+    Returns the teacher with its correction length, the out-of-fold table and the correction table.
+    """
+    import dataclasses
+
+    from fogseg.teacher import chosen_length, cross_validate_correction, oof_table
+
+    oof = oof_table(probabilities, selection)
+    correction = cross_validate_correction(
+        probabilities,
+        selection,
+        oof,
+        teacher.p_star,
+        teacher_params.ignore_halfwidth,
+        teacher_params.idw_length_km,
+        n_folds,
+    )
+    length = chosen_length(correction)
+    pooled = correction[correction["fold"].astype(str) == "pooled"].set_index("length_km")
+    none = pooled.loc["none"]
+    kept = pooled.loc["none" if length is None else str(length)]
+    log.info(
+        "Station correction: %s, pooled POD %.3f, FAR %.3f against %.3f, %.3f without",
+        "no correction" if length is None else f"{length:g} km",
+        kept["pod"],
+        kept["far"],
+        none["pod"],
+        none["far"],
+    )
+    return dataclasses.replace(teacher, correction_km=length), oof, correction
+
+
 def cmd_teacher(args: argparse.Namespace) -> None:
     if args.held_out:
         cmd_teacher_held_out(args)
@@ -543,11 +587,8 @@ def cmd_teacher(args: argparse.Namespace) -> None:
     from fogseg.teacher import (
         MODEL_SETTINGS,
         TeacherParams,
-        chosen_length,
-        cross_validate_correction,
         cross_validate_settings,
         fit_teacher,
-        oof_table,
         save_teacher,
         teacher_record,
     )
@@ -597,28 +638,8 @@ def cmd_teacher(args: argparse.Namespace) -> None:
         stations_cfg["seed"],
     )
 
-    oof = oof_table(probabilities[best], selection)
-    correction = cross_validate_correction(
-        probabilities[best],
-        selection,
-        oof,
-        teacher.p_star,
-        teacher_params.ignore_halfwidth,
-        teacher_params.idw_length_km,
-        stations_cfg["n_folds"],
-    )
-    length = chosen_length(correction)
-    teacher = dataclasses.replace(teacher, correction_km=length)
-    pooled_correction = correction[correction["fold"].astype(str) == "pooled"].set_index("length_km")
-    none = pooled_correction.loc["none"]
-    kept = pooled_correction.loc["none" if length is None else str(length)]
-    log.info(
-        "Station correction: %s, pooled POD %.3f, FAR %.3f against %.3f, %.3f without",
-        "no correction" if length is None else f"{length:g} km",
-        kept["pod"],
-        kept["far"],
-        none["pod"],
-        none["far"],
+    teacher, oof, correction = choose_station_correction(
+        probabilities[best], selection, teacher, teacher_params, stations_cfg["n_folds"]
     )
 
     cv_path, oof_path = data_dir / "teacher_cv.csv", data_dir / "teacher_oof.csv"
@@ -976,6 +997,87 @@ def cmd_predict(args: argparse.Namespace) -> None:
     )
 
 
+def check_evaluate_inputs(cfg: dict, season: str, data_dir: Path, unet_params: UNetParams) -> dict:
+    """Every input of `fogseg evaluate` exists and is the one the U-Net was trained on; returns the training record.
+
+    The held-out set is opened once, so existing result files are refused too.
+    """
+    import json
+
+    from fogseg.label_store import label_store_path
+
+    for path in unet_held_out_paths(data_dir):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; the held-out set is opened once for the U-Net")
+    config_path = data_dir / "unet_config.json"
+    for path in (Path(unet_params.model_path), config_path):
+        if not path.exists():
+            raise FileNotFoundError(f"{path} not found; run `fogseg train` first")
+    predictions_path = Path(unet_params.predictions_path)
+    if not predictions_path.exists():
+        raise FileNotFoundError(f"{predictions_path} not found; run `fogseg predict` first")
+    teacher_path = label_store_path(Path(cfg["labels"]["output_dir"]), "teacher")
+    if not teacher_path.exists():
+        raise FileNotFoundError(f"{teacher_path} not found; run `fogseg label --mode teacher` first")
+
+    record = json.loads(config_path.read_text(encoding="utf-8"))
+    labels_cfg = cfg["labels"]
+    store_path = label_store_path(Path(labels_cfg["output_dir"]), labels_cfg["mode"])
+    files = unet_input_files(data_dir, season, store_path)
+    current = unet_inputs(files)
+    for key, path in files.items():
+        if record["inputs"].get(key) != current[key]:
+            raise ValueError(f"{path} is not the one the U-Net was trained on; run `fogseg train` again")
+    return record
+
+
+def check_predictions_match(
+    predictions: xr.Dataset, data: xr.Dataset, predictions_path: Path, model_path: Path, model_sha256: str
+) -> None:
+    """The prediction store must come from this model and from this build of the dataset."""
+    if predictions.attrs.get("unet_model_sha256") != model_sha256:
+        raise ValueError(
+            f"The predictions {predictions_path} are not those of the model {model_path}; "
+            "run `fogseg predict --overwrite`"
+        )
+    if predictions.attrs.get("source_created") != data.attrs.get("created", "unknown"):
+        raise ValueError(
+            f"The predictions {predictions_path} are of another dataset; run `fogseg predict --overwrite`"
+        )
+
+
+def log_comparisons(comparisons: dict[str, dict]) -> None:
+    """One log line per held-out comparison: the POD gain and the two FARs, with their intervals."""
+    for name, values in comparisons.items():
+        log.info(
+            "Held-out, %s: POD gain %+.3f (95%% interval %+.3f to %+.3f); "
+            "FAR %.3f against %.3f (difference %+.3f to %+.3f)",
+            name,
+            values["pod_gain"],
+            values["pod_gain_low"],
+            values["pod_gain_high"],
+            values["far_candidate"],
+            values["far_reference"],
+            values["far_difference_low"],
+            values["far_difference_high"],
+        )
+
+
+def held_out_metrics(table: pd.DataFrame, comparisons: dict[str, dict]) -> dict[str, float]:
+    """The held-out scores of every label source and the comparison values, named for MLflow."""
+    from fogseg.unet_eval import COMPARED_SCORES
+
+    whole = table[table["part"] == "held_out"].set_index("source")
+    metrics = {
+        f"held_out_{source}_{score}": float(whole.loc[source, score])
+        for source in whole.index
+        for score in COMPARED_SCORES
+    }
+    for name, values in comparisons.items():
+        metrics |= {f"{name}_{key}": value for key, value in values.items()}
+    return metrics
+
+
 def cmd_evaluate(args: argparse.Namespace) -> None:
     import json
 
@@ -986,14 +1088,7 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     from fogseg.label_store import check_labels_match, label_store_path
     from fogseg.teacher import file_sha256
     from fogseg.tracking import MlflowTracker
-    from fogseg.unet_eval import (
-        COMPARED_SCORES,
-        NOTE,
-        comparison,
-        differing_sources,
-        held_out_table,
-        labels_at_cases,
-    )
+    from fogseg.unet_eval import NOTE, comparison, differing_sources, held_out_table, labels_at_cases
     from fogseg.unet_train import UNetParams
     from fogseg.validation import season_start
 
@@ -1003,29 +1098,10 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     require_tune_season(stations_cfg, season, "scored on the held-out set")
 
     data_dir = Path(stations_cfg["data_dir"])
-    table_path, record_path = unet_held_out_paths(data_dir)
-    for path in (table_path, record_path):
-        if path.exists():
-            raise FileExistsError(f"{path} exists; the held-out set is opened once for the U-Net")
     unet_params = UNetParams.from_config(cfg["unet"])
+    record = check_evaluate_inputs(cfg, season, data_dir, unet_params)
     model_path, predictions_path = Path(unet_params.model_path), Path(unet_params.predictions_path)
-    config_path = data_dir / "unet_config.json"
-    for path in (model_path, config_path):
-        if not path.exists():
-            raise FileNotFoundError(f"{path} not found; run `fogseg train` first")
-    if not predictions_path.exists():
-        raise FileNotFoundError(f"{predictions_path} not found; run `fogseg predict` first")
     teacher_path = label_store_path(Path(cfg["labels"]["output_dir"]), "teacher")
-    if not teacher_path.exists():
-        raise FileNotFoundError(f"{teacher_path} not found; run `fogseg label --mode teacher` first")
-    record = json.loads(config_path.read_text(encoding="utf-8"))
-    labels_cfg = cfg["labels"]
-    store_path = label_store_path(Path(labels_cfg["output_dir"]), labels_cfg["mode"])
-    files = unet_input_files(data_dir, season, store_path)
-    current = unet_inputs(files)
-    for key, path in files.items():
-        if record["inputs"].get(key) != current[key]:
-            raise ValueError(f"{path} is not the one the U-Net was trained on; run `fogseg train` again")
 
     selection, held_out = experiment_cases(cfg, season)
     n_folds = stations_cfg["n_folds"]
@@ -1040,15 +1116,7 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
         xr.open_zarr(predictions_path, consolidated=False) as predictions,
     ):
         check_labels_match(data, teacher)
-        if predictions.attrs.get("unet_model_sha256") != model_sha256:
-            raise ValueError(
-                f"The predictions {predictions_path} are not those of the model {model_path}; "
-                "run `fogseg predict --overwrite`"
-            )
-        if predictions.attrs.get("source_created") != data.attrs.get("created", "unknown"):
-            raise ValueError(
-                f"The predictions {predictions_path} are of another dataset; run `fogseg predict --overwrite`"
-            )
+        check_predictions_match(predictions, data, predictions_path, model_path, model_sha256)
         sources = {
             "rule": held_out["label"].to_numpy().astype("uint8"),
             "teacher": labels_at_cases(teacher, held_out),
@@ -1073,33 +1141,14 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
         "model_sha256": model_sha256,
         "note": NOTE,
     }
+    table_path, record_path = unet_held_out_paths(data_dir)
     write_atomically(table_path, table.to_csv(index=False))
     write_atomically(record_path, json.dumps(result, indent=2))
-    for name, values in comparisons.items():
-        log.info(
-            "Held-out, %s: POD gain %+.3f (95%% interval %+.3f to %+.3f); "
-            "FAR %.3f against %.3f (difference %+.3f to %+.3f)",
-            name,
-            values["pod_gain"],
-            values["pod_gain_low"],
-            values["pod_gain_high"],
-            values["far_candidate"],
-            values["far_reference"],
-            values["far_difference_low"],
-            values["far_difference_high"],
-        )
+    log_comparisons(comparisons)
 
     tracker = MlflowTracker(unet_params.tracking_uri, Path(unet_params.artifact_dir), unet_params.experiment)
-    whole = table[table["part"] == "held_out"].set_index("source")
-    metrics = {
-        f"held_out_{source}_{score}": float(whole.loc[source, score])
-        for source in whole.index
-        for score in COMPARED_SCORES
-    }
-    for name, values in comparisons.items():
-        metrics |= {f"{name}_{key}": value for key, value in values.items()}
     with tracker.resume(record["final_run_id"]):
-        tracker.metrics(metrics)
+        tracker.metrics(held_out_metrics(table, comparisons))
     log.info("Wrote %s and %s", table_path, record_path)
 
 
@@ -1242,11 +1291,11 @@ def cmd_check(args: argparse.Namespace) -> None:
 
     cfg = load_config(args.config)
     collection = connect(cfg["data"]["collection"])
-    print("Token valid until:", collection.datastore.token.expiration)
+    log.info("Token valid until: %s", collection.datastore.token.expiration)
 
     slot = scene_times(cfg)[0]
     product = find_product(collection, slot)
-    print("Search OK:", product)
+    log.info("Search OK: %s", product)
     entry = next(e for e in product.entries if e.endswith(".nat"))
 
     # Three different downloads: if all fail, the account is blocked; if only some fail,
@@ -1259,14 +1308,14 @@ def cmd_check(args: argparse.Namespace) -> None:
     ]
     for name, prod, ent in tests:
         if prod is None:
-            print(f"[SKIP]   {name}: no product found for {slot}")
+            log.info("[SKIP]   %s: no product found for %s", name, slot)
             continue
         try:
             with prod.open(entry=ent, chunk=(0, 1024)) as stream:
-                print(f"[OK]     {name}: received {len(stream.read())} bytes")
+                log.info("[OK]     %s: received %d bytes", name, len(stream.read()))
         except Exception as err:  # noqa: BLE001 - report every failure kind, then test the next one
             status, message = server_message(err)
-            print(f"[FAILED] {name}: status {status} {message}")
+            log.info("[FAILED] %s: status %s %s", name, status, message)
 
 
 def cmd_fetch(args: argparse.Namespace) -> None:
@@ -1318,10 +1367,8 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     log.info("Done: %s", counts)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="fogseg")
-    sub = parser.add_subparsers(dest="command", required=True)
-
+def add_data_commands(sub: argparse._SubParsersAction) -> None:
+    """Commands that download and prepare the data: scenes, labels, DEM and ERA5."""
     fetch = sub.add_parser("fetch", help="download, crop and save SEVIRI scenes (resumable)")
     fetch.add_argument("--config", default="configs/default.yaml")
     fetch.add_argument("--start", help="only slots at/after this time, e.g. 2023-11-20T21:00")
@@ -1359,6 +1406,9 @@ def main() -> None:
     era5_cmd.add_argument("--overwrite", action="store_true", help="replace the ERA5 store if it exists")
     era5_cmd.set_defaults(func=cmd_era5)
 
+
+def add_station_commands(sub: argparse._SubParsersAction) -> None:
+    """Commands that download the station reports, score the labels against them and split the folds."""
     stations = sub.add_parser(
         "stations", help="download METAR and SYNOP observations of the dataset nights (resumable)"
     )
@@ -1390,6 +1440,9 @@ def main() -> None:
     diagnose.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
     diagnose.set_defaults(func=cmd_diagnose)
 
+
+def add_model_commands(sub: argparse._SubParsersAction) -> None:
+    """Commands that compare label variants, fit the teacher and train, apply and score the U-Net."""
     experiment = sub.add_parser(
         "experiment", help="compare label variants at a matched FAR, cross-validated on the tuning season"
     )
@@ -1439,6 +1492,9 @@ def main() -> None:
     evaluate.add_argument("--season", help="default and only allowed: stations.tune_season of the config")
     evaluate.set_defaults(func=cmd_evaluate)
 
+
+def add_check_commands(sub: argparse._SubParsersAction) -> None:
+    """Commands that tune the rule's thresholds and draw figures for checking scenes by eye."""
     tune = sub.add_parser(
         "tune", help="score grids of the BTD offset and the fallback threshold on the tuning season"
     )
@@ -1463,6 +1519,20 @@ def main() -> None:
     )
     select_scenes.set_defaults(func=cmd_select_scenes)
 
+
+def build_parser() -> argparse.ArgumentParser:
+    """The `fogseg` command line: one subcommand per pipeline step, in pipeline order."""
+    parser = argparse.ArgumentParser(prog="fogseg")
+    sub = parser.add_subparsers(dest="command", required=True)
+    add_data_commands(sub)
+    add_station_commands(sub)
+    add_model_commands(sub)
+    add_check_commands(sub)
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
     cfg = load_config(args.config)
     log_dir = Path(cfg["data"]["log_dir"])

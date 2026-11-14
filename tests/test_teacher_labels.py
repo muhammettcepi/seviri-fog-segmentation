@@ -180,10 +180,13 @@ def test_teacher_store_layout(tmp_path):
     cfg = teacher_label_config(tmp_path)
     store = label_store(cfg, tmp_path / "labels_teacher.zarr")
     labels = store["label"].values
-    assert store["label"].dtype == np.uint8 and store["fog_probability"].dtype == np.uint8
+    assert store["label"].dtype == np.uint8
+    assert store["fog_probability"].dtype == np.uint8
     assert set(np.unique(labels)) <= {0, 1, 2, 255}
-    assert store.attrs["mode"] == "teacher" and store.attrs["teacher_p_star"] == 0.5
-    assert (labels[:, 0, 0] == 1).all() and (labels[:, 6, 0] == 0).all()
+    assert store.attrs["mode"] == "teacher"
+    assert store.attrs["teacher_p_star"] == 0.5
+    assert (labels[:, 0, 0] == 1).all()
+    assert (labels[:, 6, 0] == 0).all()
     assert set(store["threshold_source"].values) == {"teacher"}
     assert np.allclose(store["fog_fraction"].values, 25 / 79)
     assert not (tmp_path / "labels_teacher.zarr.part").exists()
@@ -192,7 +195,8 @@ def test_teacher_store_layout(tmp_path):
 def test_attrs_record_the_teacher(tmp_path):
     cfg = teacher_label_config(tmp_path)
     attrs = label_store(cfg, tmp_path / "labels_teacher.zarr").attrs
-    assert attrs["teacher_setting"] == "toy" and attrs["teacher_ignore_halfwidth"] == 0.1
+    assert attrs["teacher_setting"] == "toy"
+    assert attrs["teacher_ignore_halfwidth"] == 0.1
     assert attrs["teacher_feature_groups"] == ["differences"]
     assert attrs["teacher_correction_km"] is None
     assert attrs["teacher_model_path"] == cfg["teacher"]["model_path"]
@@ -204,7 +208,8 @@ def test_probability_follows_the_label(tmp_path):
     cfg = teacher_label_config(tmp_path)
     store = label_store(cfg, tmp_path / "labels_teacher.zarr")
     labels, probability = store["label"].values, store["fog_probability"].values
-    assert (probability[labels == 1] >= 150).all() and (probability[labels == 0] <= 100).all()
+    assert (probability[labels == 1] >= 150).all()
+    assert (probability[labels == 0] <= 100).all()
 
 
 def test_untrusted_and_obscured_follow_the_rule(tmp_path):
@@ -212,8 +217,10 @@ def test_untrusted_and_obscured_follow_the_rule(tmp_path):
     store = label_store(cfg, tmp_path / "labels_teacher.zarr")
     labels = store["label"].values
     rule, trusted = rule_and_trust(cfg)
-    assert (rule == OBSCURED).any() and not trusted.all()
-    assert np.array_equal(labels == 2, rule == 2) and (labels[~trusted] == 255).all()
+    assert (rule == OBSCURED).any()
+    assert not trusted.all()
+    assert np.array_equal(labels == 2, rule == 2)
+    assert (labels[~trusted] == 255).all()
     assert (store["fog_probability"].values[labels == 2] == 255).all()
 
 
@@ -279,9 +286,8 @@ def test_correction_only_when_kept_and_only_in_the_tuning_season(tmp_path):
     in_season = tuning_season_scenes(corrected, cfg)
     assert in_season.tolist() == [True] * 4 + [False] * 2
     assert np.array_equal(corrected_scenes(plain, corrected), in_season)
-    assert (
-        corrected.attrs["teacher_correction_km"] == LENGTH_KM and plain.attrs["teacher_correction_km"] is None
-    )
+    assert corrected.attrs["teacher_correction_km"] == LENGTH_KM
+    assert plain.attrs["teacher_correction_km"] is None
 
 
 def test_a_dropped_correction_changes_nothing(tmp_path):
@@ -304,9 +310,8 @@ def test_a_missing_held_out_record_means_no_correction(tmp_path, caplog):
 def test_nan_channel_is_ignored_without_warnings(tmp_path, recwarn):
     cfg = teacher_label_config(tmp_path, nan_pixel=(2, 2))
     store = label_store(cfg, tmp_path / "labels_teacher.zarr")
-    assert (store["label"].values[:, 2, 2] == 255).all() and (
-        store["fog_probability"].values[:, 2, 2] == 255
-    ).all()
+    assert (store["label"].values[:, 2, 2] == 255).all()
+    assert (store["fog_probability"].values[:, 2, 2] == 255).all()
     assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
 
 
@@ -321,7 +326,8 @@ def test_a_scene_without_era5_is_ignored_but_for_its_obscured_pixels(tmp_path):
     assert (probability[missing] == 255).all()
     obscured = np.zeros(labels.shape[1:], dtype=bool)
     obscured[COLD_PIXEL] = True
-    assert (labels[missing][0][~obscured] == 255).all() and (labels[missing][0][obscured] == 2).all()
+    assert (labels[missing][0][~obscured] == 255).all()
+    assert (labels[missing][0][obscured] == 2).all()
     assert (labels[~missing][:, 0, 0] == 1).all()
 
 
@@ -334,5 +340,6 @@ def test_cli_writes_the_teacher_store(tmp_path, caplog):
         cmd_label(argparse.Namespace(config=config_path, mode="teacher", overwrite=False))
 
     store = xr.open_zarr(tmp_path / "labels" / "labels_teacher.zarr", consolidated=False)
-    assert store.attrs["mode"] == "teacher" and "6 scenes" in caplog.text
+    assert store.attrs["mode"] == "teacher"
+    assert "6 scenes" in caplog.text
     assert "teacher" in caplog.text

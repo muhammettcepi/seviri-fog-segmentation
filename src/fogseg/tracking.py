@@ -23,7 +23,7 @@ class NoTracker:
     """A tracker with the methods of the MLflow one that does nothing."""
 
     @contextmanager
-    def run(self, name: str, params: dict, nested: bool = False) -> Iterator[str]:
+    def run(self, name: str, params: dict, nested: bool = False) -> Iterator[str]:  # noqa: ARG002 - same signature as MlflowTracker.run
         yield ""
 
     @contextmanager

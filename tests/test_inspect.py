@@ -85,7 +85,7 @@ def test_missing_time_lists_nearest_available_times():
 
 def test_missing_time_lists_exactly_three_nearest_times():
     times = pd.DatetimeIndex(pd.date_range("2023-11-20 00:00", periods=6, freq="3h"))
-    with pytest.raises(ValueError) as error:
+    with pytest.raises(ValueError, match="Nearest available times") as error:
         find_scene(times, pd.Timestamp("2023-11-20 07:00"))
     message = str(error.value)
     for listed in ["2023-11-20 06:00", "2023-11-20 09:00", "2023-11-20 03:00"]:
@@ -226,7 +226,8 @@ def test_inspect_draws_a_store_without_a_btd_threshold(tmp_path):
     dataset_path, store_path = make_teacher_style_store(tmp_path)
     with open_zarr(dataset_path) as data, open_zarr(store_path) as labels:
         png = inspect_figure(data, labels, WANTED, TEST_PARAMS, TEST_DYNAMIC, tmp_path / "figures")
-    assert png.name == "inspect_teacher_20231121T0000.png" and png.stat().st_size > 0
+    assert png.name == "inspect_teacher_20231121T0000.png"
+    assert png.stat().st_size > 0
 
 
 def test_cli_inspects_the_teacher_store(tmp_path):
@@ -239,7 +240,7 @@ def test_cli_inspects_the_teacher_store(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "command, function",
+    ("command", "function"),
     [
         (["validate", "--season", "2023-24"], "cmd_validate"),
         (["inspect", "--time", "2023-11-21T00:00"], "cmd_inspect"),

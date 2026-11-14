@@ -6,7 +6,6 @@ import dataclasses
 import hashlib
 import json
 import logging
-import os
 import time
 from pathlib import Path
 
@@ -206,7 +205,10 @@ def fold_value_scores(
 def summed_scores(fold_scores: list[pd.DataFrame]) -> pd.DataFrame:
     """`SCORE_COLUMNS` per value from the counts of the folds' scores added up."""
     counts = np.sum([scores[list(COUNT_NAMES)].to_numpy() for scores in fold_scores], axis=0)
-    rows = [{"value": value, **score_columns(row)} for value, row in zip(fold_scores[0]["value"], counts)]
+    rows = [
+        {"value": value, **score_columns(row)}
+        for value, row in zip(fold_scores[0]["value"], counts, strict=True)
+    ]
     return pd.DataFrame(rows, columns=SCORE_COLUMNS)
 
 
@@ -353,7 +355,7 @@ def save_teacher(teacher: TeacherModel, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_name(f"{path.name}.part")
     joblib.dump(teacher, part)
-    os.replace(part, path)
+    part.replace(path)
 
 
 def load_teacher(path: Path, groups: list[str]) -> TeacherModel:

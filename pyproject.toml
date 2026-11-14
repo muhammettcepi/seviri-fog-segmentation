@@ -43,6 +43,59 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 110
+show-fixes = true
+
+# The rules follow docs/CODING_GUIDELINES.md: simple, explicit code first. Most groups come from the
+# Scientific Python Development Guide; the guideline says why each ignored rule is ignored.
+[tool.ruff.lint]
+extend-select = [
+    "ARG",  # unused arguments
+    "B",    # bug-prone patterns
+    "C4",   # clearer comprehensions
+    "C90",  # McCabe complexity: too many branches in one function
+    "EXE",  # executable files
+    "FURB", # refurb: small cleanups
+    "G",    # logging format
+    "ICN",  # conventional import names (np, pd, xr, mpl)
+    "LOG",  # logging misuse
+    "NPY",  # NumPy deprecations
+    "PD",   # pandas pitfalls
+    "PGH",  # specific noqa codes
+    "PIE",  # unnecessary code
+    "PL",   # a subset of Pylint, including size limits
+    "PT",   # pytest style
+    "PTH",  # pathlib instead of os.path
+    "RET",  # clear returns
+    "RSE",  # raise style
+    "RUF",  # Ruff's own rules
+    "SIM",  # simpler code
+    "T10",  # no debugger left behind
+    "T20",  # no print in library code
+    "TRY",  # exception handling
+    "UP",   # modern syntax for the supported Python versions
+]
+ignore = [
+    "PD011",   # `.values` is right for xarray, which this rule mistakes for pandas
+    "PD101",   # `nunique() == 1` says "all values are equal" more plainly than the suggested rewrite
+    "PLC0415", # cli.py imports heavy libraries inside each command so `fogseg --help` starts fast
+    "PLR2004", # thresholds and physical constants read better where they are used
+    "TRY003",  # long error messages that say how to fix the problem are wanted here
+]
+allowed-confusables = ["−", "–", "×"] # minus sign, en dash and times sign in figure labels
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+# Pipeline functions pass data, settings and parameters explicitly; more than 10 means: group them
+max-args = 10
+
+[tool.ruff.lint.per-file-ignores]
+# Fakes must match the signature of what they replace, even where they ignore an argument
+"tests/**" = ["ARG", "PLR0913"]
+# Notebooks and figure scripts show their results with print
+"notebooks/**" = ["T20"]
+"docs/**" = ["T20"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

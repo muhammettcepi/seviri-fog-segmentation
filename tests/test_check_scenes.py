@@ -361,7 +361,7 @@ def test_scene_statistics_rejects_a_label_store_of_another_dataset_build(tmp_pat
     with (
         xr.open_zarr(dataset_path, consolidated=False) as data,
         xr.open_zarr(store_path, consolidated=False) as labels,
-        pytest.raises(ValueError, match="fogseg label"),
     ):
         data.attrs["created"] = "2026-02-01T00:00:00+00:00"
-        scene_statistics(data, labels)
+        with pytest.raises(ValueError, match="fogseg label"):
+            scene_statistics(data, labels)
