@@ -301,6 +301,9 @@ only; see [the notes](docs/notes/unet.md#a-wider-u-net-on-colab).
 `main` is the production branch: only released code lands there. Day-to-day work goes into
 `develop` through pull requests from feature branches (`feature/...`, `ci/...`).
 
+Code follows [`docs/CODING_GUIDELINES.md`](docs/CODING_GUIDELINES.md): simple, explicit code first,
+checked by `ruff check` and `ruff format`.
+
 Every push to `main` or `develop` and every pull request runs `ruff`, `pytest` on Python 3.11–3.13,
 and a package build ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). To release, bump
 `version` in `pyproject.toml` on `develop`, merge `develop` into `main`, and tag the result on `main`:

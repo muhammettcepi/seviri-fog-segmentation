@@ -76,7 +76,7 @@ def fetch_with_retry(slot: dt.datetime, collection, cfg: dict) -> str:
                 # EUMETSAT sometimes refuses all downloads for a while ("GeneralLicense required"),
                 # then allows them again. Retrying quickly is pointless, so pause and try again later.
                 if blocked == len(BLOCKED_WAITS_MIN):
-                    log.error(
+                    log.error(  # noqa: TRY400 - the message says what to do; a traceback would not help
                         "EUMETSAT still refuses downloads after ~3 h (%s). Stopping; run "
                         "`fogseg fetch` again later, it continues where it stopped.",
                         message,
