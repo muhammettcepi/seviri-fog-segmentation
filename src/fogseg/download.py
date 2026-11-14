@@ -49,7 +49,7 @@ def download_nat(product, out_dir: Path) -> Path:
     entry = next(e for e in product.entries if e.endswith(".nat"))
     out_path = out_dir / Path(entry).name
     tmp_path = out_path.with_suffix(".nat.part")  # a crash never leaves a half file that looks complete
-    with product.open(entry=entry) as fsrc, open(tmp_path, "wb") as fdst:
+    with product.open(entry=entry) as fsrc, tmp_path.open("wb") as fdst:
         shutil.copyfileobj(fsrc, fdst)
     tmp_path.replace(out_path)
     return out_path

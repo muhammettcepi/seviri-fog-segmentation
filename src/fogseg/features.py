@@ -70,6 +70,29 @@ def per_scene_local_std(field: np.ndarray) -> np.ndarray:
     return np.stack([local_std(scene) for scene in field])
 
 
+def check_feature_inputs(groups: list[str], static: StaticFields, era5: dict[str, np.ndarray] | None) -> None:
+    """Every requested feature group must have the fields it is computed from."""
+    if "era5" in groups and era5 is None:
+        raise ValueError("the era5 feature group needs ERA5 fields; fetch them with fogseg era5")
+    if "terrain" in groups and static.elevation_mean is None:
+        raise ValueError("the terrain feature group needs the elevation fields of the static fields")
+
+
+def time_features(btd: np.ndarray, ir108: np.ndarray, times: np.ndarray) -> dict[str, np.ndarray]:
+    """The `time` feature group: hour of the night, the night's highest BTD and the IR_108 change per scene."""
+    # a pixel that is missing in every scene has no maximum, and nanmax warns about that
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        night_max_btd = np.nanmax(btd, axis=0)
+    ir108_change = np.full(ir108.shape, np.nan)
+    ir108_change[1:] = np.diff(ir108, axis=0)
+    return {
+        "hours_after_21": hours_after_21(times)[:, np.newaxis, np.newaxis],
+        "night_max_btd": night_max_btd,
+        "ir108_change": ir108_change,
+    }
+
+
 def night_feature_stack(
     bt: np.ndarray,
     times: np.ndarray,
@@ -83,11 +106,8 @@ def night_feature_stack(
     `bt` has shape (n_scenes, 8, y, x) in `CHANNELS` order, `times` is in time order, `era5` holds the
     (n_scenes, y, x) fields `t2m`, `skt`, `d2m` and `sd`. The night's features look only at the stored scenes.
     """
+    check_feature_inputs(groups, static, era5)
     names = feature_names(groups)
-    if "era5" in groups and era5 is None:
-        raise ValueError("the era5 feature group needs ERA5 fields; fetch them with fogseg era5")
-    if "terrain" in groups and static.elevation_mean is None:
-        raise ValueError("the terrain feature group needs the elevation fields of the static fields")
 
     band = {channel: bt[:, index] for index, channel in enumerate(CHANNELS)}
     ir039, ir108 = band["IR_039"], band["IR_108"]
@@ -115,18 +135,7 @@ def night_feature_stack(
             "snow_depth": era5["sd"],
         }
     if "time" in groups:
-        # a pixel that is missing in every scene has no maximum, and nanmax warns about that
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            night_max_btd = np.nanmax(btd, axis=0)
-        ir108_change = np.full(ir108.shape, np.nan)
-        ir108_change[1:] = np.diff(ir108, axis=0)
-        features |= {
-            "hours_after_21": hours_after_21(times)[:, np.newaxis, np.newaxis],
-            "night_max_btd": night_max_btd,
-            "ir108_change": ir108_change,
-        }
-
+        features |= time_features(btd, ir108, times)
     if "geometry" in groups:
         features |= {"satellite_zenith": static.satellite_zenith, "latitude": static.latitude}
     if "terrain" in groups:

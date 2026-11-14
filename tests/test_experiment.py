@@ -871,7 +871,8 @@ def test_a_crash_while_writing_leaves_no_held_out_file_and_the_decision_is_logge
         raise OSError("disk full")
 
     with monkeypatch.context() as patched, caplog.at_level(logging.INFO, logger="fogseg"):
-        patched.setattr("fogseg.cli.os.replace", crash)
+        # write_atomically renames the finished .part file with Path.replace
+        patched.setattr("pathlib.Path.replace", crash)
         with pytest.raises(OSError, match="disk full"):
             cmd_experiment(experiment_args(cfg, held_out=True))
     assert "POD gain" in caplog.text

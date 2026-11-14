@@ -16,8 +16,7 @@ def scene_filename(slot: dt.datetime) -> str:
 
 
 def load_config(path: str | Path) -> dict:
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
 
 
 def scene_times(cfg: dict) -> list[dt.datetime]:

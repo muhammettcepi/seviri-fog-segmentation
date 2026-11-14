@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -228,7 +227,7 @@ def save_unet(model: UNetModel, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_name(f"{path.name}.part")
     torch.save(values, part)
-    os.replace(part, path)
+    part.replace(path)
 
 
 def load_unet(path: Path) -> UNetModel:
