@@ -30,7 +30,7 @@ from fogseg.cli import cmd_tune
 from fogseg.config import load_config
 from fogseg.dynamic_threshold import scene_threshold
 from fogseg.label_store import label_dataset, label_store_path
-from fogseg.splits import make_splits, splits_path, station_cell
+from fogseg.splits import grid_cells, make_splits, splits_path, station_cell
 from fogseg.tuning import Decision, decide, grid_labels, grid_values
 from fogseg.validation import season_days
 
@@ -337,13 +337,14 @@ def write_observations(tmp_path, visibilities: dict[str, float]) -> None:
 def write_splits(args: argparse.Namespace, held_out_stations: tuple[str, ...] = ()) -> None:
     """The split file of the tuning season: every case is selection but those of `held_out_stations`."""
     cfg = load_config(args.config)
-    stations_cfg, bbox = cfg["stations"], cfg["region"]["bbox"]
-    splits = make_splits(*season_days(cfg, "2023-24"), bbox, stations_cfg).assign(fold=1)
+    stations_cfg = cfg["stations"]
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        cells = grid_cells(data["lon"].values, data["lat"].values, stations_cfg["station_cell_deg"])
+    splits = make_splits(*season_days(cfg, "2023-24"), cells, stations_cfg).assign(fold=1)
     pixels = [STATION_PIXELS[station][0] for station in held_out_stations]
     held_out_cells = station_cell(
         [GRID_LON0 + 0.1 * pixel[1] for pixel in pixels],
         [GRID_LAT0 - 0.1 * pixel[0] for pixel in pixels],
-        bbox,
         stations_cfg["station_cell_deg"],
     )
     splits.loc[splits["key"].isin(held_out_cells), "fold"] = stations_cfg["n_folds"]

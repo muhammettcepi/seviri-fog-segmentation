@@ -13,14 +13,20 @@ Everything is measured on the 2023-24 training season. The 2024-25 test season w
 
 - **Night blocks:** 14-day blocks of the season's nights, dealt to folds 1–5 in turn (block *i* → fold *i* mod 5 + 1),
   so every fold holds early and late winter.
-- **Station cells:** 2° × 2° cells from the south-west corner of the region, dealt to folds 1–5 in a random order fixed
-  by `stations.seed`.
+- **Station cells:** absolute 2° × 2° squares (cell `c4_25` is 8–10° E, 50–52° N) covering the whole pixel grid, which
+  reaches 1.5–27.6° E and 42.5–56.2° N, wider than the 2–20° E region bbox it was cropped with. The 112 cells are dealt
+  to folds 1–5 in a random order fixed by `stations.seed`; 4 of the 32 cells east of 20° E are held out.
 - **Held-out:** every case whose night or station is in fold 5, 36 % of the cases. From now on nothing is chosen on
   it, and each phase opens it once, for its one winner. It is reported in three parts: unseen nights only, unseen
   stations only, both.
 - **Selection:** nights and stations both in folds 1–4. Every threshold and variant of phases B and C is chosen here,
   with a blocked four-fold cross-validation. `fogseg tune` and `fogseg diagnose` read only these cases and refuse to
   run without the split file.
+
+**The split was redrawn on 22 November 2026.** The first version built its cells from the region bbox and pushed
+every station east of 20° E into the 18–20° E column, whose six cells all drew folds 2–4: no eastern station was ever
+held out by station, and folds 2 and 4 were larger. The tables in this note are from that first split; they move when
+`fogseg split --overwrite` and the commands after it are run again.
 
 One caveat: the baseline's 4.0 K was chosen in PR #5 on all 2023-24 cases, before the split existed, so the held-out
 cases have seen that choice. This favours the baseline, which makes a later gain over it harder to show, not easier.

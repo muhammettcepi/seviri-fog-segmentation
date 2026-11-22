@@ -27,7 +27,7 @@ from fogseg.diagnosis import (
     read_selection_cases,
 )
 from fogseg.label_store import label_dataset, label_store_path
-from fogseg.splits import make_splits, splits_path
+from fogseg.splits import grid_cells, make_splits, splits_path
 
 PARAMS = TEST_PARAMS
 SCENE_TIMES = pd.to_datetime(
@@ -288,10 +288,12 @@ def diagnose_setup(tmp_path: Path) -> argparse.Namespace:
     config_path = diagnose_config(tmp_path, dataset_path)
     cfg = load_config(config_path)
     entry = cfg["time"]["seasons"][0]
+    with xr.open_zarr(dataset_path, consolidated=False) as data:
+        cells = grid_cells(data["lon"].values, data["lat"].values, cfg["stations"]["station_cell_deg"])
     splits = make_splits(
         np.datetime64(entry["start"], "D"),
         np.datetime64(entry["end"], "D"),
-        cfg["region"]["bbox"],
+        cells,
         cfg["stations"],
     )
     splits.assign(fold=1).to_csv(splits_path(data_dir, "2023-24"), index=False)
@@ -345,7 +347,6 @@ def test_read_selection_cases_drops_the_held_out_cases(tmp_path):
         "cases_path": tmp_path / "stations" / "cases_fixed_2023-24.csv",
         "split_path": split_path,
         "season_start": np.datetime64("2023-10-01"),
-        "bbox": cfg["region"]["bbox"],
         "stations_cfg": stations_cfg,
     }
 
@@ -370,7 +371,6 @@ def test_read_selection_cases_counts_a_metar_and_synop_pair_at_one_pixel_and_sce
         cases_path,
         splits_path(tmp_path / "stations", "2023-24"),
         np.datetime64("2023-10-01"),
-        cfg["region"]["bbox"],
         cfg["stations"],
     )
 

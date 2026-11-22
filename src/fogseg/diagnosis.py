@@ -32,7 +32,7 @@ def check_fixed_mode(mode: str) -> None:
 
 
 def read_selection_cases(
-    cases_path: Path, split_path: Path, season_start: np.datetime64, bbox: list[float], stations_cfg: dict
+    cases_path: Path, split_path: Path, season_start: np.datetime64, stations_cfg: dict
 ) -> pd.DataFrame:
     """The selection cases of the table `fogseg validate` wrote, one per scene and pixel as in the score table."""
     splits = read_splits(split_path)
@@ -42,7 +42,7 @@ def read_selection_cases(
     cases = pd.read_csv(
         cases_path, dtype={"station": str, **METAR_DTYPES}, parse_dates=["scene_time", "night"]
     ).fillna({"ceiling_amount": ""})
-    return selection_cases(deduplicate(cases), splits, season_start, bbox, stations_cfg)
+    return selection_cases(deduplicate(cases), splits, season_start, stations_cfg)
 
 
 def scene_index(store: xr.Dataset, scene_times: pd.Series, name: str) -> np.ndarray:

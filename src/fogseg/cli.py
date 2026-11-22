@@ -257,7 +257,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
         if split_path.exists():
             splits = pd.read_csv(split_path)
             start = season_start(cfg, args.season)
-            cases = assign_folds(cases, splits, start, cfg["region"]["bbox"], stations_cfg)
+            cases = assign_folds(cases, splits, start, stations_cfg)
         else:
             log.info("%s not found, so the cases get no folds; run `fogseg split` first", split_path)
 
@@ -298,7 +298,9 @@ def require_tune_season(stations_cfg: dict, season: str, verb: str) -> None:
 
 
 def cmd_split(args: argparse.Namespace) -> None:
-    from fogseg.splits import make_splits, splits_path
+    import xarray as xr
+
+    from fogseg.splits import grid_cells, make_splits, splits_path
     from fogseg.validation import season_days
 
     cfg = load_config(args.config)
@@ -310,8 +312,11 @@ def cmd_split(args: argparse.Namespace) -> None:
     if out_path.exists() and not args.overwrite:
         raise FileExistsError(f"{out_path} exists and fixes the folds; use --overwrite to redraw them")
 
+    # The cells cover the real pixel grid, which reaches well beyond the region bbox in the east
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        cells = grid_cells(data["lon"].values, data["lat"].values, stations_cfg["station_cell_deg"])
     first_day, last_day = season_days(cfg, season)
-    splits = make_splits(first_day, last_day, cfg["region"]["bbox"], stations_cfg)
+    splits = make_splits(first_day, last_day, cells, stations_cfg)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     splits.to_csv(out_path, index=False)
     log.info("Wrote %d night blocks and station cells to %s", len(splits), out_path)
@@ -340,7 +345,6 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
         data_dir / f"cases_{mode}_{season}.csv",
         splits_path(data_dir, season),
         season_start(cfg, season),
-        cfg["region"]["bbox"],
         stations_cfg,
     )
 
@@ -439,7 +443,6 @@ def cmd_tune(args: argparse.Namespace) -> None:
             deduplicate(season_cases(data, labels, observations, cfg, season, params)),
             splits,
             season_start(cfg, season),
-            cfg["region"]["bbox"],
             stations_cfg,
         )
         cases = cases[cases["truth_fls"].isin([TRUTH_NO, TRUTH_YES]) & ~cases["hidden"]]

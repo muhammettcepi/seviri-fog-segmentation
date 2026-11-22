@@ -24,7 +24,7 @@ from fogseg.config import load_config
 from fogseg.label_store import label_dataset, label_store_path
 from fogseg.labels import OBSCURED
 from fogseg.parallax import apparent_position
-from fogseg.splits import make_splits, splits_path
+from fogseg.splits import grid_cells, make_splits, splits_path
 from fogseg.validation import (
     CASE_COLUMNS,
     TRUTH_NO,
@@ -765,9 +765,9 @@ def test_validate_warns_and_still_writes_when_no_case_matches(tmp_path, caplog):
 def write_splits(args: argparse.Namespace) -> None:
     """The split file of season 2023-24 in the stations folder of the validate config."""
     cfg = load_config(args.config)
-    splits = make_splits(
-        np.datetime64("2023-10-01"), np.datetime64("2024-02-29"), cfg["region"]["bbox"], cfg["stations"]
-    )
+    with xr.open_zarr(cfg["data"]["processed_path"], consolidated=False) as data:
+        cells = grid_cells(data["lon"].values, data["lat"].values, cfg["stations"]["station_cell_deg"])
+    splits = make_splits(np.datetime64("2023-10-01"), np.datetime64("2024-02-29"), cells, cfg["stations"])
     splits.to_csv(splits_path(Path(cfg["stations"]["data_dir"]), "2023-24"), index=False)
 
 

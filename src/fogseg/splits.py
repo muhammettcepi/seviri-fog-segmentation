@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 
 NIGHT_BLOCK, STATION_CELL = "night_block", "station_cell"
+# A station is used up to 5 km from its pixel centre, so it can lie just beyond the edge pixels of the grid
+CELL_PAD_DEG = 0.1
 
 
 def splits_path(data_dir: Path, season: str) -> Path:
@@ -28,24 +30,39 @@ def night_block_start(night: np.ndarray, season_start: np.datetime64, block_days
     return np.datetime64(season_start, "D") + (days // block_days) * np.timedelta64(block_days, "D")
 
 
-def cell_grid_shape(bbox: list[float], cell_deg: float) -> tuple[int, int]:
-    """Number of cell columns and rows that cover the bbox."""
-    lon_min, lat_min, lon_max, lat_max = bbox
-    return int(np.ceil((lon_max - lon_min) / cell_deg)), int(np.ceil((lat_max - lat_min) / cell_deg))
+def cell_key(col: int, row: int) -> str:
+    return f"c{col}_{row}"
 
 
-def station_cell(lon: np.ndarray, lat: np.ndarray, bbox: list[float], cell_deg: float) -> np.ndarray:
-    """Cell ids like "c2_3" (column, row); a station outside the bbox gets the nearest edge cell."""
-    n_cols, n_rows = cell_grid_shape(bbox, cell_deg)
-    cols = np.clip(np.floor((np.asarray(lon) - bbox[0]) / cell_deg).astype(int), 0, n_cols - 1)
-    rows = np.clip(np.floor((np.asarray(lat) - bbox[1]) / cell_deg).astype(int), 0, n_rows - 1)
-    return np.array([f"c{col}_{row}" for col, row in zip(cols, rows, strict=True)], dtype=object)
+def station_cell(lon: np.ndarray, lat: np.ndarray, cell_deg: float) -> np.ndarray:
+    """Cell ids like "c4_25": the `cell_deg` square of each station, counted from 0 deg E and 0 deg N.
+
+    The squares are absolute, so a station anywhere gets its own cell, whatever the extent of the grid.
+    """
+    cols = np.floor(np.asarray(lon, dtype=float) / cell_deg).astype(int)
+    rows = np.floor(np.asarray(lat, dtype=float) / cell_deg).astype(int)
+    return np.array([cell_key(col, row) for col, row in zip(cols, rows, strict=True)], dtype=object)
+
+
+def grid_cells(lon: np.ndarray, lat: np.ndarray, cell_deg: float, pad_deg: float = CELL_PAD_DEG) -> list[str]:
+    """The cells of the rectangle that holds every pixel centre of the grid, widened by `pad_deg`.
+
+    The rectangle follows the real grid, which is wider than the region bbox it was cropped with
+    (1.5 to 27.6 deg E for the bbox's 2 to 20 deg E), so no station is pushed into an edge cell.
+    """
+    first_col, last_col = np.floor(np.array([np.nanmin(lon) - pad_deg, np.nanmax(lon) + pad_deg]) / cell_deg)
+    first_row, last_row = np.floor(np.array([np.nanmin(lat) - pad_deg, np.nanmax(lat) + pad_deg]) / cell_deg)
+    return [
+        cell_key(col, row)
+        for col in range(int(first_col), int(last_col) + 1)
+        for row in range(int(first_row), int(last_row) + 1)
+    ]
 
 
 def make_splits(
-    season_start: np.datetime64, season_end: np.datetime64, bbox: list[float], stations_cfg: dict
+    season_start: np.datetime64, season_end: np.datetime64, cells: list[str], stations_cfg: dict
 ) -> pd.DataFrame:
-    """Folds of every night block and station cell: blocks in turn, cells in a seeded random order."""
+    """Folds of every night block and of the station `cells`: blocks in turn, cells in a seeded random order."""
     n_folds = stations_cfg["n_folds"]
     block_days = stations_cfg["night_block_days"]
     last_night = np.datetime64(season_end, "D")
@@ -60,9 +77,7 @@ def make_splits(
         }
     )
 
-    n_cols, n_rows = cell_grid_shape(bbox, stations_cfg["station_cell_deg"])
-    cell_ids = np.array([f"c{col}_{row}" for col in range(n_cols) for row in range(n_rows)])
-    shuffled = np.random.default_rng(stations_cfg["seed"]).permutation(cell_ids)
+    shuffled = np.random.default_rng(stations_cfg["seed"]).permutation(np.array(cells))
     cells = pd.DataFrame(
         {"kind": STATION_CELL, "key": shuffled, "fold": np.arange(len(shuffled)) % n_folds + 1}
     )
@@ -80,18 +95,12 @@ def fold_of(keys: np.ndarray, splits: pd.DataFrame, kind: str) -> np.ndarray:
 
 
 def assign_folds(
-    cases: pd.DataFrame,
-    splits: pd.DataFrame,
-    season_start: np.datetime64,
-    bbox: list[float],
-    stations_cfg: dict,
+    cases: pd.DataFrame, splits: pd.DataFrame, season_start: np.datetime64, stations_cfg: dict
 ) -> pd.DataFrame:
     """The case table with the fold of its night block and of its station cell."""
     nights = pd.to_datetime(cases["night"]).values.astype("datetime64[D]")
     blocks = night_block_start(nights, season_start, stations_cfg["night_block_days"])
-    cells = station_cell(
-        cases["lon"].to_numpy(), cases["lat"].to_numpy(), bbox, stations_cfg["station_cell_deg"]
-    )
+    cells = station_cell(cases["lon"].to_numpy(), cases["lat"].to_numpy(), stations_cfg["station_cell_deg"])
     return cases.assign(
         night_fold=fold_of(np.datetime_as_string(blocks, unit="D"), splits, NIGHT_BLOCK),
         station_fold=fold_of(cells, splits, STATION_CELL),
@@ -104,14 +113,10 @@ def held_out(cases: pd.DataFrame, n_folds: int) -> pd.Series:
 
 
 def selection_cases(
-    cases: pd.DataFrame,
-    splits: pd.DataFrame,
-    season_start: np.datetime64,
-    bbox: list[float],
-    stations_cfg: dict,
+    cases: pd.DataFrame, splits: pd.DataFrame, season_start: np.datetime64, stations_cfg: dict
 ) -> pd.DataFrame:
     """The cases outside the held-out fold, with their folds."""
-    with_folds = assign_folds(cases, splits, season_start, bbox, stations_cfg)
+    with_folds = assign_folds(cases, splits, season_start, stations_cfg)
     is_selection = held_out_part(with_folds, stations_cfg["n_folds"]) == "selection"
     return with_folds[is_selection].reset_index(drop=True)
 
