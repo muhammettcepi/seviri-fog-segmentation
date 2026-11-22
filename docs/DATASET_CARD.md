@@ -226,7 +226,7 @@ under high cloud, not because the labels changed; the details are in the note.
 
 Work on better labels ([`docs/notes/better_labels.md`](notes/better_labels.md)) scores the training season on a
 held-out set of nights and stations, and with the **full count**, in which an ignored pixel under a fog report is a
-miss. By that count the fixed 4.0 K labels have POD 0.43 and FAR 0.25 on the held-out cases (0.40 and 0.28 on all
+miss. By that count the fixed 4.0 K labels have POD 0.45 and FAR 0.28 on the held-out cases (0.40 and 0.28 on all
 cases).
 
 ### Limitations

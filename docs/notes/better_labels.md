@@ -15,8 +15,9 @@ Everything is measured on the 2023-24 training season. The 2024-25 test season w
   so every fold holds early and late winter.
 - **Station cells:** absolute 2° × 2° squares (cell `c4_25` is 8–10° E, 50–52° N) covering the whole pixel grid, which
   reaches 1.5–27.6° E and 42.5–56.2° N, wider than the 2–20° E region bbox it was cropped with. The 112 cells are dealt
-  to folds 1–5 in a random order fixed by `stations.seed`; 4 of the 32 cells east of 20° E are held out.
-- **Held-out:** every case whose night or station is in fold 5, 36 % of the cases. From now on nothing is chosen on
+  to folds 1–5 in a random order fixed by `stations.seed`; 4 of the 32 cells east of 20° E are held out, which puts
+  25 eastern stations (7,420 cases) in the held-out set.
+- **Held-out:** every case whose night or station is in fold 5, 33 % of the cases. From now on nothing is chosen on
   it, and each phase opens it once, for its one winner. It is reported in three parts: unseen nights only, unseen
   stations only, both.
 - **Selection:** nights and stations both in folds 1–4. Every threshold and variant of phases B and C is chosen here,
@@ -25,8 +26,10 @@ Everything is measured on the 2023-24 training season. The 2024-25 test season w
 
 **The split was redrawn on 22 November 2026.** The first version built its cells from the region bbox and pushed
 every station east of 20° E into the 18–20° E column, whose six cells all drew folds 2–4: no eastern station was ever
-held out by station, and folds 2 and 4 were larger. The tables in this note are from that first split; they move when
-`fogseg split --overwrite` and the commands after it are run again.
+held out by station, and folds 2 and 4 were larger. The baseline table and the first causes of the misses below are
+from the redrawn split. Against the first split, the held-out full-count POD moved from 0.43 to 0.45 and the FAR from
+0.25 to 0.28; the unseen-stations FAR rose most, from 0.25 to 0.30. The comparison of the low-BTD misses is still from
+the first split.
 
 One caveat: the baseline's 4.0 K was chosen in PR #5 on all 2023-24 cases, before the split existed, so the held-out
 cases have seen that choice. This favours the baseline, which makes a later gain over it harder to show, not easier.
@@ -57,14 +60,14 @@ POD, FAR and CSI leave out the cases labelled `255`.
 
 | Set | Cases | POD | FAR | CSI | Full-count POD | Full-count FAR | Full-count CSI |
 |---|---|---|---|---|---|---|---|
-| all | 75,680 | 0.50 | 0.28 | 0.42 | 0.40 (0.35–0.46) | 0.28 (0.24–0.32) | 0.35 |
-| selection | 48,669 | 0.49 | 0.29 | 0.41 | 0.39 (0.33–0.44) | 0.29 (0.24–0.36) | 0.33 |
-| **held-out** | 27,011 | 0.52 | 0.25 | 0.44 | **0.43 (0.36–0.50)** | **0.25 (0.20–0.31)** | 0.38 |
-| held-out, unseen nights only | 9,480 | 0.56 | 0.27 | 0.46 | 0.48 (0.38–0.57) | 0.27 (0.19–0.36) | 0.41 |
-| held-out, unseen stations only | 14,603 | 0.46 | 0.25 | 0.40 | 0.37 (0.30–0.43) | 0.25 (0.19–0.31) | 0.33 |
-| held-out, both | 2,928 | 0.61 | 0.23 | 0.52 | 0.54 (0.41–0.64) | 0.23 (0.17–0.32) | 0.46 |
+| all | 76,486 | 0.50 | 0.28 | 0.42 | 0.40 (0.35–0.46) | 0.28 (0.24–0.32) | 0.35 |
+| selection | 50,896 | 0.48 | 0.28 | 0.41 | 0.38 (0.32–0.44) | 0.28 (0.23–0.34) | 0.33 |
+| **held-out** | 25,590 | 0.55 | 0.28 | 0.45 | **0.45 (0.38–0.51)** | **0.28 (0.23–0.33)** | 0.39 |
+| held-out, unseen nights only | 10,005 | 0.58 | 0.26 | 0.48 | 0.50 (0.38–0.59) | 0.26 (0.19–0.32) | 0.43 |
+| held-out, unseen stations only | 13,029 | 0.51 | 0.30 | 0.42 | 0.40 (0.34–0.45) | 0.30 (0.24–0.37) | 0.34 |
+| held-out, both | 2,556 | 0.54 | 0.29 | 0.44 | 0.49 (0.33–0.60) | 0.29 (0.16–0.45) | 0.41 |
 
-The held-out full-count POD interval is 0.14 wide. A later phase has to gain more than a few hundredths before the
+The held-out full-count POD interval is 0.13 wide. A later phase has to gain more than a few hundredths before the
 paired interval clears zero; a smaller gain is reported but not claimed.
 
 Counted with the hidden cases (fog under a pixel that fails the high-cloud tests, now label `2`), POD falls to 0.20:
@@ -96,19 +99,19 @@ Full-count scores per fixed stratum, all cases:
 
 ## Why visible fog is missed
 
-`fogseg diagnose` on the selection cases, one case per pixel and scene as in the score table (11,727 misses). A miss
+`fogseg diagnose` on the selection cases, one case per pixel and scene as in the score table (12,968 misses). A miss
 is a visible fog or low-stratus report whose pixel is not labelled `1`; its first cause, in this order:
 
 | First cause | Rule | Share of misses |
 |---|---|---|
-| twilight | solar zenith angle 95° or less | 5 % |
-| low BTD | BTD ≤ 3.5 K | **49 %** |
+| twilight | solar zenith angle 95° or less | 4 % |
+| low BTD | BTD ≤ 3.5 K | **51 %** |
 | band | BTD below 4.5 K, smooth top | 28 % |
 | texture | 3 × 3 standard deviation of IR10.8 at least 1.5 K | 15 % |
 | small blob or other | | 2 % |
 
 Half of the misses have a BTD of 3.5 K or less, where clear ground sits. For those, the missed fog and the cloud-free
-reports at the same BTD (selection cases, night) compare as follows:
+reports at the same BTD (selection cases of the first split, night) compare as follows:
 
 | Variable | Missed fog, BTD ≤ 3.5 K | No fog, BTD ≤ 3.5 K |
 |---|---|---|
@@ -138,11 +141,13 @@ run: it needs a Copernicus CDS key on the machine. `fogseg era5` then `fogseg di
 
 ## What this means for phases B and C
 
-- The target is the full-count POD at FAR 0.28 on the held-out cases: 0.43 now.
+- The target is the full-count POD at FAR 0.28 on the held-out cases: 0.45 now.
 - The band and the texture causes (43 % of the misses) are what a better rule can reach. The low-BTD half is mostly
   partial cover, which only extra information (time, water vapour, ERA5, the stations themselves) can help with.
-- Unseen stations score lower than unseen nights (POD 0.37 against 0.48). The station-trained teacher of phase C has to
-  be judged on that part, since it is the one where fitting to the stations shows.
+- Unseen stations score lower than unseen nights (POD 0.40 against 0.50) and have the most false fog (FAR 0.30 against
+  0.26). The FAR rose from 0.25 when the redraw put 25 eastern stations into this part; there the satellite looks at
+  a steeper angle, where false fog was already known to be more common. The station-trained teacher of phase C has to
+  be judged on this part, since it is the one where fitting to the stations shows.
 
 ## Reproduce
 
@@ -151,7 +156,7 @@ fogseg label --overwrite                     # labels_fixed.zarr, now with the o
 fogseg stations --source metar               # re-parses the cached METARs into the new columns
 fogseg dem                                   # dem_ceu.zarr, ~3 min, 405 GLO-90 tiles from AWS
 fogseg era5                                  # era5_ceu.zarr, needs ~/.cdsapirc
-fogseg split                                 # stations/splits_2023-24.csv, once
+fogseg split                                 # stations/splits_2023-24.csv, once (--overwrite redraws it)
 fogseg validate --season 2023-24             # cases and scores, with folds and strata
 fogseg diagnose                              # stations/diagnosis_2023-24.csv, selection cases only
 ```

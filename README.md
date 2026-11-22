@@ -91,7 +91,7 @@ Everything, including the test-season result, is in
 
 The work on better labels before a model is trained is in
 [`docs/notes/better_labels.md`](docs/notes/better_labels.md): a held-out set of nights and stations, a full count in
-which an ignored pixel under a fog report is a miss (POD 0.43 at FAR 0.25 on the held-out cases for the 4.0 K
+which an ignored pixel under a fog report is a miss (POD 0.45 at FAR 0.28 on the held-out cases for the 4.0 K
 labels), and why the visible fog is missed (half of it has a BTD where clear ground sits, mostly broken decks).
 
 ## How the parts fit together
