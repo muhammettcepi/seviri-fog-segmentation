@@ -37,6 +37,7 @@ cases have seen that choice. This favours the baseline, which makes a later gain
 The main score is the **full count**: label `1` is "fog", and `0`, `2` and `255` are all "no fog". An ignored pixel
 under a fog report is then a miss, which the old decided-only count did not see. Phases B and C compare at the same
 FAR, 0.28 (`stations.matched_far`), and report the POD gain with a paired bootstrap over nights.
+Why ignored pixels are left out of training and scored this way, with the literature: [`references_masked_loss.md`](references_masked_loss.md).
 
 ## Matching fixes
 
