@@ -27,6 +27,12 @@ mountain station reports fog whenever it is inside a cloud). 1175 stations pass 
 with both seasons. 39 of them have no usable case in the training season and 44 none in the test season (no report near
 the scan time).
 
+![The SEVIRI pixel grid, the region bbox and the 1191 on-grid stations; the held-out station cells are shaded](figures/station_map_2023-24.png)
+
+The pixel grid (black) is wider than the region bbox (dashed): its north-east corner reaches 27.4° E, so 91 stations
+with cases lie east of 20° E. Orange stations sit in the held-out 2-degree station cells, blue ones in the selection
+cells, grey ones have no case in the training season.
+
 ### Truth rule
 
 Following Egli et al. (2017) and Jahani et al. (2025), a station report counts as **fog or low stratus (FLS)** when:
