@@ -248,6 +248,7 @@ def test_decide_table_columns_and_ignored_cases():
         "csi_high",
         "bias",
         "hss",
+        "pss",
         "n_ignored",
     ]
     assert table["n_cases"].tolist() == [0, 4]
@@ -288,8 +289,9 @@ def test_decision_changed_needs_a_different_value_and_a_positive_lower_bound():
     assert not dataclasses.replace(decision, difference_low=float("nan")).changed
 
 
-def tune_config(tmp_path, dataset_path, offset: float) -> argparse.Namespace:
+def tune_config(tmp_path, dataset_path, offset: float, mode: str = "dynamic") -> argparse.Namespace:
     cfg = load_config("configs/default.yaml")
+    cfg["labels"]["mode"] = mode
     cfg["data"]["processed_path"] = str(dataset_path)
     cfg["data"]["log_dir"] = str(tmp_path / "logs")
     cfg["labels"] |= dataclasses.asdict(PLANTED_PARAMS)
@@ -348,15 +350,35 @@ def write_splits(args: argparse.Namespace, held_out_stations: tuple[str, ...] = 
     splits.to_csv(splits_path(Path(stations_cfg["data_dir"]), "2023-24"), index=False)
 
 
-def tune_setup(tmp_path, offset: float = 4.0) -> argparse.Namespace:
+def tune_setup(tmp_path, offset: float = 4.0, mode: str = "dynamic") -> argparse.Namespace:
+    """A planted dataset, observations, and only the label store of `mode`, which the config names."""
     dataset_path = make_planted_dataset(tmp_path / "data.zarr")
     params = PLANTED_PARAMS
     dynamic = dataclasses.replace(PLANTED_DYNAMIC, offset=offset)
-    label_dataset(dataset_path, label_store_path(tmp_path / "labels", "dynamic"), "dynamic", params, dynamic)
+    label_dataset(dataset_path, label_store_path(tmp_path / "labels", mode), mode, params, dynamic)
     write_observations(tmp_path, {"FOG": 500.0, "STRIP": 9999.0, "CLEAR": 9999.0})
-    args = tune_config(tmp_path, dataset_path, offset)
+    args = tune_config(tmp_path, dataset_path, offset, mode)
     write_splits(args)
     return args
+
+
+def test_tune_reads_the_label_store_of_the_configured_mode(tmp_path):
+    args = tune_setup(tmp_path, mode="fixed")
+    assert not label_store_path(tmp_path / "labels", "dynamic").exists()
+
+    cmd_tune(args)
+
+    assert (tmp_path / "stations" / "tuning_offset.csv").exists()
+
+
+def test_tune_gives_the_same_tables_from_either_label_store(tmp_path):
+    tables = {}
+    for mode in ["dynamic", "fixed"]:
+        args = tune_setup(tmp_path / mode, mode=mode)
+        cmd_tune(args)
+        tables[mode] = pd.read_csv(tmp_path / mode / "stations" / "tuning_btd_fixed_fixed_mode.csv")
+
+    pd.testing.assert_frame_equal(tables["dynamic"], tables["fixed"])
 
 
 def test_tune_writes_three_tables_and_logs_each_decision(tmp_path, caplog):
