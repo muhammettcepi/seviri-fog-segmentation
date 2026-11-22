@@ -30,6 +30,15 @@ TEST_PARAMS = LabelParams(
     uncertainty_band=0.5,
     min_blob_pixels=5,
 )
+BASE_FIELDS = (
+    "night_min_sza",
+    "btd_fixed",
+    "warm_min_bt108",
+    "cirrus_max_split",
+    "smooth_max_std",
+    "uncertainty_band",
+    "min_blob_pixels",
+)
 TEST_DYNAMIC = DynamicParams(
     bin_width=0.25,
     bin_range=(-2.0, 8.0),

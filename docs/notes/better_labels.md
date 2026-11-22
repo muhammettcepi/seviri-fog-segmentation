@@ -1,9 +1,10 @@
 # Better fog labels from the station network
 
-Phase A of [the design](../superpowers/specs/2026-10-31-better-labels-design.md): an evaluation protocol that can tell
-a real gain from noise, cleaner matching between stations and pixels, an `obscured` label, the terrain and ERA5 data the
-later phases need, and a diagnosis of the missed fog. Nothing here changes which pixels are labelled fog; phases B
-(rule repair and time) and C (a station-trained teacher) do that and are scored against the baseline below.
+Phases A and B of [the design](../superpowers/specs/2026-10-31-better-labels-design.md). Phase A built an evaluation
+protocol that can tell a real gain from noise, cleaner matching between stations and pixels, an `obscured` label, the
+terrain and ERA5 data the later phases need, and a diagnosis of the missed fog. Phase B tried ten repairs of the label
+rule against that protocol ([below](#phase-b-rule-repair-and-time)); none passed the keep rule, so the labels are still
+the fixed 4.0 K baseline. Phase C (a station-trained teacher) comes next.
 
 Everything is measured on the 2023-24 training season. The 2024-25 test season was not opened.
 
@@ -27,7 +28,7 @@ cases have seen that choice. This favours the baseline, which makes a later gain
 
 The main score is the **full count**: label `1` is "fog", and `0`, `2` and `255` are all "no fog". An ignored pixel
 under a fog report is then a miss, which the old decided-only count did not see. Phases B and C compare at the same
-FAR, 0.28 (`stations.matched_far`), and report the POD gain with a paired bootstrap over nights.
+FAR, 0.28 (`stations.matched_far`), and report the POD gain with a paired bootstrap over the 14-day night blocks.
 
 ## Matching fixes
 
@@ -130,13 +131,92 @@ reports at the same BTD (selection cases, night) compare as follows:
 The ERA5 store (2 m temperature against the cloud-top temperature, a sign of a warm low cloud) was not built for this
 run: it needs a Copernicus CDS key on the machine. `fogseg era5` then `fogseg diagnose` fill the last row.
 
-## What this means for phases B and C
+## Phase B: rule repair and time
 
-- The target is the full-count POD at FAR 0.28 on the held-out cases: 0.43 now.
-- The band and the texture causes (43 % of the misses) are what a better rule can reach. The low-BTD half is mostly
-  partial cover, which only extra information (time, water vapour, ERA5, the stations themselves) can help with.
-- Unseen stations score lower than unseen nights (POD 0.37 against 0.48). The station-trained teacher of phase C has to
-  be judged on that part, since it is the one where fitting to the stations shows.
+`fogseg experiment --phase B` relabels the case nights of each variant at every threshold of its grid and scores it
+with a blocked four-fold cross-validation on the selection cases: each fold picks the threshold whose full-count FAR is
+highest without passing 0.28 on its training part, and is scored on its test part. The pooled row adds up the four
+test parts. The case set is the same for every variant, so a variant that calls a case obscured gets "no" for it.
+
+The label options are new settings in the `labels:` section; their defaults give exactly the old labels.
+
+| Option | Values |
+|---|---|
+| `texture` | `ir108_std3` (default), `btd_std3`, `ir108_mad5` (median deviation in 5 × 5), `blob` (median spread per fog patch), `none` |
+| `fog_index` | `btd` (default), `emissivity`: the 3.9 µm pseudo-emissivity B(IR3.9) / B(IR10.8), turned into a BTD threshold per pixel |
+| `split_window` | `fixed` (default), `kma`: IR10.8 − IR12.0 within ±1 K of −37.48 + 0.1329 · IR10.8 |
+| `temporal_relax` | K, default 0: a near miss becomes fog if the same pixel is fog in the stored scene before or after and IR10.8 changed by less than 2 K |
+
+### Cross-validation
+
+| Variant | Threshold per fold | Pooled POD | Pooled FAR | Pooled CSI |
+|---|---|---|---|---|
+| 1 baseline | 4.25, 4.00, 4.50, 4.25 K | 0.33 | 0.27 | 0.29 |
+| 2 texture `btd_std3` | same as 1 | 0.36 | 0.28 | 0.32 |
+| 3 texture `ir108_mad5` | same as 1 | 0.36 | 0.28 | 0.32 |
+| 4 texture `blob` | same as 1 | 0.36 | 0.28 | 0.32 |
+| 5 texture `none` | same as 1 | 0.37 | 0.28 | 0.32 |
+| 6 band 0.25 K | 4.50, 4.25, 4.75, 4.50 K | 0.33 | 0.27 | 0.29 |
+| 7 emissivity | 0.81, 0.82, 0.80, 0.81 | 0.37 | 0.27 | 0.32 |
+| 8 split window `kma` | 4.00, 4.25, 4.50, 5.50 K | 0.02 | 0.37 | 0.02 |
+| 9 = 5 + 7 | 0.80, 0.82, 0.79, 0.81 | 0.38 | 0.28 | 0.33 |
+| **10 = 9 + relax 0.5 K** | 0.80, 0.81, 0.79, 0.80 | **0.40** | 0.28 | **0.34** |
+| 10 = 9 + relax 1.0 K | 0.80, 0.81, 0.78, 0.80 | 0.38 | 0.28 | 0.33 |
+| 10 = 9 + relax 1.5 K | 0.79, 0.81, 0.77, 0.79 | 0.34 | 0.28 | 0.30 |
+
+The baseline scores lower here than in the phase A table (0.39 on the selection cases) because each fold had to raise
+its threshold to 4.25–4.5 K to keep the training FAR at 0.28; the phase A row is the configured 4.0 K.
+
+- **The smoothness test costs POD.** All four texture options gain about 0.03 at the same FAR, and dropping the test
+  gains the most. At matched FAR the threshold, not the texture, keeps the false alarms down.
+- **A narrower uncertainty band changes nothing.** With 0.25 K each fold picks a threshold 0.25 K higher and lands on
+  the same POD and FAR.
+- **The emissivity index helps a little** (+0.04): the same BTD is a weaker signal on a warm top, which a fixed BTD
+  threshold ignores.
+- **The KMA split window fails on SEVIRI as written.** At the visible fog reports of the selection cases the median
+  IR10.8 − IR12.0 is +0.37 K (10–90 %: −0.12 to 1.06 K), while the KMA line expects −1.9 K at their median IR10.8 of
+  268 K; only 6 % lie within its ±1 K. Nearly all fog becomes obscured.
+- **Time helps, in a small dose.** Relaxing the threshold by 0.5 K next to fog in the slot before or after adds 0.02;
+  1.0 and 1.5 K add false alarms that force a stricter threshold and lose POD again.
+
+The emissivity grid of the design, 0.80–1.00, ended too early: 0.80 is a BTD of about 4.4 K on a 268 K top, and
+variants 9 and 10 found no threshold within it that kept the FAR at 0.28 on every training part. The grid is now
+0.70–1.00 (`stations.emissivity_grid`), the same reach as the 7 K end of the BTD grid. Only the selection cases were
+read for this change; the first run's table is kept as `stations/experiment_B_grid080.csv`.
+
+### Held-out comparison
+
+`fogseg experiment --phase B --held-out` chose the winner's threshold at FAR 0.28 on all selection cases (emissivity
+0.80) and scored it once against the configured rule, fixed 4.0 K, on the held-out cases. Full count; the POD and FAR
+differences come from a paired bootstrap over the 11 night blocks of the held-out cases.
+
+| Part | Cases | Baseline POD | Winner POD | Baseline FAR | Winner FAR | Baseline CSI | Winner CSI |
+|---|---|---|---|---|---|---|---|
+| **held-out** | 27,011 | 0.43 | **0.47** | 0.25 | **0.24** | 0.38 | **0.41** |
+| unseen nights only | 9,480 | 0.48 | 0.55 | 0.27 | 0.27 | 0.41 | 0.46 |
+| unseen stations only | 14,603 | 0.37 | 0.38 | 0.25 | 0.21 | 0.33 | 0.34 |
+| both | 2,928 | 0.54 | 0.61 | 0.23 | 0.23 | 0.46 | 0.52 |
+
+- POD gain **+0.038**, 95 % interval **−0.004 to +0.069**.
+- FAR difference −0.013, 95 % interval −0.046 to +0.002.
+
+The keep rule needs the POD-gain interval above zero and a FAR that is not higher. The FAR is lower, but the interval
+reaches −0.004, so **the winner is not kept** and the labels stay at fixed 4.0 K. The gain is probably real but too
+small for eleven night blocks to confirm; it is reported, not claimed. It sits mostly on unseen nights (+0.06) and
+hardly on unseen stations (+0.01), where the winner trades its gain for fewer false alarms.
+
+The baseline rows repeat the phase A held-out table exactly, so the two phases score the same cases the same way. The
+held-out set has now been opened twice: for the phase A baseline and for this one winner. Phase C gets the last look.
+
+## What this means for phase C
+
+- The target is still the full-count POD at FAR 0.28 on the held-out cases: 0.43.
+- A rule change buys about 0.04 at best. The low-BTD half of the misses is mostly partial cover, which only extra
+  information (time, water vapour, ERA5, the stations themselves) can help with; the teacher should get the emissivity
+  index, the neighbouring slots and no smoothness test as inputs rather than as fixed rules.
+- Unseen stations score lower than unseen nights (POD 0.37 against 0.48), and phase B's rule barely moved them. The
+  station-trained teacher of phase C has to be judged on that part, since it is the one where fitting to the stations
+  shows.
 
 ## Reproduce
 
@@ -148,4 +228,6 @@ fogseg era5                                  # era5_ceu.zarr, needs ~/.cdsapirc
 fogseg split                                 # stations/splits_2023-24.csv, once
 fogseg validate --season 2023-24             # cases and scores, with folds and strata
 fogseg diagnose                              # stations/diagnosis_2023-24.csv, selection cases only
+fogseg experiment --phase B                  # stations/experiment_B.csv, ~17 min, selection cases only
+fogseg experiment --phase B --held-out       # stations/experiment_B_held_out.csv and .json, once per phase
 ```

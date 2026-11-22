@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 import yaml
+import zarr
 from helpers import (
     GRID_LAT0,
     GRID_LON0,
@@ -385,6 +386,22 @@ def test_diagnose_refuses_labels_that_are_not_fixed_mode(tmp_path):
     args.config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
     with pytest.raises(ValueError, match="fixed 4.0 K"):
+        cmd_diagnose(args)
+    assert not list((tmp_path / "stations").glob("diagnosis_*"))
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("texture", "blob"), ("fog_index", "emissivity"), ("split_window", "kma"), ("temporal_relax", 0.5)],
+)
+def test_diagnose_refuses_labels_of_another_rule(tmp_path, option, value):
+    args = diagnose_setup(tmp_path)
+    validate_cases(args)
+    cfg = load_config(args.config)
+    store = label_store_path(Path(cfg["labels"]["output_dir"]), "fixed")
+    zarr.open_group(store, mode="r+").attrs[option] = value
+
+    with pytest.raises(ValueError, match=rf"labels\.{option}.*default BTD rule"):
         cmd_diagnose(args)
     assert not list((tmp_path / "stations").glob("diagnosis_*"))
 

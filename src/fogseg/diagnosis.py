@@ -10,7 +10,7 @@ import xarray as xr
 
 from fogseg.labels import FOG, OBSCURED, LabelParams, local_std
 from fogseg.splits import read_splits, selection_cases
-from fogseg.validation import METAR_DTYPES, TRUTH_NO, TRUTH_YES, deduplicate, night_of
+from fogseg.validation import TRUTH_NO, TRUTH_YES, night_of, read_case_table
 
 LOW_BTD_K = 3.5
 BAND_HIGH_K = 4.5
@@ -36,13 +36,7 @@ def read_selection_cases(
 ) -> pd.DataFrame:
     """The selection cases of the table `fogseg validate` wrote, one per scene and pixel as in the score table."""
     splits = read_splits(split_path)
-    if not cases_path.exists():
-        raise FileNotFoundError(f"{cases_path} not found; run `fogseg validate` first")
-
-    cases = pd.read_csv(
-        cases_path, dtype={"station": str, **METAR_DTYPES}, parse_dates=["scene_time", "night"]
-    ).fillna({"ceiling_amount": ""})
-    return selection_cases(deduplicate(cases), splits, season_start, bbox, stations_cfg)
+    return selection_cases(read_case_table(cases_path), splits, season_start, bbox, stations_cfg)
 
 
 def scene_index(store: xr.Dataset, scene_times: pd.Series, name: str) -> np.ndarray:
