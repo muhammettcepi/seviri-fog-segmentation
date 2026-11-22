@@ -19,19 +19,20 @@ fixed: once with the fixed labels and once with the dynamic labels, the document
 
 | Source | Stations on the grid | Observations (night windows, both seasons) | Where from |
 |---|---|---|---|
-| METAR (airports) | 306 | 686,292 | Iowa Environmental Mesonet, raw METAR decoded by `fogseg` |
+| METAR (airports) | 298 in the training season, 306 with the test season | 686,292 | Iowa Environmental Mesonet, raw METAR decoded by `fogseg` |
 | SYNOP (weather stations) | 869 in the training season, 885 with the test season | 1,350,132 (679,662 in the training season) | Ogimet, raw `AAXX` messages decoded by `fogseg`; coordinates from NOAA `isd-history.csv` |
 
 A station is used when its nearest pixel centre is at most 5 km away and it lies at most 1000 m above sea level (a
-mountain station reports fog whenever it is inside a cloud). 1175 stations pass with the training-season reports, 1191
-with both seasons. 39 of them have no usable case in the training season and 44 none in the test season (no report near
-the scan time).
+mountain station reports fog whenever it is inside a cloud). 1167 stations pass with the training-season reports, 1191
+with both seasons. 31 of the 1167 have no usable case in the training season and 44 none in the test season (no report
+near the scan time). `fogseg validate` selects the stations from the reports of both seasons, so for the training season
+it logs 55 of 1191 without a case: these 31, plus the 24 stations that only report in the test season.
 
 ![The SEVIRI pixel grid, the region bbox and the 1191 on-grid stations; the held-out station cells are shaded](figures/station_map_2023-24.png)
 
 The pixel grid (black) is wider than the region bbox (dashed): its north-east corner reaches 27.4° E, so 91 stations
 with cases lie east of 20° E. Orange stations sit in the held-out 2-degree station cells, blue ones in the selection
-cells, grey ones have no case in the training season.
+cells, grey ones have no case in the training season (24 of these 55 only report in the test season).
 
 ### Truth rule
 

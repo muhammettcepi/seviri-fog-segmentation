@@ -169,7 +169,7 @@ season was not used to set any of them.
 
 ### The BTD threshold
 
-- **`fixed` mode:** 4.0 K (`btd_fixed`) in every scene. Tuned against 1175 stations in the training season; it
+- **`fixed` mode:** 4.0 K (`btd_fixed`) in every scene. Tuned against 1167 stations in the training season; it
   replaced 5.0 K, which missed most of the fog.
 - **`dynamic` mode:** clear ground has a BTD peak of its own in each scene, and it moves from night to
   night (1.9 to 4.6 K, 1st to 99th percentile in the training season). Per scene, the BTD of
@@ -210,7 +210,7 @@ pixels are. The test-season numbers describe the labels only; nothing was tuned 
 ([`docs/notes/label_check.md`](notes/label_check.md); the scenes are listed in
 [`configs/check_scenes.yaml`](../configs/check_scenes.yaml)). That check chose `dynamic` at first.
 
-The labels were then scored against 1175 airport (METAR) and weather stations (SYNOP)
+The labels were then scored against 1167 airport (METAR) and weather stations (SYNOP)
 ([`docs/notes/station_validation.md`](notes/station_validation.md)). A report counts as fog or low stratus when
 visibility is below 1 km or a broken or overcast deck has its base below 1 km. For the cases the satellite can see:
 
