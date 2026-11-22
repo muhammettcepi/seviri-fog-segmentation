@@ -44,7 +44,8 @@ These change how a station finds its pixel. They move the baseline and every lat
 progress.
 
 - **Parallax:** a station now looks up the pixel where a cloud top 500 m above the station appears from the satellite
-  at 0° E, about 1.6 km north of the station at 50° N.
+  at 0° E: about 1 km north, slightly east, of the station at 50° N (0.96 km north, 0.19 km east at Frankfurt), 1.5 km
+  at Lviv. That is a fifth of a pixel or less.
 - **Terrain:** `elevation_diff_m` is the station elevation minus the mean Copernicus GLO-90 elevation of its pixel.
 - **New METAR columns**, re-parsed from the cached reports: `auto` (an automatic station), `ceiling_amount` (`BKN`,
   `OVC` or `VV` of the lowest ceiling) and `shallow_fog` (`MIFG` or `BCFG`).

@@ -16,6 +16,8 @@ VISIBILITY_GROUP = re.compile(r"\d{4}(NDV)?")
 CLOUD_LAYER = re.compile(r"(?P<amount>FEW|SCT|BKN|OVC)(?P<height>\d{3}|///)(CB|TCU|///)?")
 VERTICAL_VISIBILITY = re.compile(r"(?P<amount>VV)(?P<height>\d{3}|///)")
 UNKNOWN_LAYER = re.compile(r"/{6}(CB|TCU|///)?")
+# Automatic stations write ///hhh for a cloud base they measured without knowing its amount
+UNKNOWN_AMOUNT_LAYER = re.compile(r"///(?P<height>\d{3})(CB|TCU|///)?")
 CEILING_AMOUNTS = {"BKN", "OVC", "VV"}
 SHALLOW_FOG = re.compile(r"(\+|-|VC)?(MIFG|BCFG)")
 
@@ -51,11 +53,14 @@ def prevailing_visibility_m(metar: str) -> float:
 def ceiling_m(metar: str) -> float:
     """Base in m of the first (lowest) BKN, OVC or VV layer of the main body.
 
-    A layer of unknown amount (`//////`) does not hide such a layer, wherever it stands. Infinite when the
-    body reports cloud but no such layer. NaN when the base is `///`, when the body has a layer of unknown
-    amount and no such layer, or when it has no cloud information.
+    A layer of unknown amount and height (`//////`) does not hide such a layer, wherever it stands; a layer
+    of unknown amount with a known base (`///003`) below it does, since it may be the ceiling itself.
+    Infinite when the body reports cloud but no such layer. NaN when the base is `///`, when a layer of
+    unknown amount may be the ceiling, or when the body has no cloud information.
     """
     layer = _ceiling_layer(metar)
+    if _unknown_amount_below(metar, layer):
+        return math.nan
     if layer is not None:
         return _base_m(layer["height"])
 
@@ -67,9 +72,14 @@ def ceiling_m(metar: str) -> float:
 
 
 def ceiling_amount(metar: str) -> str:
-    """Amount (`BKN`, `OVC` or `VV`) of the layer `ceiling_m` takes its base from; empty when there is none."""
+    """Amount (`BKN`, `OVC` or `VV`) of the layer `ceiling_m` takes its base from; empty when there is none.
+
+    Also empty when a layer of unknown amount below it may be the ceiling instead.
+    """
     layer = _ceiling_layer(metar)
-    return "" if layer is None else layer["amount"]
+    if layer is None or _unknown_amount_below(metar, layer):
+        return ""
+    return layer["amount"]
 
 
 def is_auto(metar: str) -> bool:
@@ -92,6 +102,18 @@ def _ceiling_layer(metar: str) -> re.Match | None:
         if layer is not None and layer["amount"] in CEILING_AMOUNTS:
             return layer
     return None
+
+
+def _unknown_amount_below(metar: str, layer: re.Match | None) -> bool:
+    """Whether a layer of unknown amount but known base lies below `layer`, or anywhere if there is none."""
+    heights = [
+        int(match["height"]) for token in main_body(metar) if (match := UNKNOWN_AMOUNT_LAYER.fullmatch(token))
+    ]
+    if not heights:
+        return False
+    if layer is None or layer["height"] == "///":
+        return True
+    return min(heights) < int(layer["height"])
 
 
 def _base_m(height_hundreds_of_feet: str) -> float:

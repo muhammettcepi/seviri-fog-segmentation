@@ -132,6 +132,28 @@ def test_a_ceiling_layer_after_an_unknown_layer_still_gives_the_ceiling():
     assert ceiling_amount(metar) == "BKN"
 
 
+@pytest.mark.parametrize(
+    "layers",
+    [
+        "///003",  # cloud of unknown amount at 300 ft and nothing else
+        "FEW030 ///003",  # it lies below the known layers, which hold no ceiling
+        "///003 BKN008",  # it lies below the known ceiling, so it may be the ceiling itself
+        "///003CB OVC020",
+    ],
+)
+def test_a_layer_of_unknown_amount_below_the_known_ceiling_makes_the_ceiling_unknown(layers):
+    # Automatic stations write ///hhh when they measure a cloud base but not its amount
+    metar = f"EHAM 010050Z AUTO 22004KT 9999 {layers} 08/07 Q1019"
+    assert math.isnan(ceiling_m(metar))
+    assert ceiling_amount(metar) == ""
+
+
+def test_a_layer_of_unknown_amount_above_the_ceiling_does_not_hide_it():
+    metar = "EHAM 010050Z AUTO 22004KT 9999 BKN002 ///010 08/07 Q1019"
+    assert ceiling_m(metar) == pytest.approx(2 * 100 * 0.3048)
+    assert ceiling_amount(metar) == "BKN"
+
+
 def test_shallow_fog():
     assert has_shallow_fog("EBBR 202050Z 4000 MIFG SKC 01/01 Q1030")
     assert has_shallow_fog("EBBR 202050Z 3000 BCFG FEW003 01/01 Q1030")
