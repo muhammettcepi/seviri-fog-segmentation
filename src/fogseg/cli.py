@@ -367,11 +367,16 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     out_path = data_dir / f"diagnosis_{season}.csv"
     table.to_csv(out_path, index=False)
 
-    shares = table[(table["section"] == "first_cause") & (table["statistic"] == "share")]
+    first_causes = table[table["section"] == "first_cause"]
+    shares = first_causes[first_causes["statistic"] == "share"]
+    n_missed = int(first_causes.loc[first_causes["statistic"] == "count", "fls_missed"].sum())
+    # Not the scored n_cases of `fogseg validate`: these are all selection cases, before the
+    # undefined truths, hidden pixels and ignored labels are set aside.
     log.info(
-        "Season %s, %d selection cases; first cause of the visible FLS misses: %s",
+        "Season %s, %d selection cases before scoring; first cause of the %d visible FLS misses: %s",
         season,
         len(cases),
+        n_missed,
         ", ".join(f"{row.variable} {row.fls_missed:.1%}" for row in shares.itertuples()),
     )
     log.info("Wrote %s", out_path)

@@ -27,9 +27,9 @@ Everything is measured on the 2023-24 training season. The 2024-25 test season w
 **The split was redrawn on 22 November 2026.** The first version built its cells from the region bbox and pushed
 every station east of 20° E into the 18–20° E column, whose six cells all drew folds 2–4: no eastern station was ever
 held out by station, and folds 2 and 4 were larger. The baseline table and the first causes of the misses below are
-from the redrawn split. Against the first split, the held-out full-count POD moved from 0.43 to 0.45 and the FAR from
-0.25 to 0.28; the unseen-stations FAR rose most, from 0.25 to 0.30. The comparison of the low-BTD misses is still from
-the first split.
+from the redrawn split, and so is the comparison of the low-BTD misses. Against the first split, the held-out
+full-count POD moved from 0.43 to 0.45 and the FAR from 0.25 to 0.28; the unseen-stations FAR rose most, from 0.25 to
+0.30.
 
 One caveat: the baseline's 4.0 K was chosen in PR #5 on all 2023-24 cases, before the split existed, so the held-out
 cases have seen that choice. This favours the baseline, which makes a later gain over it harder to show, not easier.
@@ -113,33 +113,35 @@ is a visible fog or low-stratus report whose pixel is not labelled `1`; its firs
 | small blob or other | | 2 % |
 
 Half of the misses have a BTD of 3.5 K or less, where clear ground sits. For those, the missed fog and the cloud-free
-reports at the same BTD (selection cases of the first split, night) compare as follows:
+reports at the same BTD (selection cases, night) compare as follows:
 
 | Variable | Missed fog, BTD ≤ 3.5 K | No fog, BTD ≤ 3.5 K |
 |---|---|---|
-| lowest ceiling `BKN` | 26 % | 8 % |
-| lowest ceiling `OVC` | 12 % | 2 % |
+| lowest ceiling `BKN` | 23 % | 8 % |
+| lowest ceiling `OVC` | 11 % | 2 % |
 | lowest ceiling `VV` | 3 % | 0 % |
-| lowest ceiling unknown (SYNOP, or no ceiling) | 59 % | 89 % |
-| fog at the same pixel in another slot of the night | 26 % | 10 % |
-| IR10.8 − WV6.2, median (middle half) | 33 K (30–37) | 37 K (32–42) |
-| station minus pixel terrain, median (10th–90th percentile) | 4 m (−34 to 47) | 1 m (−75 to 36) |
-| ERA5 T2m − IR10.8 | pending | pending |
+| lowest ceiling unknown (SYNOP, or no ceiling) | 63 % | 90 % |
+| fog at the same pixel in another slot of the night | 25 % | 11 % |
+| IR10.8 − WV6.2, median (middle half) | 33 K (30–37) | 38 K (33–42) |
+| ERA5 T2m − IR10.8, median (middle half) | 15 K (11–20) | 6 K (3–11) |
+| station minus pixel terrain, median (10th–90th percentile) | 3 m (−21 to 50) | 2 m (−34 to 38) |
 
-- **Partial cover dominates.** A low-BTD miss is three times as likely as a cloud-free report to have a broken
+- **Partial cover dominates.** A low-BTD miss is nearly three times as likely as a cloud-free report to have a broken
   ceiling. These are decks that fill too little of the pixel to raise its BTD. A pixel rule cannot recover most of
   them; the teacher of phase C can at best learn their other signs.
 - **Time helps.** A quarter of the low-BTD misses have fog at the same pixel in another slot of the same night,
   against a tenth of the cloud-free cases. This is the signal of phase B's time step.
-- **The water-vapour contrast separates a little.** IR10.8 − WV6.2 is about 4 K smaller at the missed fog, but the
+- **The water-vapour contrast separates a little.** IR10.8 − WV6.2 is about 4.5 K smaller at the missed fog, but the
   middle halves overlap. It is a feature for the teacher, not a threshold.
+- **ERA5 separates best.** At the missed fog, IR10.8 is about 15 K colder than the ERA5 2 m temperature; at the
+  cloud-free reports, about 6 K. The middle halves barely touch (10.9–19.8 K against 3.2–11.4 K), while the
+  10th–90th percentiles overlap widely (6–23 K against 2–19 K). A top that much colder than the surface air is a low cloud some
+  distance above the ground rather than fog at the surface, which fits the broken ceilings above. ERA5 is hourly on a
+  0.25° grid, so the difference also carries the inversion and the grid's smoothing; it is a teacher feature too.
 - **Terrain is not the cause** of the low-BTD misses; the two terrain distributions are close.
 - **The band** (28 %) is the 0.5 K ignore band and the BTD just above 4.0 K. Phase B's rule options (an emissivity
   index, a latitude-dependent threshold) aim at it; the first-cause shares cap what they can gain at about a quarter
   of the misses.
-
-The ERA5 store (2 m temperature against the cloud-top temperature, a sign of a warm low cloud) was not built for this
-run: it needs a Copernicus CDS key on the machine. `fogseg era5` then `fogseg diagnose` fill the last row.
 
 ## What this means for phases B and C
 
