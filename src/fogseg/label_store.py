@@ -1,7 +1,7 @@
 """Write the fog label stores: one Zarr store per labelling mode, aligned with the dataset.
 
-Each store holds, per scene, the label image (0 no fog, 1 fog, 255 ignore), the BTD threshold used
-and where it came from, and the share of fog and ignored pixels. The thresholds and the version
+Each store holds, per scene, the label image (0 no fog, 1 fog, 2 obscured, 255 ignore), the BTD threshold used
+and where it came from, and the share of fog, ignored and obscured pixels. The thresholds and the version
 that produced it are stored as attributes, so a label store explains itself.
 """
 
@@ -19,7 +19,7 @@ import zarr
 import fogseg
 from fogseg.build import CHUNK_TIME
 from fogseg.dynamic_threshold import DynamicParams, ThresholdChoice, dynamic_threshold
-from fogseg.labels import FOG, IGNORE, NO_FOG, LabelParams, histogram_pixels, label_scene
+from fogseg.labels import FOG, IGNORE, NO_FOG, OBSCURED, LabelParams, histogram_pixels, label_scene
 
 MODES = ("fixed", "dynamic")
 LABEL_CHANNELS = ["IR_039", "IR_108", "IR_120"]
@@ -71,16 +71,18 @@ def choose_threshold(
     return dynamic_threshold(btd, params.btd_fixed, dynamic)
 
 
-def label_fractions(labels: np.ndarray) -> tuple[float, float]:
-    """Fog share of the decided pixels (NaN if there are none) and ignored share of all pixels."""
+def label_fractions(labels: np.ndarray) -> tuple[float, float, float]:
+    """Fog share of the decided pixels (NaN if there are none), ignored and obscured share of all pixels."""
     n_fog = int(np.count_nonzero(labels == FOG))
     n_no_fog = int(np.count_nonzero(labels == NO_FOG))
     n_ignore = int(np.count_nonzero(labels == IGNORE))
+    n_obscured = int(np.count_nonzero(labels == OBSCURED))
 
     n_decided = n_fog + n_no_fog
     fog_fraction = n_fog / n_decided if n_decided > 0 else np.nan
     ignore_fraction = n_ignore / labels.size
-    return fog_fraction, ignore_fraction
+    obscured_fraction = n_obscured / labels.size
+    return fog_fraction, ignore_fraction, obscured_fraction
 
 
 def label_batch(
@@ -103,6 +105,7 @@ def label_batch(
     sources = np.empty(n_scenes, dtype=object)
     fog_fractions = np.empty(n_scenes, dtype=np.float32)
     ignore_fractions = np.empty(n_scenes, dtype=np.float32)
+    obscured_fractions = np.empty(n_scenes, dtype=np.float32)
 
     for i in range(n_scenes):
         ir039, ir108, ir120 = bt[i]
@@ -110,15 +113,24 @@ def label_batch(
         labels[i] = label_scene(ir039, ir108, ir120, sza[i], choice.value, params)
         thresholds[i] = choice.value
         sources[i] = choice.source
-        fog_fractions[i], ignore_fractions[i] = label_fractions(labels[i])
+        fog_fractions[i], ignore_fractions[i], obscured_fractions[i] = label_fractions(labels[i])
 
     return xr.Dataset(
         {
-            "label": (("time", "y", "x"), labels, {"long_name": "fog label: 0 no fog, 1 fog, 255 ignore"}),
+            "label": (
+                ("time", "y", "x"),
+                labels,
+                {"long_name": "fog label: 0 no fog, 1 fog, 2 obscured, 255 ignore"},
+            ),
             "btd_threshold": (("time",), thresholds, {"units": "K", "long_name": "BTD threshold used"}),
             "threshold_source": (("time",), sources, {"long_name": "fixed, dynamic or fallback"}),
             "fog_fraction": (("time",), fog_fractions, {"long_name": "fog share of the decided pixels"}),
             "ignore_fraction": (("time",), ignore_fractions, {"long_name": "ignored share of all pixels"}),
+            "obscured_fraction": (
+                ("time",),
+                obscured_fractions,
+                {"long_name": "obscured share of all pixels"},
+            ),
         },
         coords={"time": scenes["time"].values, "y": scenes["y"].values, "x": scenes["x"].values},
     )
@@ -140,6 +152,7 @@ def write_batches(
         "threshold_source": {"chunks": (CHUNK_TIME,)},
         "fog_fraction": {"chunks": (CHUNK_TIME,)},
         "ignore_fraction": {"chunks": (CHUNK_TIME,)},
+        "obscured_fraction": {"chunks": (CHUNK_TIME,)},
         "time": TIME_ENCODING,
     }
 

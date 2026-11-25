@@ -19,13 +19,20 @@ fixed: once with the fixed labels and once with the dynamic labels, the document
 
 | Source | Stations on the grid | Observations (night windows, both seasons) | Where from |
 |---|---|---|---|
-| METAR (airports) | 306 | 686,292 | Iowa Environmental Mesonet, raw METAR decoded by `fogseg` |
+| METAR (airports) | 298 in the training season, 306 with the test season | 686,292 | Iowa Environmental Mesonet, raw METAR decoded by `fogseg` |
 | SYNOP (weather stations) | 869 in the training season, 885 with the test season | 1,350,132 (679,662 in the training season) | Ogimet, raw `AAXX` messages decoded by `fogseg`; coordinates from NOAA `isd-history.csv` |
 
 A station is used when its nearest pixel centre is at most 5 km away and it lies at most 1000 m above sea level (a
-mountain station reports fog whenever it is inside a cloud). 1175 stations pass with the training-season reports, 1191
-with both seasons. 39 of them have no usable case in the training season and 44 none in the test season (no report near
-the scan time).
+mountain station reports fog whenever it is inside a cloud). 1167 stations pass with the training-season reports, 1191
+with both seasons. 31 of the 1167 have no usable case in the training season and 44 none in the test season (no report
+near the scan time). `fogseg validate` selects the stations from the reports of both seasons, so for the training season
+it logs 55 of 1191 without a case: these 31, plus the 24 stations that only report in the test season.
+
+![The SEVIRI pixel grid, the region bbox and the 1191 on-grid stations; the held-out station cells are shaded](figures/station_map_2023-24.png)
+
+The pixel grid (black) is wider than the region bbox (dashed): its north-east corner reaches 27.4° E, so 91 stations
+with cases lie east of 20° E. Orange stations sit in the held-out 2-degree station cells, blue ones in the selection
+cells, grey ones have no case in the training season (24 of these 55 only report in the test season).
 
 ### Truth rule
 
@@ -190,6 +197,10 @@ How to read the views:
 and no BTD threshold can find them. Counted in, CSI falls from 0.420 to 0.201 and POD from 0.50 to 0.22. This is the
 largest single limit of the labels. A model trained on them learns that there is no fog under high cloud.
 
+*Since 1 November 2026 these pixels are labelled `2`, obscured, instead of `0`
+([`better_labels.md`](better_labels.md)). The scores here are unchanged: they leave the hidden cases out, and the
+counted-in view treats `2` as "no fog", as it treated `0`.*
+
 ### Ignored fog
 
 10.5 % of the defined FLS reports (20 % of the visible ones) have label `255`:
@@ -353,7 +364,8 @@ What it shows:
 - **The known failures are still there:**
   - cloud-free reports labelled fog: 0.06 in 43–47° N and 0.23 in 51–56° N (0.05 and 0.26 in training);
   - 17 % of the visible FLS reports are labelled `255` (20 % in training);
-  - fog under high cloud still gets `0`: counted in, CSI falls to 0.42.
+  - fog under high cloud still gets `0` (now `2`, obscured; see [`better_labels.md`](better_labels.md)): counted in,
+    CSI falls to 0.42.
 
 ## Next step: better labels before the U-Net
 
@@ -373,6 +385,9 @@ first. They are the next piece of work, in their own spec:
 5. **A station point loss** next to the dense labels when the U-Net is trained.
 6. **A station-trained model** (in the style of Jahani et al. 2025) as a benchmark and, if it beats the rule on
    held-out stations, as the source of the dense labels.
+
+The first part (the held-out protocol, the obscured class, the matching fixes and a diagnosis of the misses) is done;
+results and the next phases are in [`better_labels.md`](better_labels.md).
 
 ## Caveats
 

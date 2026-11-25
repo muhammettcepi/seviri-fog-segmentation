@@ -11,6 +11,7 @@ import pytest
 
 from fogseg import observations
 from fogseg.observations import (
+    OBSERVATION_COLUMNS,
     collect_observations,
     download,
     is_near_scene,
@@ -74,7 +75,7 @@ def test_parse_metar_csv():
 
     table = parse_metar_csv(text)
 
-    assert list(table.columns) == ["source", "station", "time", "visibility_m", "ceiling_m"]
+    assert list(table.columns) == OBSERVATION_COLUMNS
     assert (table["source"] == "metar").all()
     assert np.issubdtype(table["time"].dtype, np.datetime64)
     assert table["time"].tolist() == [pd.Timestamp("2024-01-28 00:20"), pd.Timestamp("2024-01-28 00:50")]
@@ -83,11 +84,25 @@ def test_parse_metar_csv():
     assert math.isinf(table["ceiling_m"].iloc[1])
 
 
+def test_parse_metar_csv_adds_the_new_columns():
+    text = "station,valid,metar\nEDDF,2023-11-20 20:50,EDDF 202050Z AUTO 0800 MIFG BKN003 04/04 Q1020\n"
+    row = parse_metar_csv(text).iloc[0]
+    assert (row["auto"], row["ceiling_amount"], row["shallow_fog"]) == (True, "BKN", True)
+
+
+def test_parse_metar_csv_flags_are_false_for_a_manual_report_without_shallow_fog():
+    text = "station,valid,metar\nEDDF,2023-11-20 20:50,EDDF 202050Z 24005KT CAVOK 04/04 Q1020\n"
+    row = parse_metar_csv(text).iloc[0]
+    assert (row["auto"], row["ceiling_amount"], row["shallow_fog"]) == (False, "", False)
+
+
 def test_parse_metar_csv_without_rows():
     table = parse_metar_csv(VALID_ANSWER)
 
     assert table.empty
-    assert list(table.columns) == ["source", "station", "time", "visibility_m", "ceiling_m"]
+    assert list(table.columns) == OBSERVATION_COLUMNS
+    assert table["auto"].dtype == "boolean"
+    assert table["shallow_fog"].dtype == "boolean"
 
 
 def test_parse_synop_text():
@@ -98,13 +113,16 @@ def test_parse_synop_text():
 
     table = parse_synop_text(text)
 
-    assert list(table.columns) == ["source", "station", "time", "visibility_m", "ceiling_m"]
+    assert list(table.columns) == OBSERVATION_COLUMNS
     assert len(table) == 1
     row = table.iloc[0]
     assert (row["source"], row["station"]) == ("synop", "10381")
     assert row["time"] == pd.Timestamp("2024-01-28 00:00")
     assert row["visibility_m"] == 200.0
     assert row["ceiling_m"] == 0.0
+    assert row["ceiling_amount"] == ""
+    assert row["auto"] is pd.NA
+    assert row["shallow_fog"] is pd.NA
 
 
 def test_wmo_stations_takes_latest_record():

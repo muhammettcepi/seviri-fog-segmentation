@@ -5,13 +5,14 @@ from __future__ import annotations
 import warnings
 
 import numpy as np
+import pytest
 
 from fogseg.scores import (
     COUNT_NAMES,
     bootstrap_skill,
     contingency,
     counts_by_night,
-    paired_csi_difference,
+    paired_difference,
     score_summary,
     skill,
 )
@@ -22,6 +23,29 @@ def test_contingency_counts_and_skips_ignore():
     truth = np.array([1, 0, 1, 0, 1, -1], dtype=np.int8)
 
     assert contingency(label, truth).tolist() == [1, 1, 1, 1]
+
+
+def test_contingency_counts_obscured_as_no():
+    label = np.array([1, 2, 2, 0])
+    truth = np.array([1, 1, 0, 0])
+    assert contingency(label, truth).tolist() == [1, 1, 0, 2]
+
+
+def test_contingency_full_count_counts_ignored_as_no():
+    label = np.array([1, 255, 255, 0])
+    truth = np.array([1, 1, 0, -1])
+    assert contingency(label, truth).tolist() == [1, 0, 0, 0]
+    assert contingency(label, truth, full_count=True).tolist() == [1, 1, 0, 1]
+
+
+def test_counts_by_night_full_count_counts_ignored_as_no():
+    night = np.array(["a", "a"])
+    label = np.array([1, 255], dtype=np.uint8)
+    truth = np.array([1, 1], dtype=np.int8)
+
+    counts = counts_by_night(night, label, truth, np.array(["a"]), full_count=True)
+
+    assert counts.tolist() == [[1, 1, 0, 0]]
 
 
 def test_skill_values():
@@ -43,6 +67,12 @@ def test_skill_scores_of_a_perfect_and_a_random_rule():
 
     assert perfect["hss"] == 1.0 and perfect["pss"] == 1.0
     assert np.isclose(random["hss"], 0.0) and np.isclose(random["pss"], 0.0)
+
+
+def test_skill_hss_matches_hand_value():
+    # a=hits 50, c=misses 10, b=false alarms 20, d=correct negatives 120
+    hss = skill(np.array([50, 10, 20, 120]))["hss"]
+    assert hss == pytest.approx(2 * (50 * 120 - 20 * 10) / ((50 + 10) * (10 + 120) + (50 + 20) * (20 + 120)))
 
 
 def test_skill_without_fog_cases_is_nan():
@@ -112,10 +142,16 @@ def test_bootstrap_without_fog_cases_gives_nan_bounds_without_warning():
     assert all(np.isnan(bound) for interval in intervals.values() for bound in interval)
 
 
-def test_paired_difference_of_identical_counts_is_zero():
-    night_counts = synthetic_night_counts()
+def test_paired_difference_is_zero_for_identical_counts():
+    counts = np.array([[5, 2, 1, 10], [3, 3, 2, 8], [6, 1, 0, 9]])
+    assert paired_difference(counts, counts, "pod", 200, 0) == (0.0, 0.0)
 
-    assert paired_csi_difference(night_counts, night_counts, n_samples=200, seed=0) == (0.0, 0.0)
+
+def test_paired_difference_sign_follows_order():
+    better = np.array([[8, 2, 1, 10], [7, 3, 2, 8]])
+    worse = np.array([[5, 5, 1, 10], [4, 6, 2, 8]])
+    low, high = paired_difference(better, worse, "pod", 200, 0)
+    assert low > 0 and high > 0
 
 
 def test_score_summary_columns_follow_the_requested_intervals():
@@ -151,6 +187,6 @@ def test_paired_difference_detects_a_better_system():
     better = night_counts.copy()
     better[:, 0] += 20
 
-    _, high = paired_csi_difference(night_counts, better, n_samples=200, seed=0)
+    _, high = paired_difference(night_counts, better, "csi", n_samples=200, seed=0)
 
     assert high < 0

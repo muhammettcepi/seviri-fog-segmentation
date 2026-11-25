@@ -319,7 +319,8 @@ sits on the rising flank of the deck hump). The deck is labelled, so here the me
 - **Viewing-angle drift** (+1 K from south to north, see `btd_exploration.md`): nothing obvious in the check scenes,
   for example no band of false fog on the clear land in the north, but without a cloud mask this cannot be proved.
 - **Under high cloud the label is 0** (not ignore), even if fog lies below. A model trained on these labels learns that
-  fog is absent under thick cloud, which is a property of the data, not of the weather.
+  fog is absent under thick cloud, which is a property of the data, not of the weather. *Since 1 November 2026 these
+  pixels are `2`, obscured ([`better_labels.md`](better_labels.md)).*
 - **Fog and low stratus look the same** from the satellite. The label means "low water cloud", not "fog on the ground".
 - **Weak labels are not ground truth.** METAR observations will be used to tune and judge them later (spec, Section 7).
 - **Small samples in the histogram.** On scenes covered by thick cloud the histogram holds few pixels (20 October has

@@ -6,6 +6,7 @@ import logging
 import warnings
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
@@ -15,7 +16,13 @@ from helpers import TEST_DYNAMIC, TEST_PARAMS, make_label_dataset
 
 from fogseg.cli import cmd_inspect
 from fogseg.config import load_config
-from fogseg.inspect import find_scene, histogram_title, inspect_figure, night_microphysics_rgb
+from fogseg.inspect import (
+    draw_labels_panel,
+    find_scene,
+    histogram_title,
+    inspect_figure,
+    night_microphysics_rgb,
+)
 from fogseg.label_store import label_dataset, label_store_path, stored_params
 from fogseg.labels import LabelParams
 
@@ -89,6 +96,15 @@ def test_histogram_title_names_threshold_and_source():
     title = histogram_title(2.5, "fallback")
     assert "2.50" in title
     assert "fallback" in title
+
+
+def test_labels_panel_legend_lists_the_obscured_class():
+    fig, ax = plt.subplots()
+    labels = np.array([[1, 0], [2, 255]], dtype=np.uint8)
+    draw_labels_panel(ax, np.zeros((2, 2, 3)), labels)
+    legend_texts = [text.get_text() for text in ax.get_legend().get_texts()]
+    plt.close(fig)
+    assert "obscured (2)" in legend_texts
 
 
 def test_inspect_writes_a_png(tmp_path):

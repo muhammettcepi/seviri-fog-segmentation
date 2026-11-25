@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from fogseg.metar import ceiling_m, prevailing_visibility_m
+from fogseg.metar import ceiling_amount, ceiling_m, has_shallow_fog, is_auto, prevailing_visibility_m
 
 
 def test_visibility_from_main_body():
@@ -96,3 +96,69 @@ def test_remark_layers_are_ignored():
 def test_correction_prefix():
     metar = "COR EDDM 280650Z AUTO VRB01KT 4400 BR NCD M04/M05 Q1035"
     assert prevailing_visibility_m(metar) == 4400
+
+
+def test_is_auto():
+    assert is_auto("EDDF 202050Z AUTO 24005KT 0300 FG VV001 04/04 Q1020")
+    assert not is_auto("EDDF 202050Z 24005KT 9999 FEW040 04/02 Q1020 RMK AUTO")
+
+
+def test_ceiling_amount_is_the_layer_of_the_ceiling():
+    assert ceiling_amount("LOWW 202050Z 0800 BR SCT002 BKN004 OVC010 03/03 Q1025") == "BKN"
+    assert ceiling_amount("LOWW 202050Z 0100 FG VV001 03/03 Q1025") == "VV"
+    assert ceiling_amount("LOWW 202050Z CAVOK 03/01 Q1025") == ""
+
+
+@pytest.mark.parametrize("layers", ["FEW005", "FEW005 //////CB", "//////"])
+def test_ceiling_amount_is_empty_without_a_known_ceiling_layer(layers):
+    assert ceiling_amount(f"EDDF 010050Z 22005KT 9999 {layers} 05/02 Q1020") == ""
+
+
+def test_ceiling_amount_keeps_the_amount_of_a_layer_with_unknown_base():
+    metar = "EDDF 010050Z 22005KT 9999 BKN/// 05/02 Q1020"
+    assert math.isnan(ceiling_m(metar))
+    assert ceiling_amount(metar) == "BKN"
+
+
+def test_ceiling_amount_agrees_with_ceiling_m():
+    with_known_layer_below = "EDDF 010050Z 22005KT 9999 BKN004 //////CB 05/02 Q1020"
+    assert ceiling_amount(with_known_layer_below) == "BKN"
+    assert ceiling_m(with_known_layer_below) == pytest.approx(4 * 100 * 0.3048)
+
+
+def test_a_ceiling_layer_after_an_unknown_layer_still_gives_the_ceiling():
+    metar = "EDDF 010050Z 22005KT 9999 //////CB BKN004 05/02 Q1020"
+    assert ceiling_m(metar) == pytest.approx(4 * 100 * 0.3048)
+    assert ceiling_amount(metar) == "BKN"
+
+
+@pytest.mark.parametrize(
+    "layers",
+    [
+        "///003",  # cloud of unknown amount at 300 ft and nothing else
+        "FEW030 ///003",  # it lies below the known layers, which hold no ceiling
+        "///003 BKN008",  # it lies below the known ceiling, so it may be the ceiling itself
+        "///003CB OVC020",
+    ],
+)
+def test_a_layer_of_unknown_amount_below_the_known_ceiling_makes_the_ceiling_unknown(layers):
+    # Automatic stations write ///hhh when they measure a cloud base but not its amount
+    metar = f"EHAM 010050Z AUTO 22004KT 9999 {layers} 08/07 Q1019"
+    assert math.isnan(ceiling_m(metar))
+    assert ceiling_amount(metar) == ""
+
+
+def test_a_layer_of_unknown_amount_above_the_ceiling_does_not_hide_it():
+    metar = "EHAM 010050Z AUTO 22004KT 9999 BKN002 ///010 08/07 Q1019"
+    assert ceiling_m(metar) == pytest.approx(2 * 100 * 0.3048)
+    assert ceiling_amount(metar) == "BKN"
+
+
+def test_shallow_fog():
+    assert has_shallow_fog("EBBR 202050Z 4000 MIFG SKC 01/01 Q1030")
+    assert has_shallow_fog("EBBR 202050Z 3000 BCFG FEW003 01/01 Q1030")
+    assert has_shallow_fog("EBBR 202050Z 3000 -BCFG FEW003 01/01 Q1030")
+    assert has_shallow_fog("EBBR 202050Z 3000 VCBCFG FEW003 01/01 Q1030")
+    assert not has_shallow_fog("EBBR 202050Z 3000 VCFG FEW003 01/01 Q1030")
+    assert not has_shallow_fog("EBBR 202050Z 0200 FG VV001 01/01 Q1030")
+    assert not has_shallow_fog("EBBR 202050Z 9999 FEW040 01/01 Q1030 RMK MIFG")

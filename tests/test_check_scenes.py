@@ -239,6 +239,24 @@ def with_known_fractions(data: xr.Dataset) -> xr.Dataset:
     return data
 
 
+def test_scene_statistics_do_not_count_obscured_pixels_as_decided(tmp_path):
+    dataset_path = make_label_dataset(tmp_path / "data.zarr", n_scenes=4)
+    store_path = label_store_path(tmp_path / "labels", "fixed")
+    label_dataset(dataset_path, store_path, "fixed", TEST_PARAMS)
+    obscured = np.array([0.0, 0.25, 0.5, 0.1], dtype="float32")
+
+    with (
+        xr.open_zarr(dataset_path, consolidated=False) as data,
+        xr.open_zarr(store_path, consolidated=False) as labels,
+    ):
+        stats = scene_statistics(data, labels.assign(obscured_fraction=("time", obscured)))
+        old_store_stats = scene_statistics(data, labels.drop_vars("obscured_fraction"))
+        expected_ignore = labels["ignore_fraction"].values.astype(float)
+
+    np.testing.assert_allclose(stats["decided_fraction"], 1.0 - expected_ignore - obscured)
+    np.testing.assert_allclose(old_store_stats["decided_fraction"], 1.0 - expected_ignore)
+
+
 def test_scene_statistics_reads_store_and_computes_fractions(tmp_path):
     dataset_path = make_label_dataset(tmp_path / "data.zarr", n_scenes=4)
     store_path = label_store_path(tmp_path / "labels", "fixed")
@@ -255,6 +273,7 @@ def test_scene_statistics_reads_store_and_computes_fractions(tmp_path):
             stats = scene_statistics(with_known_fractions(data), labels)
         expected_fog = labels["fog_fraction"].values
         expected_ignore = labels["ignore_fraction"].values.astype(float)
+        expected_obscured = labels["obscured_fraction"].values.astype(float)
 
     assert list(stats.columns) == [
         "time",
@@ -266,7 +285,7 @@ def test_scene_statistics_reads_store_and_computes_fractions(tmp_path):
         "threshold_source",
     ]
     assert list(stats.index) == [0, 1, 2, 3]
-    np.testing.assert_allclose(stats["decided_fraction"], 1.0 - expected_ignore)
+    np.testing.assert_allclose(stats["decided_fraction"], 1.0 - expected_ignore - expected_obscured)
     assert stats["time"].is_monotonic_increasing
     assert list(stats["season"]) == ["2023-24"] * 4
     assert list(stats["threshold_source"]) == ["fixed"] * 4
